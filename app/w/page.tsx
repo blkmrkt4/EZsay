@@ -6,6 +6,9 @@ import { detectArtifacts, type ArtifactFinding } from "@/lib/analysis/artifact-d
 import { calculateWritingQuality } from "@/lib/analysis/quality-scorer";
 import { getRemovalDescription } from "@/lib/analysis/artifact-removals";
 import CitationsPage from "@/components/citations/CitationsPage";
+import CommandCapsule from "@/components/editor/CommandCapsule";
+import HeatmapScrollbar, { type HeatmapTick } from "@/components/editor/HeatmapScrollbar";
+import Link from "next/link";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -93,6 +96,14 @@ type EditQueueItem =
   | { type: "artifact_individual"; flag: Flag }
   | { type: "writing_quality"; advisory: WritingQualityAdvisory }
   | { type: "plagiarism"; result: PlagiarismResult };
+
+interface CitationSummary {
+  id: string;
+  status: string;
+  userAction: string | null;
+  structuralFlags: { type: string; message: string; severity: "error" | "warning" }[] | null;
+  verificationFlags: { verdict?: string } | null;
+}
 
 const SCAN_LEVELS: { value: ScanLevel; label: string; desc: string; isUltimate?: boolean }[] = [
   { value: "surface", label: "Surface Scan", desc: "Common AI phrases and banned words" },
@@ -218,9 +229,12 @@ export default function WorkspacePage() {
   const [showLibraryPanel, setShowLibraryPanel] = useState(true);
   const [showDocPanel, setShowDocPanel] = useState(true);
   const [highlightedCitationText, setHighlightedCitationText] = useState<string | null>(null);
+  const [docCitations, setDocCitations] = useState<CitationSummary[]>([]);
+  const docScrollRef = useRef<HTMLDivElement>(null);
   const [showEditPanel, setShowEditPanel] = useState(true);
   const [showChoicesPanel, setShowChoicesPanel] = useState(true);
   const [navExpanded, setNavExpanded] = useState(false);
+  const [navPinned, setNavPinned] = useState(false);
   const [showScanDialog, setShowScanDialog] = useState(false);
   const [debugAiScores, setDebugAiScores] = useState<{
     loading: boolean;
@@ -252,6 +266,21 @@ export default function WorkspacePage() {
   }, []);
 
   useEffect(() => { loadDocs(); }, [loadDocs]);
+
+  // Load citation summaries for the active doc so the edit-queue footer and
+  // end-of-queue handoff can surface pending citations. Refetch when the user
+  // navigates back into edit/analysis so counts stay fresh after they work
+  // in the Citations tab.
+  useEffect(() => {
+    if (!activeDocId) { setDocCitations([]); return; }
+    if (nav !== "edit" && nav !== "analysis") return;
+    let cancelled = false;
+    fetch(`/api/citations?documentId=${activeDocId}`)
+      .then((r) => r.json())
+      .then((j) => { if (!cancelled && j.success) setDocCitations(j.data); })
+      .catch(() => { /* silent — count just stays stale until next trigger */ });
+    return () => { cancelled = true; };
+  }, [activeDocId, nav, hasScanned]);
 
   const loadDocument = useCallback(async (docId: string) => {
     try {
@@ -716,6 +745,46 @@ export default function WorkspacePage() {
   // Common knowledge and quotation are informational — shown in detail panel only
   const openPlagiarismResults = plagiarismResults.filter((r) => r.verdict === "plagiarism" && r.status === "open");
 
+  // Citations needing review — mirrors the server score rule at
+  // app/api/citations/route.ts (hasStructIssue || hasVerifyIssue). Used to
+  // surface pending citations in the edit-queue footer and the end-of-queue
+  // handoff. Citations live in their own tab (PRD §10) and never enter the
+  // edit queue itself (PRD §9); this count is the bridge documented in §9.1.
+  const citationsNeedingReview = useMemo(() => {
+    return docCitations.filter((c) => {
+      const structFlags = c.structuralFlags ?? [];
+      const hasStructIssue = structFlags.length > 0 && c.status === "open";
+      const verdict = c.verificationFlags?.verdict;
+      const hasVerifyIssue = verdict === "unverified" || verdict === "wrong_details";
+      return hasStructIssue || hasVerifyIssue;
+    }).length;
+  }, [docCitations]);
+
+  // Flat tick list consumed by the heatmap scrollbar — every reviewable issue
+  // in the document rendered as one tick at its section's position. Different
+  // issue types get different colours so the heatmap doubles as a legend.
+  const heatmapTicks = useMemo<HeatmapTick[]>(() => {
+    const out: HeatmapTick[] = [];
+    for (const flag of flags) {
+      if (flag.status !== "open" && flag.status !== "generation_failed") continue;
+      out.push({
+        id: `flag-${flag.id}`,
+        sectionId: flag.sectionId,
+        kind: flag.patternType?.startsWith("artifact") ? "artifact" : "ai",
+        label: flag.flaggedPhrase,
+      });
+    }
+    for (const result of plagiarismResults) {
+      if (result.verdict !== "plagiarism" || result.status !== "open" || !result.sectionId) continue;
+      out.push({
+        id: `plag-${result.id}`,
+        sectionId: result.sectionId,
+        kind: "plagiarism",
+      });
+    }
+    return out;
+  }, [flags, plagiarismResults]);
+
   // ── Unified Edit Queue ────────────────────────────────────────────────
   const editQueue = useMemo((): EditQueueItem[] => {
     const queue: EditQueueItem[] = [];
@@ -810,16 +879,95 @@ export default function WorkspacePage() {
 
   // ── JSX ────────────────────────────────────────────────────────────────
 
+  // Scan button JSX — extracted so it can live inside the floating Command Capsule.
+  // Uses the same state machine as before; styling updated to a pill that fits the capsule.
+  const scanButton = (
+    <div className="relative group">
+      <button
+        onClick={() => {
+          if (hasScanned && !scanViewed) {
+            setNav("analysis");
+            setScanViewed(true);
+          } else if (!hasScanned || versionSavedSinceScan) {
+            setShowScanDialog(true);
+          }
+        }}
+        disabled={!activeDocId || scanning || (hasScanned && scanViewed && !versionSavedSinceScan)}
+        className={`rounded-full px-4 py-1.5 text-xs font-semibold text-white transition-colors disabled:opacity-40 ${
+          hasScanned && !scanViewed && !suggestProgress.generating ? "bg-green-600 hover:bg-green-700" :
+          suggestProgress.generating ? "bg-amber-500" :
+          "bg-blue-600 hover:bg-blue-700"
+        }`}
+      >
+        {scanning ? "Scanning…" : suggestProgress.generating ? "Preparing…" : hasScanned && !scanViewed ? "Scanned" : "Scan"}
+      </button>
+      {hasScanned && scanViewed && !versionSavedSinceScan && (
+        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-56 rounded border border-gray-200 bg-white p-2 text-[10px] text-gray-600 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">
+          Already scanned. Save this version first to run a new scan. Your edits will be preserved.
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="flex h-screen flex-col bg-gray-100 text-sm">
 
-      {/* ═══ Top toolbar ═══════════════════════════════════════════════════ */}
-      <header className="flex shrink-0 items-center justify-between border-b border-gray-300 bg-white px-4 py-1.5">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span className="text-base font-bold tracking-tight">EzSay</span>
-          <span className="h-4 w-px bg-gray-200" />
+      {/* ═══ Floating Command Capsule — overlays the top of the workspace ═══ */}
+      <CommandCapsule scanSlot={scanButton} score={objectiveAuditorScore} />
 
-          {/* ── Supabase-style document switcher ──────────────────────────── */}
+      {/* ═══ Static top bar — wordmark + doc switcher ═══════════════════════ */}
+      <header className="relative flex shrink-0 items-center border-b border-gray-300 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-900">
+        {/* Subtle brand-area radial glow — sits behind the logo only. 5% blue tint. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 w-72"
+          style={{
+            background:
+              "radial-gradient(ellipse 200px 60px at 72px center, rgba(37, 99, 235, 0.06), transparent 70%)",
+          }}
+        />
+
+        <div className="relative flex min-w-0 flex-1 items-center gap-3">
+          {/* Wordmark — swaps to white variant in dark mode */}
+          <img
+            src="/brand/ezsay-wordmark-black.svg"
+            alt="EzSay"
+            className="block h-6 w-auto select-none dark:hidden"
+          />
+          <img
+            src="/brand/ezsay-wordmark-white.svg"
+            alt=""
+            aria-hidden
+            className="hidden h-6 w-auto select-none dark:block"
+          />
+
+          {/* Sidebar pin/collapse toggle (Lucide PanelLeft icons) */}
+          <button
+            onClick={() => setNavPinned((v) => !v)}
+            title={navPinned ? "Collapse sidebar" : "Keep sidebar expanded"}
+            aria-pressed={navPinned}
+            className="shrink-0 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-slate-800 dark:hover:text-gray-300"
+          >
+            {navPinned ? (
+              // PanelLeftClose
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+                <rect width="18" height="18" x="3" y="3" rx="2" />
+                <path d="M9 3v18" />
+                <path d="m16 15-3-3 3-3" />
+              </svg>
+            ) : (
+              // PanelLeftOpen
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+                <rect width="18" height="18" x="3" y="3" rx="2" />
+                <path d="M9 3v18" />
+                <path d="m14 9 3 3-3 3" />
+              </svg>
+            )}
+          </button>
+
+          <span className="h-4 w-px bg-gray-200 dark:bg-slate-700" />
+
+          {/* ── Document selector — breadcrumb / search style ─────────────── */}
           <DocSwitcher
             docs={docs}
             activeDoc={activeDoc}
@@ -828,51 +976,6 @@ export default function WorkspacePage() {
             onNewDoc={() => { setShowUpload(true); setNav("documents"); }}
             onRename={handleRenameDoc}
           />
-        </div>
-
-        <div className="flex items-center gap-3">
-          {/* Save version */}
-
-
-          {/* Scan button — state machine: Scan → Scanned → Save Version to re-scan */}
-          <div className="relative group">
-            <button
-              onClick={() => {
-                if (hasScanned && !scanViewed) {
-                  // Show the analysis view
-                  setNav("analysis");
-                  setScanViewed(true);
-                } else if (!hasScanned || versionSavedSinceScan) {
-                  // Allow scan — first scan or version saved since last scan
-                  setShowScanDialog(true);
-                }
-                // If hasScanned && !versionSavedSinceScan — button is disabled, tooltip shown
-              }}
-              disabled={!activeDocId || scanning || (hasScanned && scanViewed && !versionSavedSinceScan)}
-              className={`rounded px-3 py-1 text-xs font-medium text-white disabled:opacity-40 ${
-                hasScanned && !scanViewed && !suggestProgress.generating ? "bg-green-600 hover:bg-green-700" :
-                suggestProgress.generating ? "bg-amber-500" :
-                "bg-blue-600 hover:bg-blue-700"
-              }`}
-            >
-              {scanning ? "Scanning..." : suggestProgress.generating ? "Preparing..." : hasScanned && !scanViewed ? "Scanned" : "Scan"}
-            </button>
-            {hasScanned && scanViewed && !versionSavedSinceScan && (
-              <div className="absolute top-full left-0 mt-1 w-56 rounded border border-gray-200 bg-white p-2 text-[10px] text-gray-600 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">
-                Already scanned. Save this version first to run a new scan. Your edits will be preserved.
-              </div>
-            )}
-          </div>
-
-          {/* Auditor Score — positioned over the Choices panel */}
-          <div className="flex items-center gap-2 whitespace-nowrap rounded bg-blue-600 px-3 py-1">
-            <span className="text-[10px] font-medium text-blue-200">Auditor Score</span>
-            <span className={`text-lg font-bold leading-none ${
-              objectiveAuditorScore === null ? "text-blue-300" : "text-white"
-            }`}>
-              {objectiveAuditorScore ?? "—"}
-            </span>
-          </div>
         </div>
       </header>
 
@@ -883,11 +986,27 @@ export default function WorkspacePage() {
         <nav
           onMouseEnter={() => setNavExpanded(true)}
           onMouseLeave={() => setNavExpanded(false)}
-          className={`shrink-0 flex flex-col border-r border-gray-300 bg-white transition-all duration-200 ${navExpanded ? "w-44" : "w-12"}`}
+          className={`shrink-0 flex flex-col border-r border-gray-300 bg-white transition-all duration-200 dark:border-slate-700 dark:bg-slate-900 ${navExpanded || navPinned ? "w-44" : "w-12"}`}
         >
           <div className="flex-1 py-2">
+            {/* Home — EzSay mark linking to the landing page */}
+            <Link
+              href="/"
+              title="Home"
+              className="flex w-full items-center gap-3 px-1 py-2.5 text-left text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-700"
+            >
+              <img
+                src="/brand/ezsay-mark-black.svg"
+                alt=""
+                className="h-10 w-10 shrink-0 select-none"
+              />
+              {(navExpanded || navPinned) && <span className="truncate text-sm">Home</span>}
+            </Link>
+
+            <div className="my-1.5 mx-3 border-t border-gray-100" />
+
             {/* Library */}
-            <NavButton label="Library" active={showLibraryPanel} expanded={navExpanded} onClick={() => setShowLibraryPanel(!showLibraryPanel)}
+            <NavButton label="Library" active={showLibraryPanel} expanded={navExpanded || navPinned} onClick={() => setShowLibraryPanel(!showLibraryPanel)}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" /></svg>}
             />
             {/* Add New Doc — indented under Library */}
@@ -895,48 +1014,48 @@ export default function WorkspacePage() {
               onClick={() => { setShowLibraryPanel(true); setShowUpload(true); }}
               title="Add New Doc"
               className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-gray-400 hover:bg-gray-50 hover:text-gray-600"
-              style={navExpanded ? { paddingLeft: "2.25rem" } : undefined}
+              style={navExpanded || navPinned ? { paddingLeft: "2.25rem" } : undefined}
             >
               <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
-              {navExpanded && <span className="text-xs truncate">Add New Doc</span>}
+              {(navExpanded || navPinned) && <span className="text-xs truncate">Add New Doc</span>}
             </button>
 
             <div className="my-1.5 mx-3 border-t border-gray-100" />
 
             {/* Scan Results */}
-            <NavButton label="Scan Results" active={nav === "scan"} expanded={navExpanded} onClick={() => setNav("scan")}
+            <NavButton label="Scan Results" active={nav === "scan"} expanded={navExpanded || navPinned} onClick={() => setNav("scan")}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>}
             />
             {/* Analysis */}
-            <NavButton label="Analysis" active={nav === "analysis"} expanded={navExpanded} onClick={() => setNav("analysis")}
+            <NavButton label="Analysis" active={nav === "analysis"} expanded={navExpanded || navPinned} onClick={() => setNav("analysis")}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" /></svg>}
             />
             {/* Edit */}
-            <NavButton label="Edit" active={nav === "edit"} expanded={navExpanded} onClick={() => setNav("edit")}
+            <NavButton label="Edit" active={nav === "edit"} expanded={navExpanded || navPinned} onClick={() => setNav("edit")}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" /></svg>}
             />
             {/* Citations */}
-            <NavButton label="Citations" active={nav === "citations"} expanded={navExpanded} onClick={() => setNav("citations")}
+            <NavButton label="Citations" active={nav === "citations"} expanded={navExpanded || navPinned} onClick={() => setNav("citations")}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>}
             />
-            <NavButton label="Spelling" active={nav === "spelling"} expanded={navExpanded} onClick={() => setNav("spelling")}
+            <NavButton label="Spelling" active={nav === "spelling"} expanded={navExpanded || navPinned} onClick={() => setNav("spelling")}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456Z" /></svg>}
             />
-            <NavButton label="Grammar" active={nav === "grammar"} expanded={navExpanded} onClick={() => setNav("grammar")}
+            <NavButton label="Grammar" active={nav === "grammar"} expanded={navExpanded || navPinned} onClick={() => setNav("grammar")}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" /></svg>}
             />
 
             <div className="my-1.5 mx-3 border-t border-gray-100" />
 
             {/* Style Training */}
-            <NavButton label="Style Training" active={nav === "style-training"} expanded={navExpanded} onClick={() => setNav("style-training")}
+            <NavButton label="Style Training" active={nav === "style-training"} expanded={navExpanded || navPinned} onClick={() => setNav("style-training")}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75" /></svg>}
             />
 
             <div className="my-1.5 mx-3 border-t border-gray-100" />
 
             {/* Big Test — multi-model AI detection debug */}
-            <NavButton label="Big Test" active={nav === "bigtest"} expanded={navExpanded} onClick={() => setNav("bigtest")}
+            <NavButton label="Big Test" active={nav === "bigtest"} expanded={navExpanded || navPinned} onClick={() => setNav("bigtest")}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" /></svg>}
             />
           </div>
@@ -949,7 +1068,7 @@ export default function WorkspacePage() {
               className="flex w-full items-center gap-3 px-3.5 py-2 text-gray-400 hover:text-gray-600"
             >
               <svg className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
-              {navExpanded && <span className="text-xs truncate">Admin Panel</span>}
+              {(navExpanded || navPinned) && <span className="text-xs truncate">Admin Panel</span>}
             </a>
           </div>
         </nav>
@@ -1114,8 +1233,9 @@ export default function WorkspacePage() {
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                   </button>
                 </div>
-                <div className="flex-1 overflow-auto p-3">
-                  <div className="space-y-1">
+                <div className="flex flex-1 min-h-0">
+                  <div ref={docScrollRef} className="flex-1 overflow-auto p-3">
+                    <div className="space-y-1">
                     {sections.map((section) => {
                       const isActive = currentFlag && section.id === currentFlag.sectionId;
                       const sectionFlags = flags.filter((f) => f.sectionId === section.id);
@@ -1164,6 +1284,16 @@ export default function WorkspacePage() {
                       );
                     })}
                   </div>
+                  </div>
+                  <HeatmapScrollbar
+                    scrollRef={docScrollRef}
+                    ticks={heatmapTicks}
+                    onNavigate={(sectionId) => {
+                      const idx = openFlags.findIndex((f) => f.sectionId === sectionId);
+                      if (idx !== -1) { setSelectedFlagIdx(idx); setSelectedOptionIdx(null); }
+                    }}
+                    activeSectionId={currentFlag?.sectionId ?? null}
+                  />
                 </div>
               </div>
             ) : (
@@ -1252,6 +1382,7 @@ export default function WorkspacePage() {
                   plagiarismEnabled={scanConfig.categories.plagiarism}
                   toneEnabled={scanConfig.categories.toneConsistency}
                   onStartEditing={() => setNav("edit")}
+                  onGoToCitations={() => setNav("citations")}
                 />
               )}
 
@@ -1264,7 +1395,13 @@ export default function WorkspacePage() {
               )}
 
               {nav === "edit" && activeDoc && !currentQueueItem && hasScanned && (
-                <EditSessionSummary flags={flags} onRescan={() => { handleScan(); }} onSaveVersion={handleSaveVersion} />
+                <EditSessionSummary
+                  flags={flags}
+                  onRescan={() => { handleScan(); }}
+                  onSaveVersion={handleSaveVersion}
+                  citationsPending={citationsNeedingReview}
+                  onGoToCitations={() => setNav("citations")}
+                />
               )}
 
               {nav === "edit" && activeDoc && !currentQueueItem && !hasScanned && (
@@ -1759,6 +1896,7 @@ export default function WorkspacePage() {
                   plagiarismEnabled={scanConfig.categories.plagiarism}
                   toneEnabled={scanConfig.categories.toneConsistency}
                   onStartEditing={() => setNav("edit")}
+                  onGoToCitations={() => setNav("citations")}
                 />
               )}
 
@@ -1839,26 +1977,54 @@ export default function WorkspacePage() {
                               ? `Remove ${artifactItem || "artifact"}`
                               : `Replace with "${opt.text}"`
                             : `Option ${i + 1}`;
+                          const isSelected = selectedOptionIdx === i;
                           return (
                           <button
                             key={opt.id}
                             onClick={() => { setSelectedOptionIdx(i); handleFlagResolved("accepted", opt.id); }}
-                            className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                            className={`group relative flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs backdrop-blur-[10px] transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none ${
+                              isSelected
+                                ? "border-2 border-blue-500 bg-blue-50/50 text-blue-900 shadow-sm"
+                                : "border border-white/40 bg-white/60 text-gray-700 hover:bg-white/80 hover:border-blue-200"
+                            }`}
                           >
-                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">{i + 1}</span>
-                            <span>{label}</span>
+                            <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${isSelected ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-600 group-hover:bg-blue-100 group-hover:text-blue-700"}`}>{i + 1}</span>
+                            <span className="min-w-0 flex-1 truncate">{label}</span>
+                            {isSelected && (
+                              <svg className="h-3.5 w-3.5 shrink-0 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="20 6 9 17 4 12" />
+                              </svg>
+                            )}
                           </button>
                           );
                         })}
+                        {(() => {
+                          const editIdx = currentOptions.length;
+                          const isSelected = selectedOptionIdx === editIdx;
+                          return (
+                            <button
+                              onClick={() => { setSelectedOptionIdx(editIdx); setManualEditText(currentSection?.currentText || ""); }}
+                              className={`group relative flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs backdrop-blur-[10px] transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md ${
+                                isSelected
+                                  ? "border-2 border-blue-500 bg-blue-50/50 text-blue-900 shadow-sm"
+                                  : "border border-white/40 bg-white/60 text-gray-700 hover:bg-white/80 hover:border-blue-200"
+                              }`}
+                            >
+                              <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${isSelected ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-600 group-hover:bg-blue-100 group-hover:text-blue-700"}`}>{editIdx + 1}</span>
+                              <span className="min-w-0 flex-1 truncate">Edit myself</span>
+                              {isSelected && (
+                                <svg className="h-3.5 w-3.5 shrink-0 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                              )}
+                            </button>
+                          );
+                        })()}
                         <button
-                          onClick={() => { setSelectedOptionIdx(currentOptions.length); setManualEditText(currentSection?.currentText || ""); }}
-                          className={`flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs ${selectedOptionIdx === currentOptions.length ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"}`}
+                          onClick={() => handleFlagResolved("skipped")}
+                          className="group relative flex w-full items-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white/40 px-2.5 py-2 text-left text-xs text-gray-500 backdrop-blur-[10px] transition-all duration-150 hover:-translate-y-0.5 hover:border-green-400 hover:bg-green-50/60 hover:text-green-700 hover:shadow-md"
                         >
-                          <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${selectedOptionIdx === currentOptions.length ? "bg-white text-blue-600" : "bg-gray-200 text-gray-600"}`}>{currentOptions.length + 1}</span>
-                          <span>Edit myself</span>
-                        </button>
-                        <button onClick={() => handleFlagResolved("skipped")} className="flex w-full items-center gap-1.5 rounded border border-dashed border-gray-300 px-2 py-1.5 text-left text-xs text-gray-500 hover:bg-green-50 hover:text-green-700 hover:border-green-300">
-                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">{currentOptions.length + 2}</span>
+                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600 group-hover:bg-green-100 group-hover:text-green-700">{currentOptions.length + 2}</span>
                           <span>Stay with original</span>
                         </button>
                       </>
@@ -2017,7 +2183,10 @@ export default function WorkspacePage() {
       )}
 
       {/* ═══ Status bar ════════════════════════════════════════════════════ */}
-      <footer className="flex shrink-0 items-center justify-between border-t border-gray-300 bg-white px-4 py-1.5">
+      <footer
+        className="flex shrink-0 items-center justify-between border-t border-gray-200 bg-white px-4 py-2"
+        style={{ boxShadow: "0 -4px 12px -6px rgba(0, 0, 0, 0.06)" }}
+      >
         <div className="flex items-center gap-3 text-[10px] text-gray-400">
           {activeDoc ? (
             <>
@@ -2028,7 +2197,11 @@ export default function WorkspacePage() {
                 return `${words.toLocaleString()} words \u00B7 ${chars.toLocaleString()} chars`;
               })()}</span>
               <span className="text-gray-300">|</span>
-              <span>{unlockedSections.length} sections \u00B7 {actionableFlagCount} flags \u00B7 {editQueue.length} items to review</span>
+              <span>
+                {unlockedSections.length} sections \u00B7 {actionableFlagCount} flag{actionableFlagCount !== 1 ? "s" : ""}
+                {citationsNeedingReview > 0 && ` + ${citationsNeedingReview} citation${citationsNeedingReview !== 1 ? "s" : ""}`}
+                {" \u00B7 "}{editQueue.length} items to review
+              </span>
               {activeDoc?.lastScanLevel && (
                 <>
                   <span className="text-gray-300">|</span>
@@ -2067,12 +2240,24 @@ export default function WorkspacePage() {
               >
                 Reset to Original
               </button>
+              {/* Primary download — user's end goal. Solid brand-blue "success" styling. */}
               <div className="relative group">
-                <button className="rounded border border-gray-300 px-3 py-1 text-[11px] font-medium text-gray-600 hover:bg-gray-50">
-                  Save to Files ▾
+                <button
+                  className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
+                >
+                  {/* Lucide Download icon */}
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                  Download Edited File
+                  <svg className="h-3 w-3 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
                 </button>
                 <div className="absolute bottom-full right-0 mb-1 hidden group-hover:block z-50">
-                  <div className="rounded border border-gray-200 bg-white shadow-lg py-1 min-w-[140px]">
+                  <div className="rounded-md border border-gray-200 bg-white shadow-lg py-1 min-w-[140px]">
                     <button
                       onClick={() => {
                         const text = sections.filter((s) => !s.isLocked).map((s) => s.currentText).join("\n\n");
@@ -2101,9 +2286,10 @@ export default function WorkspacePage() {
                   </div>
                 </div>
               </div>
+              {/* Secondary: snapshot to our database */}
               <button
                 onClick={handleSaveVersion}
-                className="rounded bg-blue-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-blue-700"
+                className="rounded-md border border-gray-300 px-3 py-1.5 text-[11px] font-medium text-gray-700 transition-colors hover:bg-gray-50"
               >
                 Save Version
               </button>
@@ -2562,8 +2748,8 @@ function DocSwitcher({ docs, activeDoc, activeDocId, onSelect, onNewDoc, onRenam
 
   return (
     <div className="relative min-w-0 flex-1 max-w-[36rem]" ref={ref}>
-      {/* Trigger button with double-click to rename */}
-      <div className="flex w-full items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1 text-sm transition-colors cursor-pointer hover:bg-gray-100">
+      {/* Trigger — breadcrumb / search style: no border, subtle backdrop blur, single thin chevron */}
+      <div className="flex w-full items-center gap-2 rounded-md bg-gray-50/70 px-3 py-1.5 text-sm transition-colors cursor-pointer hover:bg-gray-100/80 backdrop-blur-sm dark:bg-slate-800/60 dark:hover:bg-slate-800/80">
         {editing ? (
           <input
             ref={inputRef}
@@ -2578,11 +2764,11 @@ function DocSwitcher({ docs, activeDoc, activeDocId, onSelect, onNewDoc, onRenam
               if (e.key === "Enter") { e.currentTarget.blur(); }
               if (e.key === "Escape") { setEditing(false); }
             }}
-            className="min-w-0 flex-1 border-b border-blue-400 bg-transparent text-sm font-medium text-gray-700 outline-none"
+            className="min-w-0 flex-1 border-b border-blue-400 bg-transparent text-sm font-medium text-gray-700 outline-none dark:text-gray-100"
           />
         ) : (
           <span
-            className="min-w-0 flex-1 truncate font-medium text-gray-700"
+            className="min-w-0 flex-1 truncate font-medium text-gray-700 dark:text-gray-100"
             onClick={() => setOpen(!open)}
             onDoubleClick={(e) => {
               e.stopPropagation();
@@ -2596,9 +2782,10 @@ function DocSwitcher({ docs, activeDoc, activeDocId, onSelect, onNewDoc, onRenam
             {activeDoc?.title ?? "Select document"}
           </span>
         )}
-        <button onClick={() => setOpen(!open)} className="shrink-0">
-          <svg className="h-3.5 w-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 15 12 18.75 15.75 15m-7.5-6L12 5.25 15.75 9" />
+        <button onClick={() => setOpen(!open)} className="shrink-0" aria-label="Open document list">
+          {/* Lucide ChevronDown — thinner single caret */}
+          <svg className="h-3.5 w-3.5 text-gray-400 dark:text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+            <path d="m6 9 6 6 6-6" />
           </svg>
         </button>
       </div>
@@ -2697,15 +2884,18 @@ function EmptyPanel({ title, description, extra }: { title: string; description:
 
 // ── Edit session summary (shown when all flags are resolved) ─────────────
 
-function EditSessionSummary({ flags, onRescan, onSaveVersion }: {
+function EditSessionSummary({ flags, onRescan, onSaveVersion, citationsPending, onGoToCitations }: {
   flags: { id: string; patternType: string; status: string }[];
   onRescan: () => void;
   onSaveVersion: () => void;
+  citationsPending: number;
+  onGoToCitations: () => void;
 }) {
   const accepted = flags.filter((f) => f.status === "accepted");
   const skipped = flags.filter((f) => f.status === "skipped");
   const rejected = flags.filter((f) => f.status === "rejected");
   const total = accepted.length + skipped.length + rejected.length;
+  const hasPendingCitations = citationsPending > 0;
 
   // Group accepted by category
   const categoryLabels: Record<string, string> = {
@@ -2727,11 +2917,29 @@ function EditSessionSummary({ flags, onRescan, onSaveVersion }: {
     <div className="flex h-full items-center justify-center p-6">
       <div className="max-w-sm text-center space-y-5">
         <div>
-          <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-green-100 text-green-600 mb-3">
-            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
+          <div className={`inline-flex h-12 w-12 items-center justify-center rounded-full mb-3 ${
+            hasPendingCitations ? "bg-amber-100 text-amber-600" : "bg-green-100 text-green-600"
+          }`}>
+            {hasPendingCitations ? (
+              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
+            ) : (
+              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
+            )}
           </div>
-          <h3 className="text-lg font-bold text-gray-800">Editing Complete</h3>
-          <p className="mt-1 text-sm text-gray-500">You reviewed all {total} flag{total !== 1 ? "s" : ""} in this document.</p>
+          <h3 className="text-lg font-bold text-gray-800">
+            {hasPendingCitations ? "Flags Complete — Citations Still Need Review" : "Editing Complete"}
+          </h3>
+          <p className="mt-1 text-sm text-gray-500">
+            You reviewed all {total} flag{total !== 1 ? "s" : ""} in this document.
+            {hasPendingCitations && (
+              <>
+                {" "}<span className="text-amber-700 font-medium">
+                  {citationsPending} citation{citationsPending !== 1 ? "s" : ""} still need{citationsPending === 1 ? "s" : ""} review
+                </span>
+                {" "}— that&apos;s 15% of your Auditor Score.
+              </>
+            )}
+          </p>
         </div>
 
         {/* Stats */}
@@ -2767,9 +2975,21 @@ function EditSessionSummary({ flags, onRescan, onSaveVersion }: {
 
         {/* Actions */}
         <div className="space-y-2 pt-2">
+          {hasPendingCitations && (
+            <button
+              onClick={onGoToCitations}
+              className="w-full rounded-lg bg-amber-600 py-2 text-sm font-medium text-white hover:bg-amber-700"
+            >
+              Go to Citations ({citationsPending})
+            </button>
+          )}
           <button
             onClick={onSaveVersion}
-            className="w-full rounded-lg bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            className={`w-full rounded-lg py-2 text-sm font-medium ${
+              hasPendingCitations
+                ? "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+                : "bg-blue-600 text-white hover:bg-blue-700"
+            }`}
           >
             Save Version
           </button>

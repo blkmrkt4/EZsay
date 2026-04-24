@@ -77,7 +77,7 @@ The analysis engine never uses a hardcoded list of banned words or patterns. It 
 | Hosting | Vercel | Zero-config Next.js deploys |
 | Database | Supabase (PostgreSQL) | Hosted Postgres |
 | ORM | Drizzle ORM | Type-safe SQL on Supabase Postgres |
-| Auth | Supabase Auth | Email/password + Google SSO + Apple SSO. No NextAuth. |
+| Auth | Supabase Auth | Email/password + Google SSO. No NextAuth. Apple SSO deferred to post-V1. |
 | File storage | Supabase Storage | Uploaded PDFs and .docx files |
 | Payments | Stripe | Monthly + annual subscriptions |
 | Model routing | OpenRouter | Single API key, multi-model, hidden from users |
@@ -598,7 +598,7 @@ Follow this sequence. Do not skip ahead.
 2. Drizzle schema (`db/schema.ts`) — all models including admin and library tables, run initial migration
 3. Seed script (`scripts/seed-library.ts`) — populates `library_entries` from ContextLLM.md, seeds `prompt_versions` from `lib/prompts/*.md`, sets all active configs
 4. Next.js scaffold — App Router, TypeScript strict, middleware skeleton
-5. Supabase Auth — email/password, Google SSO, Apple SSO, session middleware
+5. Supabase Auth — email/password, Google SSO, session middleware (Apple SSO post-V1)
 6. Admin panel — prompts, models, library, API keys, activity log (build early — you need this for tuning from day one)
 7. Stripe — products, prices, webhook handler, subscription status on user record
 8. Document upload + parser — Supabase Storage, parsing, citation locking, section splitting

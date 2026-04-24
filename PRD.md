@@ -4,7 +4,7 @@
 **Version:** 1.0
 **Status:** In development — core workspace, scan pipeline, and editing flow functional
 **Owner:** Robin Hutchinson
-**Last updated:** April 23, 2026
+**Last updated:** April 24, 2026
 
 *This document is maintained by Claude Code. Any architectural decision, library version, constraint discovered during build, or resolved open question must be updated here immediately — not at the end of the session.*
 
@@ -53,7 +53,7 @@ Both served equally from day one. No feature gating by user type at launch.
 | Database | Supabase (PostgreSQL) | — | Hosted Postgres |
 | ORM | Drizzle ORM | 0.45.2 | Type-safe SQL on Supabase Postgres |
 | ORM CLI | drizzle-kit | 0.31.10 | Migrations and studio |
-| Auth | Supabase Auth (@supabase/ssr) | 0.10.2 | Email/password + Google + Apple SSO |
+| Auth | Supabase Auth (@supabase/ssr) | 0.10.2 | Email/password + Google SSO (Apple deferred post-V1) |
 | File storage | Supabase Storage | — | PDFs and .docx uploads |
 | Payments | Stripe | 22.0.2 | Stubbed — modal UI + webhook skeleton |
 | DB driver | postgres (postgres.js) | 3.4.9 | Supabase Postgres direct connection |
@@ -206,11 +206,24 @@ All finding types flow into one sequential queue:
 
 Shared navigation bar across all types. Advisory items don't count toward flag total. Artifact batch persists with processed history until all artifacts resolved.
 
+### 9.1 Citations bridge
+
+Citations live in a separate tab (section 10) but a user who finishes the edit queue without seeing them would sit at 15% of their Auditor Score untouched. Two visible bridges close that gap:
+
+1. **Footer count includes citations.** From scan completion onward the bottom-of-screen count reads `N sections · N flags + M citations · P items to review` whenever `M > 0`. The `+ M citations` segment hides when zero.
+2. **End-of-queue handoff.** When the user resolves the last flag AND citations still need review, the `EditSessionSummary` component retitles to **"Flags Complete — Citations Still Need Review"** and surfaces a primary **Go to Citations** button (switches `nav` to `'citations'`) ahead of Save Version and Re-scan. When no citations are pending, the original "Editing Complete" title and button order render unchanged.
+
+"Citations needing review" mirrors the server score rule at `app/api/citations/route.ts`: a citation counts when it has structural flags with `status === 'open'` OR a verification verdict of `unverified` / `wrong_details`. The parent `app/w/page.tsx` fetches `/api/citations?documentId=...` when the doc is active and `hasScanned`, and refetches on `nav` changes into edit/analysis views so the count stays accurate after the user returns from the Citations tab.
+
 ---
 
 ## 10. Citations page
 
 Collapsible style conversion section with 8 expandable style cards (full name, usage, in-text + reference examples). Citation list with clickable cards that expand to show full paragraph context. Doc panel highlights and scrolls to selected citation. Verification results show per-citation verdicts with source URLs.
+
+**Citations are reviewed only on this page — never in the unified edit queue (section 9).** The architecture is deliberately split: citations have their own `citations` table, their own `/api/citations/*` endpoints, and a distinct action vocabulary (Accept / Edit / Verify / Dismiss — no numbered options). This follows the hard constraint that citation content is locked at the parser layer and never flagged, modified, or scored by the editing engine. Citations still contribute to the Auditor Score via the Citations spectrum (15% weight), but the *workflow* for fixing them is a separate pass from AI / artifact / plagiarism flags.
+
+**Bridge from the edit queue → Citations tab** is documented in section 9.1: the footer count exposes pending citations throughout editing, and the end-of-queue summary surfaces a "Go to Citations" primary action when citations remain unresolved. This closes the discoverability gap that the architectural separation would otherwise create.
 
 ---
 
@@ -246,7 +259,7 @@ Validates text after replacements. Catches LLM response markers (CHANGED:, OPTIO
 | Feature | Status |
 |---|---|
 | Workspace (single-page app, 4 collapsible panels) | Done |
-| Auth (email + Google + Apple, dev bypass) | Done |
+| Auth (email + password reset + Google SSO, dev bypass) | Done |
 | Document upload, versioning, reset, download | Done |
 | Scan engine (3 depths, 6 categories) | Done |
 | Scan progress checklist + re-scan gating | Done |
@@ -275,6 +288,7 @@ Validates text after replacements. Catches LLM response markers (CHANGED:, OPTIO
 
 | Feature | Priority | Notes |
 |---|---|---|
+| Citations bridge from edit queue | Done | Footer count shows pending citations; end-of-queue summary retitles and surfaces "Go to Citations" primary action when citations remain. Spec in section 9.1 — implemented 2026-04-24 (pending user verification in dev server). |
 | Full Stripe integration | High | Checkout, subscription sync, access gating |
 | PDF export | Rejected | Considered but server-side PDF generation produces poor output (broken Unicode, no font embedding, manual layout). Students can export .docx and use Word/Google Docs "Save as PDF" for better results. |
 | Mobile responsive | Medium | Desktop-first |
@@ -330,3 +344,38 @@ DEV_BYPASS_AUTH=true
 | 13 | Style Training | User-facing, not admin-only. 44 items, 7 categories | 2026-04-18 |
 | 14 | Artifact batch persistence | Stays in queue until all artifacts resolved | 2026-04-21 |
 | 15 | Writing Quality in edit queue | Advisory flags, skippable, don't count toward total | 2026-04-21 |
+
+---
+
+## 19. Brand assets
+
+Six SVG files live in `public/brand/` — three variants × black/white pairs. All vector, transparent background.
+
+| File | Dimensions (viewBox) | Aspect | Use |
+|---|---|---|---|
+| `ezsay-lockup-black.svg` / `-white.svg` | 3135 × 2731 | ~1.15:1 | Wordmark + mark together. Primary brand treatment for landing page, marketing site, auth screens, email headers, social. |
+| `ezsay-wordmark-black.svg` / `-white.svg` | 3050 × 1000 | ~3:1 | Wordmark only. In-app header, nav rail top, admin panel chrome — any horizontal slot where "EzSay" needs to read as text. |
+| `ezsay-mark-black.svg` / `-white.svg` | 1800 × 1800 | 1:1 | Icon only (no "EzSay" text). Used for favicon and as the brand anchor in the landing page's sticky scroll pill. Square aspect also suits avatars, loading states, and tight UI corners. |
+
+**Colour pairing:** black variant on light backgrounds, white variant on dark backgrounds. No other recolouring — logo ships in two flavours only.
+
+**Reference pattern:** served from `/brand/*.svg` at runtime. Use `next/image` for rasterised contexts (OG images, avatars) and plain `<img>` or inline SVG for in-app chrome where no optimisation is needed.
+
+**Favicon:** the mark serves as the favicon via `app/icon.svg` (Next.js file convention — auto-detected, no metadata wiring needed). The legacy `app/favicon.ico` stays in place as a fallback for browsers that don't accept SVG favicons.
+
+### 19.1 Live placements
+
+| Location | File | Rendered size | File |
+|---|---|---|---|
+| Landing page nav (top-left) | `ezsay-lockup-black.svg` | `h-16` (64px tall) | `components/landing/LandingNav.tsx` |
+| Landing page sticky scroll pill | `ezsay-mark-white.svg` | `h-5 w-5` (20px) | `components/landing/LandingNav.tsx` |
+| Workspace header (top-left) | `ezsay-wordmark-black.svg` | `h-5` (20px tall) | `app/w/page.tsx` |
+| Browser tab favicon | `ezsay-mark-black.svg` (copied to `app/icon.svg`) | browser-controlled | `app/icon.svg` |
+
+### 19.2 Candidate placements (not yet wired)
+
+- **Auth screens** (`app/(auth)/login/page.tsx`, signup, forgot-password): currently show "EzSay" as plain text above the form. Use lockup at `h-12` — pre-auth territory is marketing-adjacent, so the full treatment fits.
+- **Admin panel chrome** (`app/admin/*`): use wordmark for consistency with the workspace.
+- **Landing footer**: "EZsay. Your voice, louder." line could lead with a small `h-4` mark.
+- **Email templates** (future): lockup in header.
+- **Open Graph / social preview image**: lockup on a branded background, 1200×630. Ship as `app/opengraph-image.png` (Next.js file convention).

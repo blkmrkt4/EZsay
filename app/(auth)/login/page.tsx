@@ -19,6 +19,12 @@ function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  // Email-verification gate: when Supabase reports the user hasn't confirmed
+  // their address yet, swap the form for a "verify your email" state with
+  // a one-click resend.
+  const [unconfirmedEmail, setUnconfirmedEmail] = useState<string | null>(null);
+  const [resending, setResending] = useState(false);
+  const [resent, setResent] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirect = searchParams.get("redirect") || "/w";
@@ -36,6 +42,15 @@ function LoginForm() {
     });
 
     if (error) {
+      // Supabase returns "Email not confirmed" when the dashboard's
+      // "Confirm email" provider setting is on and the user hasn't clicked
+      // the activation link yet. We surface that as a dedicated state with
+      // a resend button rather than a raw error message.
+      if (/email not confirmed/i.test(error.message)) {
+        setUnconfirmedEmail(email);
+        setLoading(false);
+        return;
+      }
       setError(error.message);
       setLoading(false);
       return;
@@ -44,7 +59,26 @@ function LoginForm() {
     router.push(redirect);
   }
 
-  async function handleOAuth(provider: "google" | "apple") {
+  async function handleResendConfirmation() {
+    if (!unconfirmedEmail) return;
+    setResending(true);
+    setError(null);
+    const { error } = await supabase.auth.resend({
+      type: "signup",
+      email: unconfirmedEmail,
+      options: {
+        emailRedirectTo: `${window.location.origin}/auth/callback?redirect=${redirect}`,
+      },
+    });
+    if (error) {
+      setError(error.message);
+    } else {
+      setResent(true);
+    }
+    setResending(false);
+  }
+
+  async function handleOAuth(provider: "google") {
     const { error } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
@@ -52,6 +86,52 @@ function LoginForm() {
       },
     });
     if (error) setError(error.message);
+  }
+
+  // Email-not-confirmed state — replaces the login form until the user
+  // clicks the link in their inbox or returns to sign in with a different
+  // account.
+  if (unconfirmedEmail) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-white px-4">
+        <div className="w-full max-w-sm text-center">
+          <div className="mb-6 flex justify-center">
+            <span className="text-xl font-bold tracking-tight text-gray-900">EzSay</span>
+          </div>
+          <h1 className="text-xl font-bold text-gray-900">Verify your email</h1>
+          <p className="mt-3 text-sm text-gray-500">
+            We sent a confirmation link to{" "}
+            <span className="font-medium text-gray-700">{unconfirmedEmail}</span>.
+            Click it to activate your account before signing in.
+          </p>
+
+          {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+          {resent && (
+            <p className="mt-4 text-sm text-green-600">New confirmation email sent.</p>
+          )}
+
+          <div className="mt-6 space-y-2">
+            <button
+              onClick={handleResendConfirmation}
+              disabled={resending || resent}
+              className="block w-full rounded-lg bg-gray-900 py-3 text-sm font-semibold text-white hover:bg-gray-800 disabled:opacity-50"
+            >
+              {resending ? "Sending…" : resent ? "Email sent" : "Resend confirmation email"}
+            </button>
+            <button
+              onClick={() => {
+                setUnconfirmedEmail(null);
+                setResent(false);
+                setError(null);
+              }}
+              className="block w-full text-sm font-medium text-gray-600 hover:text-gray-900"
+            >
+              Use a different account
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
