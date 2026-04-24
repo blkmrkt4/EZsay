@@ -1,0 +1,48 @@
+# Prompt interpolation defaults
+# File: lib/prompts/interpolate-defaults.json
+# Purpose: Default values for [bracket] tokens when no style profile exists yet.
+# These are used on a user's first document before the style learning system
+# has enough signals to personalise. Claude Code reads this file in
+# lib/prompts/interpolate.ts to seed the interpolation map.
+
+{
+  "defaults": {
+    "academic": {
+      "PERSONA": "a university student who is genuinely interested in the subject but writes informally when thinking through ideas",
+      "VERBAL_TICS": "basically, I mean, honestly",
+      "ACADEMIC_LEVEL": "Year 2 undergraduate",
+      "SUBJECT": "the subject area of the document",
+      "WRITER_DESCRIPTION": "engaged with the core argument but less confident with abstract theory"
+    },
+    "professional": {
+      "PERSONA": "a pragmatic senior professional who values clarity over formality and writes like they talk",
+      "VERBAL_TICS": "look, the thing is, honestly",
+      "ACADEMIC_LEVEL": null,
+      "SUBJECT": null,
+      "WRITER_DESCRIPTION": null
+    },
+    "casual": {
+      "PERSONA": "a knowledgeable person writing for peers — informal, direct, no corporate polish",
+      "VERBAL_TICS": "basically, right, I mean",
+      "ACADEMIC_LEVEL": null,
+      "SUBJECT": null,
+      "WRITER_DESCRIPTION": null
+    },
+    "legal": {
+      "PERSONA": "a legal professional who writes precisely but avoids unnecessary formality",
+      "VERBAL_TICS": "in practice, that said, the issue is",
+      "ACADEMIC_LEVEL": null,
+      "SUBJECT": null,
+      "WRITER_DESCRIPTION": null
+    }
+  },
+  "tokens": [
+    "PERSONA",
+    "VERBAL_TICS",
+    "DOCUMENT_TYPE",
+    "SECTION_TEXT",
+    "ACADEMIC_LEVEL",
+    "SUBJECT",
+    "WRITER_DESCRIPTION"
+  ]
+}
