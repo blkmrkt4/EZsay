@@ -2,8 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { styleTraining } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { requireAdmin } from "@/lib/supabase/require-admin";
 
 export async function GET() {
+  const auth = await requireAdmin();
+  if ("error" in auth) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   const items = await db
     .select()
     .from(styleTraining)
@@ -13,6 +19,11 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const auth = await requireAdmin();
+  if ("error" in auth) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   const body = await request.json();
   const { action } = body;
 

@@ -415,6 +415,27 @@ export const adminSettings = pgTable("admin_settings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+// ── Admin Recovery Codes ──────────────────────────────────────────────────
+
+export const adminRecoveryCodes = pgTable("admin_recovery_codes", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  codeHash: text("code_hash").notNull(),
+  used: boolean("used").notNull().default(false),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// ── Usage Tracking ────────────────────────────────────────────────────────
+
+export const usageTracking = pgTable("usage_tracking", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull(),
+  yearMonth: text("year_month").notNull(), // "2026-04"
+  wordsScanned: integer("words_scanned").notNull().default(0),
+  scanCount: integer("scan_count").notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 // ── Admin: LLM Call Log ────────────────────────────────────────────────────
 
 export const llmCallLog = pgTable("llm_call_log", {

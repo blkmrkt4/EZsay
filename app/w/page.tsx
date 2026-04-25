@@ -199,6 +199,9 @@ export default function WorkspacePage() {
   const [plagiarismResults, setPlagiarismResults] = useState<PlagiarismResult[]>([]);
   const [plagiarismLoading, setPlagiarismLoading] = useState(false);
 
+  // Usage warnings
+  const [usageWarnings, setUsageWarnings] = useState<{ key: string; current: number; limit: number; percent: number }[]>([]);
+
   // Unified edit queue state
   const [artifactBatchChoices, setArtifactBatchChoices] = useState<Record<string, "remove" | "keep" | "ask">>({});
   const [processedArtifacts, setProcessedArtifacts] = useState<Record<string, { action: "remove" | "keep" | "ask"; count: number }>>({});
@@ -281,6 +284,35 @@ export default function WorkspacePage() {
       .catch(() => { /* silent — count just stays stale until next trigger */ });
     return () => { cancelled = true; };
   }, [activeDocId, nav, hasScanned]);
+
+  const fetchUsageWarnings = useCallback(async () => {
+    try {
+      const res = await fetch("/api/stripe/usage");
+      const json = await res.json();
+      if (json.success && json.data.warnings.length > 0) {
+        const warns: { key: string; current: number; limit: number; percent: number }[] = [];
+        const { limits, usage } = json.data;
+        const map: Record<string, number> = {
+          monthlyWordLimit: usage.wordsScanned,
+          monthlyScanLimit: usage.scanCount,
+          documentStorageLimit: usage.documentCount,
+        };
+        for (const key of json.data.warnings) {
+          const limit = limits[key];
+          const current = map[key] ?? 0;
+          warns.push({ key, current, limit, percent: Math.round((current / limit) * 100) });
+        }
+        setUsageWarnings(warns);
+      } else {
+        setUsageWarnings([]);
+      }
+    } catch {
+      // Silent — usage warnings are non-critical
+    }
+  }, []);
+
+  // Fetch usage warnings on mount
+  useEffect(() => { fetchUsageWarnings(); }, [fetchUsageWarnings]);
 
   const loadDocument = useCallback(async (docId: string) => {
     try {
@@ -382,6 +414,7 @@ export default function WorkspacePage() {
     setVersionSavedSinceScan(false);
     setProcessedArtifacts({});
     setArtifactBatchChoices({});
+    fetchUsageWarnings();
   }
 
   async function runPlagiarismCheck(docId: string) {
@@ -695,37 +728,57 @@ export default function WorkspacePage() {
 
   // ── Computed values ────────────────────────────────────────────────────
 
-  const unlockedSections = sections.filter((s) => !s.isLocked);
-  const fullDocText = unlockedSections.map((s) => s.currentText).join("\n\n");
+  // Section lookup map — O(1) lookups instead of O(n) .find() calls
+  const sectionMap = useMemo(() => {
+    const map = new Map<string, typeof sections[number]>();
+    for (const s of sections) map.set(s.id, s);
+    return map;
+  }, [sections]);
 
-  // AI detection flags (existing)
-  const openFlags = flags
-    .filter((f) => (f.status === "open" || f.status === "generation_failed") && f.patternType !== "ai_artifact" && f.patternType !== "writing_quality" && f.patternType !== "plagiarism_match")
-    .sort((a, b) => {
-      const sA = sections.find((s) => s.id === a.sectionId);
-      const sB = sections.find((s) => s.id === b.sectionId);
-      if (!sA || !sB) return 0;
-      return sA.index !== sB.index ? sA.index - sB.index : a.phraseStart - b.phraseStart;
-    });
+  const unlockedSections = useMemo(
+    () => sections.filter((s) => !s.isLocked),
+    [sections]
+  );
+
+  const fullDocText = useMemo(
+    () => unlockedSections.map((s) => s.currentText).join("\n\n"),
+    [unlockedSections]
+  );
+
+  // AI detection flags — memoized with O(1) section lookups
+  const openFlags = useMemo(() =>
+    flags
+      .filter((f) => (f.status === "open" || f.status === "generation_failed") && f.patternType !== "ai_artifact" && f.patternType !== "writing_quality" && f.patternType !== "plagiarism_match")
+      .sort((a, b) => {
+        const sA = sectionMap.get(a.sectionId);
+        const sB = sectionMap.get(b.sectionId);
+        if (!sA || !sB) return 0;
+        return sA.index !== sB.index ? sA.index - sB.index : a.phraseStart - b.phraseStart;
+      }),
+    [flags, sectionMap]
+  );
 
   // Artifact individual flags (from "Ask" batch processing)
   // Filter out stale flags whose flagged phrase no longer exists in the section text
-  const artifactFlags = flags
-    .filter((f) => {
-      if (f.patternType !== "ai_artifact") return false;
-      if (f.status !== "open" && f.status !== "generation_failed") return false;
-      // Verify the flagged phrase still exists in the section text
-      const sec = sections.find((s) => s.id === f.sectionId);
-      if (sec && !sec.currentText.includes(f.flaggedPhrase)) return false;
-      return true;
-    })
-    .sort((a, b) => a.phraseStart - b.phraseStart);
+  const artifactFlags = useMemo(() =>
+    flags
+      .filter((f) => {
+        if (f.patternType !== "ai_artifact") return false;
+        if (f.status !== "open" && f.status !== "generation_failed") return false;
+        const sec = sectionMap.get(f.sectionId);
+        if (sec && !sec.currentText.includes(f.flaggedPhrase)) return false;
+        return true;
+      })
+      .sort((a, b) => a.phraseStart - b.phraseStart),
+    [flags, sectionMap]
+  );
 
   // Compute artifact findings — only after a scan has been run
   const artifactFindings = useMemo(() => {
     if (!fullDocText || !hasScanned) return [];
     return detectArtifacts(fullDocText).findings;
-  }, [fullDocText]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullDocText, hasScanned]);
 
   // Writing quality advisories (sub-scores below 40)
   const writingQualityAdvisories = useMemo((): WritingQualityAdvisory[] => {
@@ -743,7 +796,10 @@ export default function WorkspacePage() {
   // Open plagiarism results
   // Only actual plagiarism enters the edit queue as actionable flags
   // Common knowledge and quotation are informational — shown in detail panel only
-  const openPlagiarismResults = plagiarismResults.filter((r) => r.verdict === "plagiarism" && r.status === "open");
+  const openPlagiarismResults = useMemo(
+    () => plagiarismResults.filter((r) => r.verdict === "plagiarism" && r.status === "open"),
+    [plagiarismResults]
+  );
 
   // Citations needing review — mirrors the server score rule at
   // app/api/citations/route.ts (hasStructIssue || hasVerifyIssue). Used to
@@ -822,7 +878,7 @@ export default function WorkspacePage() {
   const currentFlag = currentQueueItem?.type === "ai_detection" || currentQueueItem?.type === "artifact_individual"
     ? currentQueueItem.flag
     : null;
-  const currentSection = currentFlag ? sections.find((s) => s.id === currentFlag.sectionId) : null;
+  const currentSection = currentFlag ? sectionMap.get(currentFlag.sectionId) ?? null : null;
   const currentOptions = currentFlag ? flagOptions.filter((o) => o.flagId === currentFlag.id) : [];
 
   // Flag count excludes advisory items
@@ -978,6 +1034,29 @@ export default function WorkspacePage() {
           />
         </div>
       </header>
+
+      {/* Usage warning banner */}
+      {usageWarnings.length > 0 && (
+        <div className="flex items-center justify-between border-b border-amber-200 bg-amber-50 px-4 py-2">
+          <p className="text-xs text-amber-700">
+            {usageWarnings.map((w) => {
+              const labels: Record<string, string> = {
+                monthlyWordLimit: `monthly word limit (${w.current.toLocaleString()} / ${w.limit.toLocaleString()})`,
+                monthlyScanLimit: `monthly scan limit (${w.current} / ${w.limit})`,
+                documentStorageLimit: `document storage (${w.current} / ${w.limit})`,
+              };
+              return `You've used ${w.percent}% of your ${labels[w.key] ?? w.key}`;
+            }).join(". ")}
+            . Upgrade for more.
+          </p>
+          <button
+            onClick={() => setUsageWarnings([])}
+            className="ml-4 shrink-0 text-xs text-amber-500 hover:text-amber-700"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* ═══ Body: nav rail + panels ═════════════════════════════════════ */}
       <div className="flex flex-1 min-h-0">

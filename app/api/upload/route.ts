@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { documents, sections } from "@/db/schema";
 import { parseDocument, detectFileType } from "@/lib/parsers";
 import { parseAndSplit } from "@/lib/citations/parser";
+import { checkLimit } from "@/lib/stripe/plan-limits";
 
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
@@ -51,6 +52,25 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { success: false, error: "Document is too short (minimum 50 characters)" },
       { status: 400 }
+    );
+  }
+
+  // Check plan limits
+  const uploadWordCount = rawText.split(/\s+/).length;
+
+  const docWordCheck = await checkLimit(user.id, "perDocumentWordLimit", uploadWordCount);
+  if (!docWordCheck.allowed) {
+    return NextResponse.json(
+      { success: false, error: `Document exceeds your plan's per-document limit (${uploadWordCount.toLocaleString()} words, limit is ${docWordCheck.limit.toLocaleString()}).`, limitType: "perDocumentWordLimit" },
+      { status: 402 }
+    );
+  }
+
+  const storageCheck = await checkLimit(user.id, "documentStorageLimit", 1);
+  if (!storageCheck.allowed) {
+    return NextResponse.json(
+      { success: false, error: `Document storage limit reached (${storageCheck.current} / ${storageCheck.limit} documents). Delete a document or upgrade.`, limitType: "documentStorageLimit" },
+      { status: 402 }
     );
   }
 

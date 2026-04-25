@@ -10,6 +10,7 @@ import { analyzeSemanticPatterns } from "@/lib/analysis/semantic-analyzer";
 import { calculateWritingQuality } from "@/lib/analysis/quality-scorer";
 import { detectSpellingErrors } from "@/lib/analysis/spelling-detector";
 import { detectGrammarErrors } from "@/lib/analysis/grammar-detector";
+import { checkLimit, recordScanUsage } from "@/lib/stripe/plan-limits";
 
 /**
  * Maps a library entry to the most appropriate flag patternType.
@@ -81,6 +82,25 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { success: false, error: "Document not found" },
       { status: 404 }
+    );
+  }
+
+  // Check plan limits before scanning
+  const docWordCount = doc.rawText.split(/\s+/).length;
+
+  const wordCheck = await checkLimit(user.id, "monthlyWordLimit", docWordCount);
+  if (!wordCheck.allowed) {
+    return NextResponse.json(
+      { success: false, error: `Monthly word limit reached (${wordCheck.current.toLocaleString()} / ${wordCheck.limit.toLocaleString()} words). Upgrade for more.`, limitType: "monthlyWordLimit" },
+      { status: 402 }
+    );
+  }
+
+  const scanCheck = await checkLimit(user.id, "monthlyScanLimit", 1);
+  if (!scanCheck.allowed) {
+    return NextResponse.json(
+      { success: false, error: `Monthly scan limit reached (${scanCheck.current} / ${scanCheck.limit} scans). Upgrade for more.`, limitType: "monthlyScanLimit" },
+      { status: 402 }
     );
   }
 
@@ -280,6 +300,9 @@ export async function POST(request: NextRequest) {
       updatedAt: new Date(),
     })
     .where(eq(documents.id, documentId));
+
+  // Record usage
+  await recordScanUsage(user.id, docWordCount);
 
   return NextResponse.json({
     success: true,

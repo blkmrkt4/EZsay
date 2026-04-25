@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import DocPanel from "./DocPanel";
 import EditPanel from "./EditPanel";
 import ChoicesPanel from "./ChoicesPanel";
@@ -59,21 +59,31 @@ export default function EditingShell({
   const [manualText, setManualText] = useState("");
   const [resolveError, setResolveError] = useState<string | null>(null);
 
+  // Section lookup map — O(1) instead of O(n) per .find() call
+  const sectionMap = useMemo(() => {
+    const map = new Map<string, typeof sections[number]>();
+    for (const s of sections) map.set(s.id, s);
+    return map;
+  }, [sections]);
+
   // Compute the ordered list of open flags across all unlocked sections
-  const openFlags = flags
-    .filter((f) => f.status === "open")
-    .sort((a, b) => {
-      const secA = sections.find((s) => s.id === a.sectionId);
-      const secB = sections.find((s) => s.id === b.sectionId);
-      if (!secA || !secB) return 0;
-      if (secA.index !== secB.index) return secA.index - secB.index;
-      return a.phraseStart - b.phraseStart;
-    });
+  const openFlags = useMemo(() =>
+    flags
+      .filter((f) => f.status === "open")
+      .sort((a, b) => {
+        const secA = sectionMap.get(a.sectionId);
+        const secB = sectionMap.get(b.sectionId);
+        if (!secA || !secB) return 0;
+        if (secA.index !== secB.index) return secA.index - secB.index;
+        return a.phraseStart - b.phraseStart;
+      }),
+    [flags, sectionMap]
+  );
 
   const [currentFlagIdx, setCurrentFlagIdx] = useState(0);
   const currentFlag = openFlags[currentFlagIdx] ?? null;
   const currentSection = currentFlag
-    ? sections.find((s) => s.id === currentFlag.sectionId)
+    ? sectionMap.get(currentFlag.sectionId) ?? null
     : null;
 
   // Options for the current flag

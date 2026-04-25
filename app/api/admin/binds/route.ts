@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { activityBinds, modelLibrary, promptLibrary, contextLibrary } from "@/db/schema";
 import { eq, desc } from "drizzle-orm";
+import { requireAdmin } from "@/lib/supabase/require-admin";
 
 // System slugs — auto-populated, can't be deleted
 const SYSTEM_SLUGS = [
@@ -17,6 +18,11 @@ const SYSTEM_SLUGS = [
 ];
 
 export async function GET() {
+  const auth = await requireAdmin();
+  if ("error" in auth) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   try {
     // Ensure system slugs exist
     for (const sys of SYSTEM_SLUGS) {
@@ -52,6 +58,11 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const auth = await requireAdmin();
+  if ("error" in auth) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
+  }
+
   const body = await request.json();
   const { action } = body;
 
