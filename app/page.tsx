@@ -14,10 +14,13 @@ export default function Home() {
       <LandingNav />
 
       {/* Hero — light zone */}
-      <section className="mx-auto max-w-5xl px-6 pb-20 pt-[14px] text-center sm:pt-[46px] sm:pb-28">
+      <section className="mx-auto max-w-5xl px-6 pb-20 pt-0 text-center sm:pb-28">
         {/* Announcement pill */}
         <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-4 py-2 text-sm text-gray-500">
-          <span className="rounded-full bg-yellow-300 px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-gray-900">
+          <span
+            className="rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-gray-900"
+            style={{ backgroundColor: "#FDE047" }}
+          >
             New
           </span>
           Try a free scan — see your document scores instantly
@@ -27,17 +30,25 @@ export default function Home() {
           Sound like you wrote it.{" "}
           <br className="hidden sm:block" />
           Because{" "}
-          <span className="relative top-1.5 inline-block rounded-full bg-yellow-300 px-8 py-1">you did</span>.
+          <span className="relative top-1.5 inline-block px-10 py-1" style={{
+            backgroundColor: "#FDE047",
+            borderRadius: "1.2em / 50%",
+            transform: "rotate(-1.5deg)",
+            display: "inline-block",
+          }}>
+            <span style={{ display: "inline-block", transform: "rotate(1.5deg)" }}>you did</span>
+          </span>.
         </h1>
-        <p className="mx-auto mt-8 max-w-2xl text-xl leading-relaxed text-gray-500 sm:text-2xl">
+        <p className="mx-auto mt-8 max-w-[750px] text-xl text-gray-500 sm:text-2xl" style={{ lineHeight: 1.6 }}>
           A co-editing workspace that catches the tells, tightens the prose,
           checks your sources, and hands you back your own voice — section by
           section, your call every time.
         </p>
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
           <Link
-            href="/upload?free=1"
+            href="/scan"
             className="inline-flex items-center gap-1.5 rounded-full bg-gray-900 px-7 py-3 text-sm font-medium text-white hover:bg-gray-800"
+            style={{ boxShadow: "0 8px 30px -6px rgba(0, 0, 0, 0.25), 0 4px 12px -4px rgba(0, 0, 0, 0.15)" }}
           >
             Scan My Draft — Free
             <svg
@@ -334,7 +345,7 @@ export default function Home() {
           </h2>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
             <Link
-              href="/upload?free=1"
+              href="/scan"
               className="inline-flex items-center gap-1.5 rounded-full bg-yellow-300 px-7 py-3 text-sm font-medium text-gray-900 hover:bg-yellow-400"
             >
               Scan My Draft

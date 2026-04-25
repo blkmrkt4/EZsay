@@ -34,16 +34,16 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
     <>
       <nav
         ref={navRef}
-        className={`flex items-start gap-6 px-6 py-4 sm:px-10 ${
+        className={`flex items-start gap-6 px-6 py-4 sm:px-10 sm:pl-14 ${
           middleSlot ? "justify-between" : "justify-between"
         }`}
       >
         <Link
           href="/"
           aria-label="EzSay home"
-          className="inline-flex shrink-0 items-center"
+          className="inline-flex shrink-0 items-center pl-4"
         >
-          <img src="/brand/ezsay-lockup-black.svg" alt="EzSay" className="h-56 w-auto" />
+          <img src="/brand/ezsay-lockup-black.svg" alt="EzSay" className="h-[134px] w-auto" />
         </Link>
 
         {middleSlot && (
@@ -63,7 +63,7 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
           <Link href="/login" className="text-sm text-gray-500 hover:text-gray-900">
             Log In
           </Link>
-          <button className="flex items-center gap-1.5 rounded-full bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800">
+          <button className="flex items-center gap-1.5 rounded-full border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:border-gray-400 hover:text-gray-900">
             Watch Demo
             <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
