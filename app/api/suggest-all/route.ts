@@ -5,6 +5,7 @@ import { flags, sections, documents, flagOptions, llmCallLog } from "@/db/schema
 import { eq, and, or } from "drizzle-orm";
 import { executeActivity } from "@/lib/routing/openrouter";
 import { checkForCorruption } from "@/lib/analysis/corruption-checker";
+import { requireSubscription } from "@/lib/stripe/require-subscription";
 
 /**
  * Generates suggestions for ALL open flags in a document.
@@ -16,6 +17,9 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
   }
+
+  const gateResponse = await requireSubscription(user.id);
+  if (gateResponse) return gateResponse;
 
   const { documentId } = await request.json();
 

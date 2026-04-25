@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { flags, sections, documents, flagOptions, llmCallLog } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { executeActivity } from "@/lib/routing/openrouter";
+import { requireSubscription } from "@/lib/stripe/require-subscription";
 
 /**
  * Generates replacement options for a flag by calling OpenRouter
@@ -21,6 +22,9 @@ export async function POST(request: NextRequest) {
       { status: 401 }
     );
   }
+
+  const gateResponse = await requireSubscription(user.id);
+  if (gateResponse) return gateResponse;
 
   const { flagId } = await request.json();
 

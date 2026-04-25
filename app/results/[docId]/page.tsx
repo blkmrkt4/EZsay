@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import PaywallModal from "@/components/ui/PaywallModal";
+import { useSubscription, isActive } from "@/lib/hooks/useSubscription";
 
 interface Section {
   id: string;
@@ -47,6 +48,7 @@ const SIGNAL_BADGE: Record<string, string> = {
 };
 
 export default function ResultsPage() {
+  const subscription = useSubscription();
   const params = useParams();
   const docId = params.docId as string;
   const router = useRouter();
@@ -109,9 +111,12 @@ export default function ResultsPage() {
   }, [doc?.status, scanning, triggerScan]);
 
   function handleEditClick() {
-    // TODO: Check subscription status — show paywall if not subscribed
-    // For now, go straight to editor
-    router.push(`/edit/${docId}`);
+    if (subscription.loading) return;
+    if (isActive(subscription.status)) {
+      router.push(`/edit/${docId}`);
+    } else {
+      setShowPaywall(true);
+    }
   }
 
   const scoreColor =

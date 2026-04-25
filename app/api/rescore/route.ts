@@ -8,6 +8,7 @@ import { findExactMatches } from "@/lib/analysis/exact-matcher";
 import { findRegexMatches } from "@/lib/analysis/regex-matcher";
 import { analyzeSemanticPatterns } from "@/lib/analysis/semantic-analyzer";
 import { calculateWritingQuality } from "@/lib/analysis/quality-scorer";
+import { requireSubscription } from "@/lib/stripe/require-subscription";
 
 function signalLevel(flagCount: number): "high" | "medium" | "low" | "none" {
   if (flagCount >= 5) return "high";
@@ -29,6 +30,9 @@ export async function POST(request: NextRequest) {
       { status: 401 }
     );
   }
+
+  const gateResponse = await requireSubscription(user.id);
+  if (gateResponse) return gateResponse;
 
   const { documentId } = await request.json();
 

@@ -5,6 +5,7 @@ import { flags, flagOptions, sections, libraryEntries, documents } from "@/db/sc
 import { eq } from "drizzle-orm";
 import { logStyleSignal } from "@/lib/style/logger";
 import { validateReplacement } from "@/lib/analysis/corruption-checker";
+import { requireSubscription } from "@/lib/stripe/require-subscription";
 
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
@@ -15,6 +16,9 @@ export async function POST(request: NextRequest) {
       { status: 401 }
     );
   }
+
+  const gateResponse = await requireSubscription(user.id);
+  if (gateResponse) return gateResponse;
 
   const { flagId, action, optionId, manualText } = await request.json();
 

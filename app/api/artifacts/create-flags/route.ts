@@ -5,6 +5,7 @@ import { documents, sections, flags, flagOptions } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { detectArtifacts } from "@/lib/analysis/artifact-detector";
 import { getArtifactReplacement } from "@/lib/analysis/artifact-removals";
+import { requireSubscription } from "@/lib/stripe/require-subscription";
 
 /**
  * Create individual flags for artifact instances the user chose "Ask" for.
@@ -15,6 +16,9 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
   }
+
+  const gateResponse = await requireSubscription(user.id);
+  if (gateResponse) return gateResponse;
 
   const { documentId, items } = await request.json() as { documentId: string; items: string[] };
 

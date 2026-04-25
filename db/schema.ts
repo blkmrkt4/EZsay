@@ -134,6 +134,7 @@ export const profiles = pgTable("profiles", {
   stripeCustomerId: text("stripe_customer_id"),
   subscriptionStatus: text("subscription_status").default("none"),
   subscriptionPlanId: text("subscription_plan_id"),
+  subscriptionPeriodEnd: timestamp("subscription_period_end", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });

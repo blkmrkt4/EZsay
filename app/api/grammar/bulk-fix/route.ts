@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { documents, sections } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import type { GrammarFinding } from "@/lib/analysis/grammar-spelling-types";
+import { requireSubscription } from "@/lib/stripe/require-subscription";
 
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
@@ -14,6 +15,9 @@ export async function POST(request: NextRequest) {
       { status: 401 }
     );
   }
+
+  const gateResponse = await requireSubscription(user.id);
+  if (gateResponse) return gateResponse;
 
   const { documentId, fixIds } = await request.json() as {
     documentId: string;
