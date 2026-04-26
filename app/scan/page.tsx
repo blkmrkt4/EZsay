@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import LandingNav from "@/components/landing/LandingNav";
 import ScoreSpectrum from "@/components/ui/ScoreSpectrum";
 import AuditorScoreRing from "@/components/editor/AuditorScoreRing";
+import { createClient } from "@/lib/supabase/client";
 
 const DOC_TYPES = [
   { value: "academic", label: "Academic" },
@@ -23,6 +25,12 @@ interface ScanResult {
   wordCount: number;
 }
 
+interface SampleFlag {
+  flaggedPhrase: string;
+  explanation: string;
+  patternType: string;
+}
+
 type Stage = "upload" | "scanning" | "results";
 
 interface ProgressStep {
@@ -30,7 +38,23 @@ interface ProgressStep {
   status: "waiting" | "running" | "done";
 }
 
+// Stash the active free-scan documentId in localStorage so that when the
+// visitor returns from the email-verification link (possibly in a new tab)
+// we can fetch the same scan and reveal sample flags.
+const STORAGE_KEY = "ezsay_free_scan_doc_id";
+
 export default function FreeScanPage() {
+  return (
+    <Suspense>
+      <FreeScanInner />
+    </Suspense>
+  );
+}
+
+function FreeScanInner() {
+  const searchParams = useSearchParams();
+  const supabase = createClient();
+
   const [stage, setStage] = useState<Stage>("upload");
 
   // Upload state
@@ -48,6 +72,152 @@ export default function FreeScanPage() {
   // Results state
   const [result, setResult] = useState<ScanResult | null>(null);
   const [auditorScore, setAuditorScore] = useState<number | null>(null);
+  const [documentId, setDocumentId] = useState<string | null>(null);
+
+  // Auth-aware state — drives whether we show the email gate or the
+  // post-claim reveal (sample flagged sentences).
+  const [isAnonymous, setIsAnonymous] = useState<boolean>(true);
+  const [restoringSession, setRestoringSession] = useState(true);
+
+  // Email gate state
+  const [email, setEmail] = useState("");
+  const [emailSubmitting, setEmailSubmitting] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+
+  // Post-claim sample flags
+  const [sampleFlags, setSampleFlags] = useState<SampleFlag[]>([]);
+
+  // ── Mount: detect session, restore prior scan if user is returning from
+  //          the verification email, listen for auth state changes.
+  useEffect(() => {
+    let mounted = true;
+    const justClaimed = searchParams.get("claimed") === "1";
+
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!mounted) return;
+
+      if (user) {
+        setIsAnonymous(!!user.is_anonymous);
+      }
+
+      // Restore prior scan when a documentId is stashed locally — covers
+      // both the post-claim flow (?claimed=1 after email verification) AND
+      // a casual refresh by an anonymous visitor who already scanned.
+      const savedId = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
+      if (savedId && user) {
+        setDocumentId(savedId);
+        await restoreResultsFromDoc(savedId);
+        setStage("results");
+        if (justClaimed && !user.is_anonymous) {
+          await fetchSampleFlags(savedId);
+        }
+      }
+
+      setRestoringSession(false);
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+      const u = session?.user;
+      if (u) setIsAnonymous(!!u.is_anonymous);
+    });
+
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Whenever the user transitions from anonymous → permanent (and we have
+  // a doc), fetch the sample flags to populate the post-claim reveal.
+  useEffect(() => {
+    if (!isAnonymous && documentId && stage === "results" && sampleFlags.length === 0) {
+      fetchSampleFlags(documentId);
+    }
+  }, [isAnonymous, documentId, stage, sampleFlags.length]);
+
+  async function fetchSampleFlags(docId: string) {
+    try {
+      const res = await fetch(`/api/documents/${docId}`);
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data?.flags)) {
+        const open = json.data.flags
+          .filter((f: { status: string }) => f.status === "open")
+          .slice(0, 2)
+          .map((f: { flaggedPhrase: string; explanation: string; patternType: string }) => ({
+            flaggedPhrase: f.flaggedPhrase,
+            explanation: f.explanation,
+            patternType: f.patternType,
+          }));
+        setSampleFlags(open);
+      }
+    } catch {
+      // Soft-fail: post-claim view still works without sample flags
+    }
+  }
+
+  /** Rebuild the results view when the user returns from the email link. */
+  async function restoreResultsFromDoc(docId: string) {
+    try {
+      const res = await fetch(`/api/documents/${docId}`);
+      const json = await res.json();
+      if (!json.success) return;
+
+      const doc = json.data.document;
+      const flags = json.data.flags ?? [];
+      const sections = json.data.sections ?? [];
+      const words = (doc.rawText ?? "").split(/\s+/).filter(Boolean).length;
+
+      const restored: ScanResult = {
+        aiRiskScore: doc.aiRiskScore ?? 0,
+        writingQualityScore: doc.writingQualityScore ?? 0,
+        aiArtifactScore: doc.aiArtifactScore ?? null,
+        toneConsistencyScore: doc.toneConsistencyScore ?? null,
+        totalFlags: flags.length,
+        sectionCount: sections.length,
+        wordCount: words,
+      };
+      setResult(restored);
+      setAuditorScore(computeAuditorScore(restored));
+    } catch {
+      // Soft-fail
+    }
+  }
+
+  function computeAuditorScore(r: ScanResult): number | null {
+    const scores: { value: number | null; weight: number }[] = [
+      { value: r.aiRiskScore != null ? 100 - r.aiRiskScore : null, weight: 25 },
+      { value: r.aiArtifactScore, weight: 12 },
+      { value: r.writingQualityScore, weight: 10 },
+      { value: r.toneConsistencyScore, weight: 8 },
+    ];
+    let totalWeight = 0;
+    let totalScore = 0;
+    for (const s of scores) {
+      if (s.value != null) {
+        totalWeight += s.weight;
+        totalScore += s.value * s.weight;
+      }
+    }
+    return totalWeight > 0 ? Math.round(totalScore / totalWeight) : null;
+  }
+
+  /** Make sure we have a Supabase session before calling the upload/scan APIs. */
+  async function ensureSession() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) return user;
+    const { data, error } = await supabase.auth.signInAnonymously();
+    if (error) {
+      throw new Error(
+        `Couldn't start a free-scan session. ${error.message.includes("anonymous") ? "Anonymous sign-ins may be disabled in Supabase — enable Authentication → Providers → Anonymous Sign-Ins." : error.message}`
+      );
+    }
+    if (data.user) setIsAnonymous(!!data.user.is_anonymous);
+    return data.user;
+  }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -68,9 +238,17 @@ export default function FreeScanPage() {
     }
 
     setError(null);
+
+    // Ensure we have a session (creates an anonymous one if needed).
+    try {
+      await ensureSession();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not initialize session.");
+      return;
+    }
+
     setStage("scanning");
 
-    // Initialize progress steps
     const initialSteps: ProgressStep[] = [
       { label: "Uploading document", status: "running" },
       { label: "AI detection scan", status: "waiting" },
@@ -81,14 +259,13 @@ export default function FreeScanPage() {
     setSteps(initialSteps);
     setScanPercent(5);
 
-    // Step 1: Upload
     const formData = new FormData();
     if (file) formData.append("file", file);
     else formData.append("text", pastedText);
     formData.append("title", file?.name?.replace(/\.[^.]+$/, "") || "Free Scan Document");
     formData.append("documentType", docType);
 
-    let documentId: string;
+    let uploadedDocId: string;
     let wordCount: number;
     try {
       const uploadRes = await fetch("/api/upload", { method: "POST", body: formData });
@@ -98,22 +275,22 @@ export default function FreeScanPage() {
         setStage("upload");
         return;
       }
-      documentId = uploadJson.data.documentId;
+      uploadedDocId = uploadJson.data.documentId;
       wordCount = uploadJson.data.wordCount;
+      // Stash so we can recover post-claim
+      try { localStorage.setItem(STORAGE_KEY, uploadedDocId); } catch { /* ignore */ }
+      setDocumentId(uploadedDocId);
     } catch {
       setError("Could not connect to the server.");
       setStage("upload");
       return;
     }
 
-    // Step 1 done
     updateStep(0, "done");
     updateStep(1, "running");
     setScanPercent(20);
 
-    // Step 2-5: Scan (all happen server-side in one call)
     try {
-      // Simulate progress while waiting for scan
       const progressInterval = setInterval(() => {
         setScanPercent((p) => Math.min(p + 3, 85));
       }, 500);
@@ -122,7 +299,7 @@ export default function FreeScanPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          documentId,
+          documentId: uploadedDocId,
           categories: {
             aiDetection: true,
             writingQuality: true,
@@ -146,13 +323,11 @@ export default function FreeScanPage() {
         return;
       }
 
-      // Mark all steps done
       updateStep(1, "done");
       updateStep(2, "done");
       setScanPercent(70);
 
-      // Load document scores
-      const docRes = await fetch(`/api/documents/${documentId}`);
+      const docRes = await fetch(`/api/documents/${uploadedDocId}`);
       const docJson = await docRes.json();
 
       updateStep(3, "done");
@@ -171,25 +346,8 @@ export default function FreeScanPage() {
       };
 
       setResult(scanResult);
+      setAuditorScore(computeAuditorScore(scanResult));
 
-      // Calculate auditor score (simplified — AI + quality + artifacts + tone)
-      const scores: { value: number | null; weight: number }[] = [
-        { value: scanResult.aiRiskScore != null ? 100 - scanResult.aiRiskScore : null, weight: 25 },
-        { value: scanResult.aiArtifactScore, weight: 12 },
-        { value: scanResult.writingQualityScore, weight: 10 },
-        { value: scanResult.toneConsistencyScore, weight: 8 },
-      ];
-      let totalWeight = 0;
-      let totalScore = 0;
-      for (const s of scores) {
-        if (s.value != null) {
-          totalWeight += s.weight;
-          totalScore += s.value * s.weight;
-        }
-      }
-      setAuditorScore(totalWeight > 0 ? Math.round(totalScore / totalWeight) : null);
-
-      // Brief delay so user sees 100% before transition
       setTimeout(() => setStage("results"), 600);
     } catch {
       setError("Scan failed. Please try again.");
@@ -203,19 +361,54 @@ export default function FreeScanPage() {
     );
   }
 
-  function resetToUpload() {
-    setStage("upload");
-    setFile(null);
-    setPastedText("");
-    setError(null);
-    setResult(null);
-    setAuditorScore(null);
-    setSteps([]);
-    setScanPercent(0);
+  async function handleEmailSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email.trim()) return;
+    setEmailSubmitting(true);
+    setEmailError(null);
+
+    // updateUser({email}) on an anonymous user sends a verification link.
+    // Clicking it converts them into a permanent user (preserving user_id,
+    // so the scan stays attached). The link routes through /auth/callback
+    // which is already in Supabase's redirect-URL allowlist; the callback
+    // then forwards us to /scan?claimed=1.
+    const { error } = await supabase.auth.updateUser(
+      { email: email.trim() },
+      { emailRedirectTo: `${window.location.origin}/auth/callback?redirect=/scan?claimed=1` }
+    );
+
+    if (error) {
+      setEmailError(error.message);
+      setEmailSubmitting(false);
+      return;
+    }
+
+    setEmailSent(true);
+    setEmailSubmitting(false);
   }
 
   const scoreLabel = (s: number | null) =>
     s === null ? null : s >= 90 ? "Excellent" : s >= 70 ? "Good" : s >= 50 ? "Needs work" : s >= 30 ? "Poor" : "Critical";
+
+  const PATTERN_LABELS: Record<string, string> = {
+    banned_word: "Common AI phrase",
+    banned_structure: "AI sentence pattern",
+    synonym_rotation: "Synonym rotation",
+    uniform_length: "Uniform length",
+    uniform_density: "Uniform density",
+    transition_pattern: "Transition pattern",
+  };
+
+  if (restoringSession) {
+    return (
+      <div className="min-h-screen bg-white">
+        <LandingNav />
+        <div className="flex h-64 items-center justify-center">
+          <p className="text-sm text-gray-400">Loading…</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-white">
@@ -267,7 +460,6 @@ export default function FreeScanPage() {
                 <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt" onChange={handleFileSelect} className="hidden" />
               </div>
 
-              {/* Divider */}
               <div className="relative">
                 <div className="absolute inset-0 flex items-center">
                   <div className="w-full border-t border-gray-200" />
@@ -277,7 +469,6 @@ export default function FreeScanPage() {
                 </div>
               </div>
 
-              {/* Paste */}
               <textarea
                 value={pastedText}
                 onChange={(e) => setPastedText(e.target.value)}
@@ -287,7 +478,6 @@ export default function FreeScanPage() {
                 placeholder="Paste your document text here..."
               />
 
-              {/* Document type */}
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-2">Document type</label>
                 <div className="flex flex-wrap gap-2">
@@ -315,8 +505,11 @@ export default function FreeScanPage() {
                 className="w-full rounded-full bg-gray-900 py-3.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-40"
                 style={{ boxShadow: "0 8px 30px -6px rgba(0, 0, 0, 0.25)" }}
               >
-                Scan My Draft
+                Scan My Draft — Free
               </button>
+              <p className="text-center text-xs text-gray-400">
+                One free scan per visitor. No card required.
+              </p>
             </div>
           </div>
         )}
@@ -331,7 +524,6 @@ export default function FreeScanPage() {
               Scanning your document...
             </p>
 
-            {/* Progress steps */}
             <div className="mx-auto mt-8 max-w-xs text-left space-y-3">
               {steps.map((step, i) => (
                 <div key={i} className="flex items-center gap-3">
@@ -351,7 +543,6 @@ export default function FreeScanPage() {
               ))}
             </div>
 
-            {/* Progress bar */}
             <div className="mx-auto mt-8 max-w-xs">
               <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
                 <div
@@ -403,13 +594,13 @@ export default function FreeScanPage() {
               <ScoreSpectrum
                 label="Citations"
                 score={null}
-                interpretation="Not checked"
+                interpretation="Subscriber-only"
                 lowLabel="0" highLabel="100"
               />
               <ScoreSpectrum
                 label="Plagiarism"
                 score={null}
-                interpretation="Not checked"
+                interpretation="Subscriber-only"
                 lowLabel="0" highLabel="100" lowerIsBetter
               />
               <ScoreSpectrum
@@ -447,30 +638,108 @@ export default function FreeScanPage() {
                 <p>
                   Writing quality is {result.writingQualityScore >= 80 ? "strong" : result.writingQualityScore >= 60 ? "good" : result.writingQualityScore >= 40 ? "fair" : "below average"} ({result.writingQualityScore}/100).
                 </p>
-                {result.aiArtifactScore != null && result.aiArtifactScore < 90 && (
-                  <p>
-                    AI formatting artifacts were detected (score: {result.aiArtifactScore}/100). These include patterns like em dashes, smart quotes, or structural formatting that detectors flag.
-                  </p>
-                )}
-                {result.toneConsistencyScore != null && result.toneConsistencyScore < 90 && (
-                  <p>
-                    Tone consistency: {result.toneConsistencyScore}/100 — some shifts in voice or register were detected.
-                  </p>
-                )}
-                <p className="text-gray-400 italic">
-                  Plagiarism and citation checks are available with a subscription.
-                </p>
               </div>
             </div>
 
-            {/* CTA */}
+            {/* ── Email Gate (anonymous users) ────────────────── */}
+            {isAnonymous && result.totalFlags > 0 && (
+              <div className="mt-10 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 p-6">
+                {emailSent ? (
+                  <div className="text-center">
+                    <h3 className="text-base font-semibold text-gray-900">Check your email</h3>
+                    <p className="mt-2 text-sm text-gray-600">
+                      We sent a verification link to{" "}
+                      <span className="font-medium text-gray-900">{email}</span>.
+                      Click it to see exactly which sentences we flagged and why.
+                    </p>
+                    <p className="mt-3 text-xs text-gray-400">
+                      The link will bring you back here with your full results.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <h3 className="text-base font-semibold text-gray-900">
+                      We found {result.totalFlags} specific issue{result.totalFlags !== 1 ? "s" : ""} in your draft.
+                    </h3>
+                    <p className="mt-2 text-sm text-gray-600">
+                      Enter your email to see exactly which sentences and how we&apos;d fix them.
+                      No password required — we&apos;ll send a one-click verification link.
+                    </p>
+                    <form onSubmit={handleEmailSubmit} className="mt-4 flex flex-col gap-2 sm:flex-row">
+                      <input
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        required
+                        className="flex-1 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm focus:border-gray-500 focus:outline-none"
+                      />
+                      <button
+                        type="submit"
+                        disabled={emailSubmitting || !email.trim()}
+                        className="rounded-lg bg-gray-900 px-5 py-2.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+                      >
+                        {emailSubmitting ? "Sending…" : "See My Issues"}
+                      </button>
+                    </form>
+                    {emailError && <p className="mt-2 text-sm text-red-600">{emailError}</p>}
+                    <p className="mt-3 text-xs text-gray-400">
+                      We&apos;ll only use your email to send your scan results and occasional
+                      product updates. No spam.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ── Sample flagged sentences (post-claim) ──────── */}
+            {!isAnonymous && sampleFlags.length > 0 && (
+              <div className="mt-10">
+                <h2 className="text-sm font-semibold text-gray-900">
+                  Sample flagged sentences from your draft
+                </h2>
+                <p className="mt-1 text-xs text-gray-500">
+                  {result.totalFlags - sampleFlags.length > 0
+                    ? `Showing ${sampleFlags.length} of ${result.totalFlags} flags. Subscribe to see the rest plus side-by-side rewrites.`
+                    : `Showing all ${sampleFlags.length} flag${sampleFlags.length !== 1 ? "s" : ""}. Subscribe to see side-by-side rewrites.`}
+                </p>
+                <div className="mt-4 space-y-3">
+                  {sampleFlags.map((flag, i) => (
+                    <div
+                      key={i}
+                      className="rounded-lg border border-amber-200 bg-amber-50/60 p-4"
+                    >
+                      <div className="flex items-start gap-3">
+                        <span className="mt-0.5 inline-flex h-5 shrink-0 items-center rounded-full bg-amber-200 px-2 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                          {PATTERN_LABELS[flag.patternType] ?? "AI pattern"}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm leading-relaxed text-gray-900">
+                            <span className="bg-amber-200/70 px-0.5 font-medium">
+                              {flag.flaggedPhrase}
+                            </span>
+                          </p>
+                          <p className="mt-1 text-xs text-gray-600">{flag.explanation}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Subscribe CTA ─────────────────────────────── */}
             <div className="mt-10 rounded-xl border border-gray-200 bg-gray-50 p-6 text-center">
-              <h3 className="text-lg font-bold text-gray-900">Ready to fix it?</h3>
+              <h3 className="text-lg font-bold text-gray-900">
+                {!isAnonymous && sampleFlags.length > 0
+                  ? "See every flag and a rewrite for each."
+                  : "Ready to fix it?"}
+              </h3>
               <p className="mt-2 text-sm text-gray-500">
                 EzSay walks you through each flag with side-by-side rewrites.
                 You pick what stays and what changes.
               </p>
-              <div className="mt-5 flex flex-col items-center gap-3 sm:flex-row sm:justify-center sm:gap-4">
+              <div className="mt-5 flex justify-center">
                 <Link
                   href="/pricing"
                   className="inline-flex items-center gap-1.5 rounded-full bg-gray-900 px-7 py-3 text-sm font-medium text-white hover:bg-gray-800"
@@ -481,12 +750,6 @@ export default function FreeScanPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
                   </svg>
                 </Link>
-                <button
-                  onClick={resetToUpload}
-                  className="rounded-full border border-gray-300 px-7 py-3 text-sm font-medium text-gray-600 hover:border-gray-400 hover:text-gray-900"
-                >
-                  Scan Another Document
-                </button>
               </div>
               <p className="mt-4 text-xs text-gray-400">
                 Subscribe to unlock plagiarism + citation checking, grammar fixes,

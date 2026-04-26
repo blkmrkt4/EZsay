@@ -40,8 +40,11 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  // Protected routes — redirect unauthenticated users to login
-  const protectedPrefixes = ["/w", "/upload", "/results", "/edit", "/dashboard", "/scan"];
+  // Protected routes — redirect unauthenticated users to login.
+  // /scan is intentionally NOT protected: visitors land there anonymously
+  // and the page itself creates an anonymous Supabase session via
+  // signInAnonymously() so the upload/scan API calls still authenticate.
+  const protectedPrefixes = ["/w", "/upload", "/results", "/edit", "/dashboard"];
   const isProtected = protectedPrefixes.some((p) => pathname.startsWith(p));
 
   if (!user && isProtected) {

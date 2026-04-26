@@ -54,19 +54,24 @@ export async function POST(request: NextRequest) {
         // Retrieve the subscription to get plan details
         const subscriptionId = session.subscription as string;
         const subscription = await stripe.subscriptions.retrieve(subscriptionId) as unknown as {
-          items: { data: { price: { id: string } }[] };
-          current_period_end: number;
+          id: string;
+          items: { data: { price: { id: string }; current_period_end?: number }[] };
+          current_period_end?: number;
           status: string;
         };
         const priceId = subscription.items.data[0]?.price?.id ?? null;
+        // In recent Stripe API versions current_period_end moved from the
+        // subscription root onto each item. Read both, prefer the item-level.
+        const periodEndUnix = subscription.items.data[0]?.current_period_end ?? subscription.current_period_end;
 
         await db
           .update(profiles)
           .set({
             stripeCustomerId: session.customer as string,
+            stripeSubscriptionId: subscription.id,
             subscriptionStatus: "active",
             subscriptionPlanId: priceId,
-            subscriptionPeriodEnd: new Date(subscription.current_period_end * 1000),
+            subscriptionPeriodEnd: periodEndUnix ? new Date(periodEndUnix * 1000) : null,
             updatedAt: new Date(),
           })
           .where(eq(profiles.id, userId));
@@ -75,15 +80,18 @@ export async function POST(request: NextRequest) {
         break;
       }
 
+      case "customer.subscription.created":
       case "customer.subscription.updated": {
         const sub = event.data.object as unknown as {
+          id: string;
           customer: string;
-          items: { data: { price: { id: string } }[] };
-          current_period_end: number;
+          items: { data: { price: { id: string }; current_period_end?: number }[] };
+          current_period_end?: number;
           status: string;
         };
         const customerId = sub.customer;
         const priceId = sub.items.data[0]?.price?.id ?? null;
+        const periodEndUnix = sub.items.data[0]?.current_period_end ?? sub.current_period_end;
 
         // Map Stripe status to our status
         let status: string;
@@ -100,29 +108,32 @@ export async function POST(request: NextRequest) {
         await db
           .update(profiles)
           .set({
+            stripeSubscriptionId: sub.id,
             subscriptionStatus: status,
             subscriptionPlanId: priceId,
-            subscriptionPeriodEnd: new Date(sub.current_period_end * 1000),
+            subscriptionPeriodEnd: periodEndUnix ? new Date(periodEndUnix * 1000) : null,
             updatedAt: new Date(),
           })
           .where(eq(profiles.stripeCustomerId, customerId));
 
-        console.log(`[Stripe] Subscription updated for customer ${customerId}: ${status}`);
+        console.log(`[Stripe] Subscription ${event.type} for customer ${customerId}: ${status}`);
         break;
       }
 
       case "customer.subscription.deleted": {
         const deletedSub = event.data.object as unknown as {
           customer: string;
-          current_period_end: number;
+          items?: { data: { current_period_end?: number }[] };
+          current_period_end?: number;
         };
         const deletedCustomerId = deletedSub.customer;
+        const periodEndUnix = deletedSub.items?.data?.[0]?.current_period_end ?? deletedSub.current_period_end;
 
         await db
           .update(profiles)
           .set({
             subscriptionStatus: "canceled",
-            subscriptionPeriodEnd: new Date(deletedSub.current_period_end * 1000),
+            subscriptionPeriodEnd: periodEndUnix ? new Date(periodEndUnix * 1000) : null,
             updatedAt: new Date(),
           })
           .where(eq(profiles.stripeCustomerId, deletedCustomerId));

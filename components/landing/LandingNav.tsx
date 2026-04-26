@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
 
 interface LandingNavProps {
   /**
@@ -16,6 +17,11 @@ interface LandingNavProps {
 export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
   const navRef = useRef<HTMLElement>(null);
   const [scrolledPast, setScrolledPast] = useState(false);
+  // Auth-aware nav: when signed-in, swap "Log In" for "Workspace" so authed
+  // users don't get bounced through /login → middleware redirect → workspace
+  // layout's subscription gate → /pricing (which reads as "Log In sends me
+  // to pricing" — confusing).
+  const [isAuthed, setIsAuthed] = useState<boolean | null>(null);
   const pathname = usePathname();
   const onHome = pathname === "/";
 
@@ -28,6 +34,21 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
     );
     observer.observe(el);
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const supabase = createClient();
+    let cancelled = false;
+    supabase.auth.getUser().then(({ data }) => {
+      if (!cancelled) setIsAuthed(!!data.user);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!cancelled) setIsAuthed(!!session?.user);
+    });
+    return () => {
+      cancelled = true;
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   return (
@@ -60,9 +81,15 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
               Home
             </Link>
           )}
-          <Link href="/login" className="text-sm text-gray-500 hover:text-gray-900">
-            Log In
-          </Link>
+          {isAuthed ? (
+            <Link href="/w" className="text-sm text-gray-500 hover:text-gray-900">
+              Workspace
+            </Link>
+          ) : (
+            <Link href="/login" className="text-sm text-gray-500 hover:text-gray-900">
+              Log In
+            </Link>
+          )}
           <button className="flex items-center gap-1.5 rounded-full border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:border-gray-400 hover:text-gray-900">
             Watch Demo
             <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -107,13 +134,23 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
               Home
             </Link>
           )}
-          <Link
-            href="/login"
-            tabIndex={scrolledPast ? 0 : -1}
-            className="rounded-full px-3 py-1.5 text-gray-300 hover:text-white"
-          >
-            Log In
-          </Link>
+          {isAuthed ? (
+            <Link
+              href="/w"
+              tabIndex={scrolledPast ? 0 : -1}
+              className="rounded-full px-3 py-1.5 text-gray-300 hover:text-white"
+            >
+              Workspace
+            </Link>
+          ) : (
+            <Link
+              href="/login"
+              tabIndex={scrolledPast ? 0 : -1}
+              className="rounded-full px-3 py-1.5 text-gray-300 hover:text-white"
+            >
+              Log In
+            </Link>
+          )}
           <Link
             href="/upload?free=1"
             tabIndex={scrolledPast ? 0 : -1}

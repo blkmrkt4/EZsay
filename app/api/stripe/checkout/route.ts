@@ -35,7 +35,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const priceId = STRIPE_PRICES[plan as PlanId]?.[billing as BillingInterval];
+  // The "free" tier has no Stripe price — checkout only applies to paid plans.
+  if (plan === "free" || !(plan in STRIPE_PRICES)) {
+    return NextResponse.json(
+      { success: false, error: "Plan is not purchasable" },
+      { status: 400 }
+    );
+  }
+  const paidPlan = plan as Exclude<PlanId, "free">;
+  const priceId = STRIPE_PRICES[paidPlan]?.[billing as BillingInterval];
   if (!priceId) {
     return NextResponse.json(
       { success: false, error: "Price not configured" },
@@ -69,6 +77,11 @@ export async function POST(request: NextRequest) {
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: `${origin}/w?checkout=success`,
       cancel_url: `${origin}/pricing?checkout=cancelled`,
+      // Top-level metadata is what the webhook handler reads from
+      // session.metadata.supabaseUserId on checkout.session.completed.
+      // Also mirrored onto the subscription so it's accessible from
+      // customer.subscription.* events later.
+      metadata: { supabaseUserId: user.id, plan },
       subscription_data: {
         metadata: { supabaseUserId: user.id, plan },
       },

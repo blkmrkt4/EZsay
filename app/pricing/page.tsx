@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import LandingNav from "@/components/landing/LandingNav";
+import { createClient } from "@/lib/supabase/client";
 
 type Billing = "monthly" | "yearly";
 
@@ -47,6 +49,54 @@ function formatMoney(n: number): string {
 
 export default function PricingPage() {
   const [billing, setBilling] = useState<Billing>("monthly");
+  // Checkout state — `loadingPlan` is the plan id currently being purchased
+  // (drives the per-button loading text); `checkoutError` shows inline if
+  // the API call fails or the user can't be redirected.
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const supabase = createClient();
+
+  // Show a friendly note if the user just bailed from Stripe Checkout.
+  // Stripe redirects back to /pricing?checkout=cancelled.
+  useEffect(() => {
+    if (searchParams.get("checkout") === "cancelled") {
+      setCheckoutError("Checkout cancelled — no charge was made.");
+    }
+  }, [searchParams]);
+
+  async function handleCheckout(planId: string) {
+    setCheckoutError(null);
+    setLoadingPlan(planId);
+
+    // Auth gate: anonymous (signInAnonymously) users have a session but
+    // no email → Stripe needs a real account. Send them to sign in first.
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user || user.is_anonymous) {
+      router.push(`/login?redirect=/pricing`);
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: planId, billing }),
+      });
+      const json = await res.json();
+      if (!json.success || !json.url) {
+        setCheckoutError(json.error || "Could not start checkout. Please try again.");
+        setLoadingPlan(null);
+        return;
+      }
+      // Redirect to Stripe-hosted Checkout. No SDK needed.
+      window.location.href = json.url;
+    } catch {
+      setCheckoutError("Could not connect to checkout. Please try again.");
+      setLoadingPlan(null);
+    }
+  }
 
   const heroSlot = (
     <div className="text-center">
@@ -101,6 +151,14 @@ export default function PricingPage() {
 
         {/* Plan cards */}
         <section className="mx-auto max-w-5xl px-6 py-10 sm:py-14">
+          {checkoutError && (
+            <div
+              role="status"
+              className="mb-6 rounded-lg border border-amber-300/40 bg-amber-300/10 px-4 py-3 text-sm text-amber-200"
+            >
+              {checkoutError}
+            </div>
+          )}
           <div className="grid gap-6 sm:grid-cols-2">
             {PLANS.map((plan) => {
               const monthlyPrice = plan.monthly;
@@ -169,29 +227,33 @@ export default function PricingPage() {
                   </ul>
 
                   <div className="mt-auto pt-10">
-                    <Link
-                      href={`/signup?plan=${plan.id}&billing=${billing}`}
-                      className={`flex items-center justify-center gap-1.5 rounded-full px-6 py-3 text-sm font-medium ${
+                    <button
+                      type="button"
+                      onClick={() => handleCheckout(plan.id)}
+                      disabled={loadingPlan !== null}
+                      className={`flex w-full items-center justify-center gap-1.5 rounded-full px-6 py-3 text-sm font-medium transition-opacity disabled:opacity-60 ${
                         plan.featured
                           ? "bg-yellow-300 text-gray-900 hover:bg-yellow-400"
                           : "bg-white text-gray-900 hover:bg-gray-100"
                       }`}
                     >
-                      {plan.cta}
-                      <svg
-                        className="h-3.5 w-3.5"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        strokeWidth={2.5}
-                        stroke="currentColor"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3"
-                        />
-                      </svg>
-                    </Link>
+                      {loadingPlan === plan.id ? "Redirecting…" : plan.cta}
+                      {loadingPlan !== plan.id && (
+                        <svg
+                          className="h-3.5 w-3.5"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          strokeWidth={2.5}
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3"
+                          />
+                        </svg>
+                      )}
+                    </button>
                   </div>
 
                 </div>

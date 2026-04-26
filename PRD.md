@@ -289,6 +289,7 @@ Validates text after replacements. Catches LLM response markers (CHANGED:, OPTIO
 | Feature | Priority | Notes |
 |---|---|---|
 | Citations bridge from edit queue | Done | Footer count shows pending citations; end-of-queue summary retitles and surfaces "Go to Citations" primary action when citations remain. Spec in section 9.1 — implemented 2026-04-24 (pending user verification in dev server). |
+| Free-scan funnel (anonymous → email gate → claimed reveal) | Done | `/scan` lets anonymous visitors scan via Supabase anonymous sign-in. Scores show immediately; sample flagged sentences gated behind email verification (`updateUser({ email })` magic link). New `free` plan tier in `lib/stripe/plan-limits.ts` caps unsubscribed users at 1 scan / 5,000-word doc / 1 doc storage. Spec in §22 — implemented 2026-04-25. **Requires:** Anonymous Sign-Ins enabled in Supabase Authentication → Providers. |
 | Full Stripe integration | High | Checkout, subscription sync, access gating |
 | PDF export | Rejected | Considered but server-side PDF generation produces poor output (broken Unicode, no font embedding, manual layout). Students can export .docx and use Word/Google Docs "Save as PDF" for better results. |
 | Mobile responsive | Medium | Desktop-first |
@@ -379,3 +380,73 @@ Six SVG files live in `public/brand/` — three variants × black/white pairs. A
 - **Landing footer**: "EZsay. Your voice, louder." line could lead with a small `h-4` mark.
 - **Email templates** (future): lockup in header.
 - **Open Graph / social preview image**: lockup on a branded background, 1200×630. Ship as `app/opengraph-image.png` (Next.js file convention).
+
+---
+
+## 22. Free-scan funnel
+
+The `/scan` route is the public, no-signup entry point that proves the product works and captures email at the moment of highest interest. It implements the "give to get" pattern — visible scores immediately, specific flagged sentences only after the visitor verifies an email.
+
+### 22.1 Flow
+
+```
+1. Visitor lands on /scan (no auth required — middleware exempts /scan)
+2. Page mounts: if no Supabase session, calls supabase.auth.signInAnonymously()
+   → visitor gets a real auth session with is_anonymous = true
+3. Visitor uploads .pdf/.docx/.txt or pastes text + picks document type
+4. POST /api/upload then /api/scan run as the anonymous user
+   → server creates document, sections, flags
+5. Results screen shows: Auditor Score ring + 6 score spectrums + written summary
+   → "What we found" — counts of flags and sections, score commentary
+6. Below the summary, an **email gate** appears (only if anonymous + flags exist):
+   "We found N specific issues. Enter your email to see exactly which sentences."
+7. Submit email → supabase.auth.updateUser({ email },
+                    { emailRedirectTo: /auth/callback?redirect=/scan?claimed=1 })
+   → Supabase sends verification link
+   → Page swaps to "Check your email" state
+8. Visitor clicks link in email → routes through /auth/callback (existing
+   route, in Supabase's redirect-URL allowlist) → /scan?claimed=1
+9. Page mount detects ?claimed=1 + non-anonymous user + stashed documentId
+   → fetches the same document, renders sample flagged sentences (up to 2)
+   → still shows the Subscribe CTA at the bottom
+10. "Scan Another Document" button is removed — free users get one scan
+```
+
+### 22.2 Plan tier and cap enforcement
+
+`lib/stripe/plan-limits.ts` defines a `free` tier:
+
+| Limit | Value |
+|---|---|
+| `monthlyWordLimit` | 5,000 |
+| `perDocumentWordLimit` | 5,000 |
+| `monthlyScanLimit` | 1 |
+| `documentStorageLimit` | 1 |
+
+`resolvePlanSlug` defaults unsubscribed users to `free` (was `individual`). Cap enforcement happens in `/api/upload` and `/api/scan` via `checkLimit`. After the visitor uses their one free scan, attempting another returns 402 "Monthly scan limit reached" — the funnel relies on this server-side cap to push them toward subscription.
+
+### 22.3 Local-storage continuity
+
+The /scan page stashes the active document ID in `localStorage["ezsay_free_scan_doc_id"]` after a successful scan. This lets it:
+
+- Restore the results view on a casual page refresh
+- Recover the post-claim state when the visitor returns from the verification email link, even in a new tab
+
+### 22.4 Architectural decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Auth model for anonymous scan | Supabase Anonymous Sign-In | Reuses existing /api/upload + /api/scan endpoints unchanged. The user_id stays the same when the anon user is converted to a permanent user via email update — so the scan stays attached. Alternative (separate `anonymous_documents` table + custom session cookie) would be more code and a data-migration step. |
+| Email gating mechanism | `supabase.auth.updateUser({ email })` from the anonymous session | Sends a real verification email. On verification, the user's `is_anonymous` flag flips to `false` while the `user_id` is preserved. No data migration needed. |
+| Email redirect path | `/auth/callback?redirect=/scan?claimed=1` | Reuses the existing `/auth/callback` route (already in Supabase's redirect-URL allowlist for the password-reset flow). One config, two flows. |
+| Client gate vs server gate | Server-side via `checkLimit` | Don't trust the client. The "1 scan only" rule is enforced by `/api/scan` returning 402 once the count is reached. The UI only mirrors server state. |
+| Sample flag count | 2 | Enough to convince ("look, you can see the actual problem"), not enough to give away the value ("subscribe to see the rest + rewrites"). |
+
+### 22.5 Required Supabase configuration
+
+For the funnel to work, **Anonymous Sign-Ins** must be enabled in the Supabase dashboard:
+- Authentication → Providers → Anonymous Sign-Ins → toggle ON
+
+Without this, `signInAnonymously()` returns an error and the page surfaces the message "Anonymous sign-ins may be disabled in Supabase…" inline on the scan button.
+
+The `/auth/callback` redirect URL must already be in Authentication → URL Configuration → Redirect URLs (it should be, from the password-reset wiring).

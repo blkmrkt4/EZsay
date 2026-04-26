@@ -1,7 +1,11 @@
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { createRequire } from "module";
 
-// Disable worker for server-side usage
-GlobalWorkerOptions.workerSrc = "";
+// pdfjs-dist v5 requires GlobalWorkerOptions.workerSrc to be a real path
+// even on server-side (the previous "" empty-string hack stopped working).
+// Resolve the bundled worker via the legacy build so it Just Works in Node.
+const require = createRequire(import.meta.url);
+GlobalWorkerOptions.workerSrc = require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
 
 export async function parsePdf(buffer: ArrayBuffer): Promise<string> {
   const doc = await getDocument({ data: buffer, useWorkerFetch: false, isEvalSupported: false, useSystemFonts: true }).promise;

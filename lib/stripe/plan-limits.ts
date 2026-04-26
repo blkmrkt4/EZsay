@@ -25,6 +25,15 @@ export interface LimitCheck {
 }
 
 const DEFAULT_LIMITS: Record<string, PlanLimits> = {
+  // Free tier — one scan per visitor. Caps gate-keep the funnel: anyone
+  // who wants more must subscribe. Word cap is generous enough to cover
+  // an essay-length sample but not a whole thesis.
+  free: {
+    monthlyWordLimit: 5000,
+    perDocumentWordLimit: 5000,
+    monthlyScanLimit: 1,
+    documentStorageLimit: 1,
+  },
   individual: {
     monthlyWordLimit: 50000,
     perDocumentWordLimit: 10000,
@@ -69,15 +78,17 @@ export async function getPlanLimits(planSlug: string): Promise<PlanLimits> {
     allLimits = DEFAULT_LIMITS;
   }
 
-  return allLimits[planSlug] ?? DEFAULT_LIMITS.individual;
+  // Fall back to free limits when an unknown plan slug is requested or
+  // when the DB row was seeded before this slug existed (back-compat).
+  return allLimits[planSlug] ?? DEFAULT_LIMITS[planSlug] ?? DEFAULT_LIMITS.free;
 }
 
 /**
- * Maps a Stripe Price ID back to a plan slug ("individual" or "eaas").
- * Falls back to "individual" if not found.
+ * Maps a Stripe Price ID back to a plan slug. Users with no subscription
+ * resolve to "free" — they can scan once and then hit the paywall.
  */
 export function resolvePlanSlug(stripePriceId: string | null): PlanId {
-  if (!stripePriceId) return "individual";
+  if (!stripePriceId) return "free";
 
   for (const [slug, prices] of Object.entries(STRIPE_PRICES)) {
     if (prices.monthly === stripePriceId || prices.yearly === stripePriceId) {
@@ -85,7 +96,7 @@ export function resolvePlanSlug(stripePriceId: string | null): PlanId {
     }
   }
 
-  return "individual";
+  return "free";
 }
 
 /**

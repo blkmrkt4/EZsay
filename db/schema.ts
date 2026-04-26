@@ -8,6 +8,7 @@ import {
   real,
   jsonb,
   pgEnum,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 // ── Enums ──────────────────────────────────────────────────────────────────
@@ -132,6 +133,10 @@ export const profiles = pgTable("profiles", {
   email: text("email"),
   role: userRoleEnum("role").notNull().default("user"),
   stripeCustomerId: text("stripe_customer_id"),
+  // Subscription resource ID on Stripe (sub_xxx). Used to call Stripe APIs
+  // for this user (cancel, retrieve, update). Distinct from
+  // subscriptionPlanId which holds the active Price ID.
+  stripeSubscriptionId: text("stripe_subscription_id"),
   subscriptionStatus: text("subscription_status").default("none"),
   subscriptionPlanId: text("subscription_plan_id"),
   subscriptionPeriodEnd: timestamp("subscription_period_end", { withTimezone: true }),
@@ -427,14 +432,21 @@ export const adminRecoveryCodes = pgTable("admin_recovery_codes", {
 
 // ── Usage Tracking ────────────────────────────────────────────────────────
 
-export const usageTracking = pgTable("usage_tracking", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id").notNull(),
-  yearMonth: text("year_month").notNull(), // "2026-04"
-  wordsScanned: integer("words_scanned").notNull().default(0),
-  scanCount: integer("scan_count").notNull().default(0),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+export const usageTracking = pgTable(
+  "usage_tracking",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull(),
+    yearMonth: text("year_month").notNull(), // "2026-04"
+    wordsScanned: integer("words_scanned").notNull().default(0),
+    scanCount: integer("scan_count").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  // Required by recordScanUsage's ON CONFLICT (user_id, year_month) DO UPDATE upsert.
+  (t) => ({
+    userMonthUnique: uniqueIndex("usage_tracking_user_month_unique").on(t.userId, t.yearMonth),
+  }),
+);
 
 // ── Admin: LLM Call Log ────────────────────────────────────────────────────
 

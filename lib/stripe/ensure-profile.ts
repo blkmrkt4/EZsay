@@ -17,7 +17,19 @@ export async function ensureProfile(userId: string, email: string) {
     .where(eq(profiles.id, userId))
     .limit(1);
 
-  if (existing) return existing;
+  if (existing) {
+    // Backfill email if the row was created by a SQL trigger (or earlier
+    // anonymous flow) without one. Lets future email-based lookups work.
+    if (!existing.email && email) {
+      const [updated] = await db
+        .update(profiles)
+        .set({ email, updatedAt: new Date() })
+        .where(eq(profiles.id, userId))
+        .returning();
+      return updated ?? existing;
+    }
+    return existing;
+  }
 
   const [created] = await db
     .insert(profiles)
