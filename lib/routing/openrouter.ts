@@ -123,9 +123,10 @@ export async function callOpenRouter(
   fallbacks: string[],
   temperature: number,
   maxTokens: number,
-): Promise<{ content: string; modelUsed: string; inputTokens: number; outputTokens: number }> {
+): Promise<{ content: string; modelUsed: string; inputTokens: number; outputTokens: number; latencyMs: number }> {
   const apiKey = await getApiKey();
   const modelsToTry = [modelId, ...fallbacks];
+  const startTime = Date.now();
 
   const errors: string[] = [];
 
@@ -187,12 +188,14 @@ export async function callOpenRouter(
           break;
         }
 
-        console.log(`[OpenRouter] Success with ${model} (${data.usage?.prompt_tokens ?? "?"}in/${data.usage?.completion_tokens ?? "?"}out tokens)`);
+        const latencyMs = Date.now() - startTime;
+        console.log(`[OpenRouter] Success with ${model} (${data.usage?.prompt_tokens ?? "?"}in/${data.usage?.completion_tokens ?? "?"}out tokens, ${latencyMs}ms)`);
         return {
           content: data.choices[0].message.content,
           modelUsed: model,
           inputTokens: data.usage?.prompt_tokens ?? 0,
           outputTokens: data.usage?.completion_tokens ?? 0,
+          latencyMs,
         };
       } catch (err) {
         const isTimeout = err instanceof DOMException && err.name === "AbortError";
@@ -216,7 +219,7 @@ export async function callOpenRouter(
 export async function executeActivity(
   slug: string,
   tokenReplacements: Record<string, string>,
-): Promise<{ content: string; modelUsed: string; inputTokens: number; outputTokens: number }> {
+): Promise<{ content: string; modelUsed: string; inputTokens: number; outputTokens: number; latencyMs: number }> {
   const config = await loadBind(slug);
 
   // Build system message: context + system prompt

@@ -11,6 +11,7 @@ import { calculateWritingQuality } from "@/lib/analysis/quality-scorer";
 import { detectSpellingErrors } from "@/lib/analysis/spelling-detector";
 import { detectGrammarErrors } from "@/lib/analysis/grammar-detector";
 import { checkAllLimits, recordScanUsage } from "@/lib/stripe/plan-limits";
+import { rateLimit } from "@/lib/rate-limit";
 
 /**
  * Maps a library entry to the most appropriate flag patternType.
@@ -54,6 +55,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { success: false, error: "Unauthorized" },
       { status: 401 }
+    );
+  }
+
+  // Rate limit: 10 scans per minute per user
+  const rl = rateLimit(`scan:${user.id}`, 10, 60_000);
+  if (rl.limited) {
+    return NextResponse.json(
+      { success: false, error: "Too many scans. Please wait a moment." },
+      { status: 429 }
     );
   }
 

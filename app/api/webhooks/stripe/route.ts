@@ -175,6 +175,36 @@ export async function POST(request: NextRequest) {
         break;
       }
 
+      case "charge.refunded": {
+        const charge = event.data.object as Stripe.Charge;
+        console.log(`[Stripe] Charge refunded: ${charge.id}, amount: ${charge.amount_refunded}, customer: ${charge.customer}`);
+        break;
+      }
+
+      case "customer.deleted": {
+        const customer = event.data.object as Stripe.Customer;
+        // Clear subscription data for this customer
+        await db
+          .update(profiles)
+          .set({
+            subscriptionStatus: "canceled",
+            stripeSubscriptionId: null,
+            subscriptionPlanId: null,
+            subscriptionPeriodEnd: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(profiles.stripeCustomerId, customer.id));
+
+        console.log(`[Stripe] Customer deleted: ${customer.id}`);
+        break;
+      }
+
+      case "payment_method.detached": {
+        const pm = event.data.object as Stripe.PaymentMethod;
+        console.log(`[Stripe] Payment method detached: ${pm.id}, customer: ${pm.customer}`);
+        break;
+      }
+
       default:
         console.log(`[Stripe] Unhandled event type: ${event.type}`);
     }

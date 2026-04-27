@@ -106,7 +106,7 @@ export async function POST(request: NextRequest) {
       modelUsed: result.modelUsed,
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
-      latencyMs: 0, // TODO: measure actual latency
+      latencyMs: result.latencyMs ?? 0,
       flagId: flag.id,
       outcome: "pending",
     });

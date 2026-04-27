@@ -431,7 +431,7 @@ async function handleVerifyAll(body: { documentId: string }, userId: string) {
       modelUsed: queryResult.modelUsed,
       inputTokens: queryResult.inputTokens,
       outputTokens: queryResult.outputTokens,
-      latencyMs: 0,
+      latencyMs: queryResult.latencyMs ?? 0,
       outcome: "pending",
     });
 
@@ -497,7 +497,7 @@ async function handleVerifyAll(body: { documentId: string }, userId: string) {
         modelUsed: assessResult.modelUsed,
         inputTokens: assessResult.inputTokens,
         outputTokens: assessResult.outputTokens,
-        latencyMs: 0,
+        latencyMs: assessResult.latencyMs ?? 0,
         outcome: "pending",
       });
 
@@ -639,7 +639,7 @@ async function handleConvertAll(body: { documentId: string; targetStyle: string 
         modelUsed: result.modelUsed,
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
-        latencyMs: 0,
+        latencyMs: result.latencyMs ?? 0,
         outcome: "pending",
       });
 

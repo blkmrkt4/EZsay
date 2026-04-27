@@ -2,24 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { libraryEntries } from "@/db/schema";
 import { eq, desc, and, sql } from "drizzle-orm";
-import { createClient } from "@/lib/supabase/server";
-
-async function requireAdmin() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return { error: "Unauthorized", status: 401 };
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("id", user.id)
-    .single();
-
-  if (profile?.role !== "admin") return { error: "Forbidden", status: 403 };
-  return { user };
-}
+import { requireAdmin } from "@/lib/supabase/require-admin";
 
 export async function GET(request: NextRequest) {
   const auth = await requireAdmin();
@@ -37,6 +20,9 @@ export async function GET(request: NextRequest) {
   const source = searchParams.get("source");
   const search = searchParams.get("search");
 
+  const limit = Math.min(Number(searchParams.get("limit") || 200), 500);
+  const offset = Math.max(Number(searchParams.get("offset") || 0), 0);
+
   const conditions = [];
   if (status) conditions.push(eq(libraryEntries.status, status as "active" | "under_review" | "retired"));
   if (entryType) conditions.push(eq(libraryEntries.entryType, entryType as "exact_phrase" | "regex_pattern" | "semantic_pattern"));
@@ -49,7 +35,8 @@ export async function GET(request: NextRequest) {
     .from(libraryEntries)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(libraryEntries.createdAt))
-    .limit(200);
+    .limit(limit)
+    .offset(offset);
 
   // Count under_review for the badge
   const [reviewCount] = await db

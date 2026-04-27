@@ -6,6 +6,7 @@ import { parseDocument, detectFileType } from "@/lib/parsers";
 import { parsePdfWithMeta } from "@/lib/parsers/pdf-parser";
 import { parseAndSplit } from "@/lib/citations/parser";
 import { checkAllLimits } from "@/lib/stripe/plan-limits";
+import { rateLimit } from "@/lib/rate-limit";
 
 type ExtractionMeta = {
   sourceType: "pdf" | "docx" | "txt" | "pasted";
@@ -25,6 +26,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { success: false, error: "Unauthorized" },
       { status: 401 }
+    );
+  }
+
+  // Rate limit: 20 uploads per minute per user
+  const rl = rateLimit(`upload:${user.id}`, 20, 60_000);
+  if (rl.limited) {
+    return NextResponse.json(
+      { success: false, error: "Too many uploads. Please wait a moment." },
+      { status: 429 }
     );
   }
 

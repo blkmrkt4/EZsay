@@ -5,6 +5,7 @@ import { documents, sections, plagiarismResults, llmCallLog } from "@/db/schema"
 import { eq, and } from "drizzle-orm";
 import { callOpenRouter } from "@/lib/routing/openrouter";
 import { webSearch } from "@/lib/search/tavily";
+import { rateLimit } from "@/lib/rate-limit";
 
 const QUERY_SYSTEM = `You generate web search queries for plagiarism checking.
 
@@ -95,6 +96,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
   }
 
+  // Rate limit: 5 plagiarism checks per minute per user
+  const rl = rateLimit(`plagiarism:${user.id}`, 5, 60_000);
+  if (rl.limited) {
+    return NextResponse.json({ success: false, error: "Too many plagiarism checks. Please wait a moment." }, { status: 429 });
+  }
+
   const { documentId } = await request.json();
 
   const [doc] = await db
@@ -181,7 +188,7 @@ export async function POST(request: NextRequest) {
       modelUsed: queryResult.modelUsed,
       inputTokens: queryResult.inputTokens,
       outputTokens: queryResult.outputTokens,
-      latencyMs: 0,
+      latencyMs: queryResult.latencyMs ?? 0,
       outcome: "pending",
     });
 
@@ -265,7 +272,7 @@ export async function POST(request: NextRequest) {
         modelUsed: assessResult.modelUsed,
         inputTokens: assessResult.inputTokens,
         outputTokens: assessResult.outputTokens,
-        latencyMs: 0,
+        latencyMs: assessResult.latencyMs ?? 0,
         outcome: "pending",
       });
 

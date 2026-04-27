@@ -2,24 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { modelConfigs } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { createClient } from "@/lib/supabase/server";
-
-async function requireAdmin() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return { error: "Unauthorized", status: 401 };
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("id", user.id)
-    .single();
-
-  if (profile?.role !== "admin") return { error: "Forbidden", status: 403 };
-  return { user };
-}
+import { requireAdmin } from "@/lib/supabase/require-admin";
 
 export async function GET() {
   const auth = await requireAdmin();
