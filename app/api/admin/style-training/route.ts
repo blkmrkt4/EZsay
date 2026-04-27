@@ -28,8 +28,13 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { action } = body;
 
+    const VALID_PREFERENCES = ["always_remove", "always_keep", "ask_each_time"];
+
     if (action === "update_preference") {
       const { id, preference } = body;
+      if (!id || !VALID_PREFERENCES.includes(preference)) {
+        return NextResponse.json({ success: false, error: "Invalid id or preference value" }, { status: 400 });
+      }
       const [updated] = await db
         .update(styleTraining)
         .set({ preference })
@@ -40,6 +45,9 @@ export async function POST(request: NextRequest) {
 
     if (action === "bulk_update") {
       const { category, preference } = body;
+      if (!category || !VALID_PREFERENCES.includes(preference)) {
+        return NextResponse.json({ success: false, error: "Invalid category or preference value" }, { status: 400 });
+      }
       await db
         .update(styleTraining)
         .set({ preference })

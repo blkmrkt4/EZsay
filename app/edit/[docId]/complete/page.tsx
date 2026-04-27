@@ -74,6 +74,18 @@ export default function CompletionPage() {
     URL.revokeObjectURL(url);
   }
 
+  async function downloadDocx() {
+    const res = await fetch(`/api/documents/export?documentId=${docId}&format=docx`);
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${doc?.title || "document"}.docx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   const scoreColor =
     currentScore >= 70
       ? "text-red-600"
@@ -132,15 +144,18 @@ export default function CompletionPage() {
             {copying ? "Copied!" : "Copy to clipboard"}
           </button>
           <button
+            onClick={downloadDocx}
+            className="flex-1 rounded-lg border border-blue-300 bg-blue-50 py-2.5 text-sm font-medium text-blue-700 hover:bg-blue-100"
+          >
+            Download .docx
+          </button>
+          <button
             onClick={downloadTxt}
             className="flex-1 rounded-lg border border-gray-300 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
             Download .txt
           </button>
         </div>
-        <p className="text-xs text-gray-400 text-center">
-          PDF and .docx export coming soon.
-        </p>
       </div>
 
       {/* Navigation */}

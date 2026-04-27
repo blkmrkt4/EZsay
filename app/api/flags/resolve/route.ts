@@ -20,179 +20,140 @@ export async function POST(request: NextRequest) {
   const gateResponse = await requireSubscription(user.id);
   if (gateResponse) return gateResponse;
 
-  const { flagId, action, optionId, manualText } = await request.json();
+  try {
+    const { flagId, action, optionId, manualText } = await request.json();
 
-  // Verify ownership: flag → section → document → userId
-  const [ownerFlag] = await db
-    .select({ sectionId: flags.sectionId })
-    .from(flags)
-    .where(eq(flags.id, flagId))
-    .limit(1);
-  if (!ownerFlag) {
-    return NextResponse.json({ success: false, error: "Flag not found" }, { status: 404 });
-  }
-  const [ownerSection] = await db
-    .select({ documentId: sections.documentId })
-    .from(sections)
-    .where(eq(sections.id, ownerFlag.sectionId))
-    .limit(1);
-  if (!ownerSection) {
-    return NextResponse.json({ success: false, error: "Section not found" }, { status: 404 });
-  }
-  const [ownerDoc] = await db
-    .select({ userId: documents.userId })
-    .from(documents)
-    .where(and(eq(documents.id, ownerSection.documentId), eq(documents.userId, user.id)))
-    .limit(1);
-  if (!ownerDoc) {
-    return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
-  }
-
-  // Update flag status
-  const updateData: Record<string, unknown> = {
-    status: action,
-  };
-
-  if (optionId) {
-    updateData.acceptedOptionId = optionId;
-
-    // Mark the option as accepted
-    await db
-      .update(flagOptions)
-      .set({ accepted: true })
-      .where(eq(flagOptions.id, optionId));
-  }
-
-  if (manualText) {
-    updateData.manualReplacement = manualText;
-  }
-
-  const [updatedFlag] = await db
-    .update(flags)
-    .set(updateData)
-    .where(eq(flags.id, flagId))
-    .returning();
-
-  if (!updatedFlag) {
-    return NextResponse.json(
-      { success: false, error: "Flag not found" },
-      { status: 404 }
-    );
-  }
-
-  // If accepted with an option, update the section's currentText
-  if (action === "accepted" && optionId) {
-    const [option] = await db
-      .select()
-      .from(flagOptions)
-      .where(eq(flagOptions.id, optionId))
+    // ── Single JOIN query for ownership check + all data we need ──────
+    const [flagRow] = await db
+      .select({
+        flag: flags,
+        sectionId: sections.id,
+        sectionCurrentText: sections.currentText,
+        sectionFlagsResolved: sections.flagsResolved,
+        documentId: documents.id,
+        documentUserId: documents.userId,
+        documentType: documents.documentType,
+      })
+      .from(flags)
+      .innerJoin(sections, eq(sections.id, flags.sectionId))
+      .innerJoin(documents, eq(documents.id, sections.documentId))
+      .where(eq(flags.id, flagId))
       .limit(1);
 
-    if (option) {
-      const [section] = await db
+    if (!flagRow) {
+      return NextResponse.json({ success: false, error: "Flag not found" }, { status: 404 });
+    }
+    if (flagRow.documentUserId !== user.id) {
+      return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
+    }
+
+    // ── Update flag status ───────────────────────────────────────────
+    const updateData: Record<string, unknown> = { status: action };
+
+    if (optionId) {
+      updateData.acceptedOptionId = optionId;
+      await db
+        .update(flagOptions)
+        .set({ accepted: true })
+        .where(eq(flagOptions.id, optionId));
+    }
+
+    if (manualText) {
+      updateData.manualReplacement = manualText;
+    }
+
+    const [updatedFlag] = await db
+      .update(flags)
+      .set(updateData)
+      .where(eq(flags.id, flagId))
+      .returning();
+
+    if (!updatedFlag) {
+      return NextResponse.json({ success: false, error: "Flag not found" }, { status: 404 });
+    }
+
+    // ── Update section text if accepted with an option ────────────────
+    if (action === "accepted" && optionId) {
+      const [option] = await db
         .select()
-        .from(sections)
-        .where(eq(sections.id, updatedFlag.sectionId))
+        .from(flagOptions)
+        .where(eq(flagOptions.id, optionId))
         .limit(1);
 
-      if (section) {
-        // Replace the flagged phrase with the option text
+      if (option) {
         const newText =
-          section.currentText.slice(0, updatedFlag.phraseStart) +
+          flagRow.sectionCurrentText.slice(0, updatedFlag.phraseStart) +
           option.text +
-          section.currentText.slice(updatedFlag.phraseEnd);
+          flagRow.sectionCurrentText.slice(updatedFlag.phraseEnd);
 
-        // Validate that the replacement doesn't introduce corruption
-        const corruption = validateReplacement(section.currentText, newText);
+        const corruption = validateReplacement(flagRow.sectionCurrentText, newText);
         if (corruption) {
           console.warn(`[flags/resolve] Corruption detected in replacement: ${corruption}`);
-          // Still apply — but log the warning so it can be investigated
         }
 
         await db
           .update(sections)
           .set({
             currentText: newText,
-            flagsResolved: section.flagsResolved + 1,
+            flagsResolved: flagRow.sectionFlagsResolved + 1,
           })
-          .where(eq(sections.id, section.id));
+          .where(eq(sections.id, flagRow.sectionId));
       }
     }
-  }
 
-  // Update resolved count if skipped or rejected
-  if (action === "skipped" || action === "rejected") {
-    const [section] = await db
-      .select()
-      .from(sections)
-      .where(eq(sections.id, updatedFlag.sectionId))
-      .limit(1);
-
-    if (section) {
+    // ── Increment resolved count for skip/reject ─────────────────────
+    if (action === "skipped" || action === "rejected") {
       await db
         .update(sections)
-        .set({ flagsResolved: section.flagsResolved + 1 })
-        .where(eq(sections.id, section.id));
+        .set({ flagsResolved: flagRow.sectionFlagsResolved + 1 })
+        .where(eq(sections.id, flagRow.sectionId));
     }
-  }
 
-  // Update library entry flag count and acceptance rate (async)
-  if (updatedFlag.libraryEntryId) {
-    const [entry] = await db
-      .select()
-      .from(libraryEntries)
-      .where(eq(libraryEntries.id, updatedFlag.libraryEntryId))
-      .limit(1);
+    // ── Update library entry stats (async) ───────────────────────────
+    if (updatedFlag.libraryEntryId) {
+      const [entry] = await db
+        .select()
+        .from(libraryEntries)
+        .where(eq(libraryEntries.id, updatedFlag.libraryEntryId))
+        .limit(1);
 
-    if (entry) {
-      const newFlagCount = entry.flagCount + 1;
-      const accepted = action === "accepted" ? 1 : 0;
-      const currentAccepted = (entry.acceptanceRate ?? 0) * entry.flagCount;
-      const newRate = (currentAccepted + accepted) / newFlagCount;
+      if (entry) {
+        const newFlagCount = entry.flagCount + 1;
+        const accepted = action === "accepted" ? 1 : 0;
+        const currentAccepted = (entry.acceptanceRate ?? 0) * entry.flagCount;
+        const newRate = (currentAccepted + accepted) / newFlagCount;
 
-      await db
-        .update(libraryEntries)
-        .set({
-          flagCount: newFlagCount,
-          acceptanceRate: newRate,
-          updatedAt: new Date(),
-        })
-        .where(eq(libraryEntries.id, updatedFlag.libraryEntryId));
+        await db
+          .update(libraryEntries)
+          .set({
+            flagCount: newFlagCount,
+            acceptanceRate: newRate,
+            updatedAt: new Date(),
+          })
+          .where(eq(libraryEntries.id, updatedFlag.libraryEntryId));
+      }
     }
+
+    // ── Fire-and-forget style profile logging ────────────────────────
+    const signalWeight = manualText
+      ? "manual_rewrite"
+      : optionId
+        ? "option_selected"
+        : action === "rejected" || action === "skipped"
+          ? "rejected"
+          : "option_selected";
+
+    logStyleSignal(user.id, flagRow.documentType, {
+      patternType: updatedFlag.patternType,
+      originalPhrase: updatedFlag.flaggedPhrase,
+      replacement: manualText || "",
+      signalWeight,
+      documentType: flagRow.documentType,
+    }).catch((err) => console.error("Style logging failed:", err));
+
+    return NextResponse.json({ success: true, data: updatedFlag });
+  } catch (err) {
+    console.error("Flag resolve error:", err);
+    return NextResponse.json({ success: false, error: "Failed to resolve flag." }, { status: 500 });
   }
-
-  // Fire-and-forget style profile logging (hard constraint #5: manual_rewrite = weight 3)
-  const [section] = await db
-    .select()
-    .from(sections)
-    .where(eq(sections.id, updatedFlag.sectionId))
-    .limit(1);
-
-  if (section) {
-    const [doc] = await db
-      .select()
-      .from(documents)
-      .where(eq(documents.id, section.documentId))
-      .limit(1);
-
-    if (doc) {
-      const signalWeight = manualText
-        ? "manual_rewrite"
-        : optionId
-          ? "option_selected"
-          : action === "rejected" || action === "skipped"
-            ? "rejected"
-            : "option_selected";
-
-      logStyleSignal(user.id, doc.documentType, {
-        patternType: updatedFlag.patternType,
-        originalPhrase: updatedFlag.flaggedPhrase,
-        replacement: manualText || "",
-        signalWeight,
-        documentType: doc.documentType,
-      }).catch((err) => console.error("Style logging failed:", err));
-    }
-  }
-
-  return NextResponse.json({ success: true, data: updatedFlag });
 }
