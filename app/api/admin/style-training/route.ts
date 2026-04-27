@@ -24,27 +24,32 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
   }
 
-  const body = await request.json();
-  const { action } = body;
+  try {
+    const body = await request.json();
+    const { action } = body;
 
-  if (action === "update_preference") {
-    const { id, preference } = body;
-    const [updated] = await db
-      .update(styleTraining)
-      .set({ preference })
-      .where(eq(styleTraining.id, id))
-      .returning();
-    return NextResponse.json({ success: true, data: updated });
+    if (action === "update_preference") {
+      const { id, preference } = body;
+      const [updated] = await db
+        .update(styleTraining)
+        .set({ preference })
+        .where(eq(styleTraining.id, id))
+        .returning();
+      return NextResponse.json({ success: true, data: updated });
+    }
+
+    if (action === "bulk_update") {
+      const { category, preference } = body;
+      await db
+        .update(styleTraining)
+        .set({ preference })
+        .where(eq(styleTraining.category, category));
+      return NextResponse.json({ success: true });
+    }
+
+    return NextResponse.json({ success: false, error: "Unknown action" }, { status: 400 });
+  } catch (err) {
+    console.error("Admin style-training POST error:", err);
+    return NextResponse.json({ success: false, error: "Operation failed." }, { status: 500 });
   }
-
-  if (action === "bulk_update") {
-    const { category, preference } = body;
-    await db
-      .update(styleTraining)
-      .set({ preference })
-      .where(eq(styleTraining.category, category));
-    return NextResponse.json({ success: true });
-  }
-
-  return NextResponse.json({ success: false, error: "Unknown action" }, { status: 400 });
 }

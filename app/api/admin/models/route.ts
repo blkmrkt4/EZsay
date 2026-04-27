@@ -47,28 +47,33 @@ export async function PUT(request: NextRequest) {
     );
   }
 
-  const body = await request.json();
-  const {
-    activityType,
-    primaryModel,
-    fallbackModel1,
-    fallbackModel2,
-    temperature,
-    maxTokens,
-  } = body;
-
-  const [updated] = await db
-    .update(modelConfigs)
-    .set({
+  try {
+    const body = await request.json();
+    const {
+      activityType,
       primaryModel,
       fallbackModel1,
       fallbackModel2,
       temperature,
       maxTokens,
-      updatedAt: new Date(),
-    })
-    .where(eq(modelConfigs.activityType, activityType))
-    .returning();
+    } = body;
 
-  return NextResponse.json({ success: true, data: updated });
+    const [updated] = await db
+      .update(modelConfigs)
+      .set({
+        primaryModel,
+        fallbackModel1,
+        fallbackModel2,
+        temperature,
+        maxTokens,
+        updatedAt: new Date(),
+      })
+      .where(eq(modelConfigs.activityType, activityType))
+      .returning();
+
+    return NextResponse.json({ success: true, data: updated });
+  } catch (err) {
+    console.error("Admin models PUT error:", err);
+    return NextResponse.json({ success: false, error: "Update failed." }, { status: 500 });
+  }
 }

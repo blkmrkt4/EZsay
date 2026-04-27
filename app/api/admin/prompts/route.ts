@@ -61,77 +61,82 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const body = await request.json();
-  const { action } = body;
+  try {
+    const body = await request.json();
+    const { action } = body;
 
-  if (action === "save_version") {
-    const { activityType, name, promptText } = body;
+    if (action === "save_version") {
+      const { activityType, name, promptText } = body;
 
-    const [version] = await db
-      .insert(promptVersions)
-      .values({
-        activityType,
-        name,
-        promptText,
-        createdBy: auth.user.id,
-      })
-      .returning();
+      const [version] = await db
+        .insert(promptVersions)
+        .values({
+          activityType,
+          name,
+          promptText,
+          createdBy: auth.user.id,
+        })
+        .returning();
 
-    // Set as active
-    await db
-      .update(promptConfigs)
-      .set({ activeVersionId: version.id, updatedBy: auth.user.id, updatedAt: new Date() })
-      .where(eq(promptConfigs.activityType, activityType));
+      // Set as active
+      await db
+        .update(promptConfigs)
+        .set({ activeVersionId: version.id, updatedBy: auth.user.id, updatedAt: new Date() })
+        .where(eq(promptConfigs.activityType, activityType));
 
-    return NextResponse.json({ success: true, data: version });
+      return NextResponse.json({ success: true, data: version });
+    }
+
+    if (action === "set_active") {
+      const { activityType, versionId } = body;
+
+      await db
+        .update(promptConfigs)
+        .set({ activeVersionId: versionId, updatedBy: auth.user.id, updatedAt: new Date() })
+        .where(eq(promptConfigs.activityType, activityType));
+
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "save_context") {
+      const { name, contextText } = body;
+
+      // Deactivate all existing
+      await db
+        .update(contextVersions)
+        .set({ isActive: false });
+
+      const [version] = await db
+        .insert(contextVersions)
+        .values({
+          name,
+          contextText,
+          isActive: true,
+          createdBy: auth.user.id,
+        })
+        .returning();
+
+      return NextResponse.json({ success: true, data: version });
+    }
+
+    if (action === "restore_context") {
+      const { versionId } = body;
+
+      await db.update(contextVersions).set({ isActive: false });
+      await db
+        .update(contextVersions)
+        .set({ isActive: true })
+        .where(eq(contextVersions.id, versionId));
+
+      return NextResponse.json({ success: true });
+    }
+
+    return NextResponse.json(
+      { success: false, error: "Unknown action" },
+      { status: 400 }
+    );
+  } catch (err) {
+    console.error("Admin prompts POST error:", err);
+    return NextResponse.json({ success: false, error: "Operation failed." }, { status: 500 });
   }
-
-  if (action === "set_active") {
-    const { activityType, versionId } = body;
-
-    await db
-      .update(promptConfigs)
-      .set({ activeVersionId: versionId, updatedBy: auth.user.id, updatedAt: new Date() })
-      .where(eq(promptConfigs.activityType, activityType));
-
-    return NextResponse.json({ success: true });
-  }
-
-  if (action === "save_context") {
-    const { name, contextText } = body;
-
-    // Deactivate all existing
-    await db
-      .update(contextVersions)
-      .set({ isActive: false });
-
-    const [version] = await db
-      .insert(contextVersions)
-      .values({
-        name,
-        contextText,
-        isActive: true,
-        createdBy: auth.user.id,
-      })
-      .returning();
-
-    return NextResponse.json({ success: true, data: version });
-  }
-
-  if (action === "restore_context") {
-    const { versionId } = body;
-
-    await db.update(contextVersions).set({ isActive: false });
-    await db
-      .update(contextVersions)
-      .set({ isActive: true })
-      .where(eq(contextVersions.id, versionId));
-
-    return NextResponse.json({ success: true });
-  }
-
-  return NextResponse.json(
-    { success: false, error: "Unknown action" },
-    { status: 400 }
-  );
 }

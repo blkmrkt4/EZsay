@@ -30,12 +30,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
   }
 
-  const { key, value } = await request.json();
+  try {
+    const { key, value } = await request.json();
 
-  await db
-    .insert(adminSettings)
-    .values({ key, value })
-    .onConflictDoUpdate({ target: adminSettings.key, set: { value, updatedAt: new Date() } });
+    if (!key || typeof key !== "string" || typeof value !== "string") {
+      return NextResponse.json({ success: false, error: "key and value must be non-empty strings" }, { status: 400 });
+    }
 
-  return NextResponse.json({ success: true });
+    await db
+      .insert(adminSettings)
+      .values({ key, value })
+      .onConflictDoUpdate({ target: adminSettings.key, set: { value, updatedAt: new Date() } });
+
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    console.error("Admin settings POST error:", err);
+    return NextResponse.json({ success: false, error: "Update failed." }, { status: 500 });
+  }
 }

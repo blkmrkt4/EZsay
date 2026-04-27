@@ -63,83 +63,88 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
   }
 
-  const body = await request.json();
-  const { action } = body;
+  try {
+    const body = await request.json();
+    const { action } = body;
 
-  if (action === "create") {
-    const { name, slug, description } = body;
-    const [bind] = await db
-      .insert(activityBinds)
-      .values({ name, slug, description, isSystem: false })
-      .returning();
-    return NextResponse.json({ success: true, data: bind });
-  }
-
-  if (action === "update") {
-    const { id, ...updates } = body;
-    delete updates.action;
-    updates.updatedAt = new Date();
-
-    const [bind] = await db
-      .update(activityBinds)
-      .set(updates)
-      .where(eq(activityBinds.id, id))
-      .returning();
-
-    return NextResponse.json({ success: true, data: bind });
-  }
-
-  if (action === "delete") {
-    const { id } = body;
-    // Prevent deleting system binds
-    const [bind] = await db.select().from(activityBinds).where(eq(activityBinds.id, id)).limit(1);
-    if (bind?.isSystem) {
-      return NextResponse.json({ success: false, error: "Cannot delete system activity" }, { status: 400 });
+    if (action === "create") {
+      const { name, slug, description } = body;
+      const [bind] = await db
+        .insert(activityBinds)
+        .values({ name, slug, description, isSystem: false })
+        .returning();
+      return NextResponse.json({ success: true, data: bind });
     }
-    await db.delete(activityBinds).where(eq(activityBinds.id, id));
-    return NextResponse.json({ success: true });
+
+    if (action === "update") {
+      const { id, ...updates } = body;
+      delete updates.action;
+      updates.updatedAt = new Date();
+
+      const [bind] = await db
+        .update(activityBinds)
+        .set(updates)
+        .where(eq(activityBinds.id, id))
+        .returning();
+
+      return NextResponse.json({ success: true, data: bind });
+    }
+
+    if (action === "delete") {
+      const { id } = body;
+      // Prevent deleting system binds
+      const [bind] = await db.select().from(activityBinds).where(eq(activityBinds.id, id)).limit(1);
+      if (bind?.isSystem) {
+        return NextResponse.json({ success: false, error: "Cannot delete system activity" }, { status: 400 });
+      }
+      await db.delete(activityBinds).where(eq(activityBinds.id, id));
+      return NextResponse.json({ success: true });
+    }
+
+    // ── Library CRUD ─────────────────────────────────────────────────────
+
+    if (action === "add_model") {
+      const { openrouterModelId, name, description } = body;
+      const [item] = await db.insert(modelLibrary).values({ openrouterModelId, name, description }).returning();
+      return NextResponse.json({ success: true, data: item });
+    }
+
+    if (action === "delete_model") {
+      await db.delete(modelLibrary).where(eq(modelLibrary.id, body.id));
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "add_prompt") {
+      const { name, description, systemPrompt, userPrompt } = body;
+      const [item] = await db.insert(promptLibrary).values({ name, description, systemPrompt, userPrompt }).returning();
+      return NextResponse.json({ success: true, data: item });
+    }
+
+    if (action === "update_prompt") {
+      const { id, name, description, systemPrompt, userPrompt } = body;
+      const [item] = await db.update(promptLibrary).set({ name, description, systemPrompt, userPrompt, updatedAt: new Date() }).where(eq(promptLibrary.id, id)).returning();
+      return NextResponse.json({ success: true, data: item });
+    }
+
+    if (action === "delete_prompt") {
+      await db.delete(promptLibrary).where(eq(promptLibrary.id, body.id));
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "add_context") {
+      const { name, description, sourceType, content } = body;
+      const [item] = await db.insert(contextLibrary).values({ name, description, sourceType, content }).returning();
+      return NextResponse.json({ success: true, data: item });
+    }
+
+    if (action === "delete_context") {
+      await db.delete(contextLibrary).where(eq(contextLibrary.id, body.id));
+      return NextResponse.json({ success: true });
+    }
+
+    return NextResponse.json({ success: false, error: "Unknown action" }, { status: 400 });
+  } catch (err) {
+    console.error("Admin binds POST error:", err);
+    return NextResponse.json({ success: false, error: "Operation failed." }, { status: 500 });
   }
-
-  // ── Library CRUD ─────────────────────────────────────────────────────
-
-  if (action === "add_model") {
-    const { openrouterModelId, name, description } = body;
-    const [item] = await db.insert(modelLibrary).values({ openrouterModelId, name, description }).returning();
-    return NextResponse.json({ success: true, data: item });
-  }
-
-  if (action === "delete_model") {
-    await db.delete(modelLibrary).where(eq(modelLibrary.id, body.id));
-    return NextResponse.json({ success: true });
-  }
-
-  if (action === "add_prompt") {
-    const { name, description, systemPrompt, userPrompt } = body;
-    const [item] = await db.insert(promptLibrary).values({ name, description, systemPrompt, userPrompt }).returning();
-    return NextResponse.json({ success: true, data: item });
-  }
-
-  if (action === "update_prompt") {
-    const { id, name, description, systemPrompt, userPrompt } = body;
-    const [item] = await db.update(promptLibrary).set({ name, description, systemPrompt, userPrompt, updatedAt: new Date() }).where(eq(promptLibrary.id, id)).returning();
-    return NextResponse.json({ success: true, data: item });
-  }
-
-  if (action === "delete_prompt") {
-    await db.delete(promptLibrary).where(eq(promptLibrary.id, body.id));
-    return NextResponse.json({ success: true });
-  }
-
-  if (action === "add_context") {
-    const { name, description, sourceType, content } = body;
-    const [item] = await db.insert(contextLibrary).values({ name, description, sourceType, content }).returning();
-    return NextResponse.json({ success: true, data: item });
-  }
-
-  if (action === "delete_context") {
-    await db.delete(contextLibrary).where(eq(contextLibrary.id, body.id));
-    return NextResponse.json({ success: true });
-  }
-
-  return NextResponse.json({ success: false, error: "Unknown action" }, { status: 400 });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import LandingNav from "@/components/landing/LandingNav";
@@ -48,6 +48,14 @@ function formatMoney(n: number): string {
 }
 
 export default function PricingPage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center"><p className="text-gray-400">Loading...</p></div>}>
+      <PricingContent />
+    </Suspense>
+  );
+}
+
+function PricingContent() {
   const [billing, setBilling] = useState<Billing>("monthly");
   // Checkout state — `loadingPlan` is the plan id currently being purchased
   // (drives the per-button loading text); `checkoutError` shows inline if

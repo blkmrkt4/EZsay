@@ -9,6 +9,7 @@ import {
   jsonb,
   pgEnum,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
 
 // ── Enums ──────────────────────────────────────────────────────────────────
@@ -162,7 +163,9 @@ export const libraryEntries = pgTable("library_entries", {
   addedBy: uuid("added_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => [
+  index("library_entries_status_idx").on(t.status),
+]);
 
 // ── Documents ──────────────────────────────────────────────────────────────
 
@@ -191,7 +194,9 @@ export const documents = pgTable("documents", {
   lastScanAt: timestamp("last_scan_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => [
+  index("documents_user_id_idx").on(t.userId),
+]);
 
 // ── Document Versions ──────────────────────────────────────────────────────
 
@@ -225,7 +230,9 @@ export const sections = pgTable("sections", {
   flagCount: integer("flag_count").notNull().default(0),
   flagsResolved: integer("flags_resolved").notNull().default(0),
   isLocked: boolean("is_locked").notNull().default(false),
-});
+}, (t) => [
+  index("sections_document_id_idx").on(t.documentId),
+]);
 
 // ── Flags ──────────────────────────────────────────────────────────────────
 
@@ -246,7 +253,9 @@ export const flags = pgTable("flags", {
   manualReplacement: text("manual_replacement"),
   scanRunId: text("scan_run_id"),
   metadata: jsonb("metadata"),
-});
+}, (t) => [
+  index("flags_section_id_idx").on(t.sectionId),
+]);
 
 // ── Flag Options ───────────────────────────────────────────────────────────
 
@@ -275,7 +284,9 @@ export const citations = pgTable("citations", {
   status: citationStatusEnum("status").notNull().default("open"),
   userAction: citationUserActionEnum("user_action"),
   correctedText: text("corrected_text"),
-});
+}, (t) => [
+  index("citations_document_id_idx").on(t.documentId),
+]);
 
 // ── Style Profiles ─────────────────────────────────────────────────────────
 
@@ -445,9 +456,9 @@ export const usageTracking = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   // Required by recordScanUsage's ON CONFLICT (user_id, year_month) DO UPDATE upsert.
-  (t) => ({
-    userMonthUnique: uniqueIndex("usage_tracking_user_month_unique").on(t.userId, t.yearMonth),
-  }),
+  (t) => [
+    uniqueIndex("usage_tracking_user_month_unique").on(t.userId, t.yearMonth),
+  ],
 );
 
 // ── Admin: LLM Call Log ────────────────────────────────────────────────────
@@ -502,4 +513,6 @@ export const plagiarismResults = pgTable("plagiarism_results", {
   status: plagiarismStatusEnum("status").notNull().default("open"),
   modelUsed: text("model_used"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => [
+  index("plagiarism_results_document_id_idx").on(t.documentId),
+]);
