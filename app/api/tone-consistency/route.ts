@@ -54,6 +54,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, error: "documentId required" }, { status: 400 });
   }
 
+  // Verify ownership
+  const [doc] = await db
+    .select({ id: documents.id })
+    .from(documents)
+    .where(and(eq(documents.id, documentId), eq(documents.userId, user.id)))
+    .limit(1);
+  if (!doc) {
+    return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
+  }
+
   // Load tone_inconsistency flags for this document
   const docSections = await db.select().from(sections).where(eq(sections.documentId, documentId));
   const sectionIds = docSections.map((s) => s.id);

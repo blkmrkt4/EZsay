@@ -15,6 +15,16 @@ interface DocumentData {
   toneConsistencyScore: number | null;
   spellingScore: number | null;
   grammarScore: number | null;
+  extractionMeta: {
+    sourceType: "pdf" | "docx" | "txt" | "pasted";
+    confidence: "high" | "medium" | "low";
+    likelyGraphicsHeavy: boolean;
+    pageCount?: number;
+    pagesWithText?: number;
+    extractedWordCount?: number;
+    averageWordsPerPage?: number;
+    coverageRatio?: number;
+  } | null;
 }
 
 interface FlagData {
@@ -111,6 +121,12 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
   const qualScore = doc.writingQualityScore ?? 50;
   const artifactScore = doc.aiArtifactScore ?? null;
   const artifactScoreInverted = artifactScore !== null ? 100 - artifactScore : null;
+  const extractionMeta = doc.extractionMeta;
+  const showCoverageWarning = extractionMeta?.sourceType === "pdf"
+    && (extractionMeta.confidence === "low" || extractionMeta.likelyGraphicsHeavy);
+  const analyzedCoveragePercent = extractionMeta?.coverageRatio != null
+    ? Math.round(extractionMeta.coverageRatio * 100)
+    : null;
 
   // Plagiarism score — only actual plagiarism counts, weighted by confidence
   const plagiarismOnly = plagiarismResults.filter((r) => r.verdict === "plagiarism");
@@ -217,6 +233,18 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
           </div>
         );
       })()}
+
+      {showCoverageWarning && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+          <p className="text-[11px] font-semibold text-amber-800">Limited analysis confidence for this PDF</p>
+          <p className="mt-1 text-[10px] leading-relaxed text-amber-700">
+            This file appears graphics-heavy or image-based. Scores are based only on extracted text{analyzedCoveragePercent != null ? ` (${analyzedCoveragePercent}% page text coverage)` : ""} and may not represent the full document.
+          </p>
+          <p className="mt-1 text-[10px] text-amber-700">
+            Text score reflects extracted content only{extractionMeta?.extractedWordCount != null ? ` (${extractionMeta.extractedWordCount.toLocaleString()} words analyzed)` : ""}.
+          </p>
+        </div>
+      )}
 
       <p className="text-[10px] text-gray-400">Click any score to see what contributed to it.</p>
 

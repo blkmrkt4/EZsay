@@ -122,10 +122,14 @@ export async function webSearch(
   const tavilyKey = await getTavilyKey();
 
   if (tavilyKey) {
-    console.log(`[search] Using Tavily for: "${query.slice(0, 50)}..."`);
-    return tavilySearch(query, tavilyKey, maxResults);
+    try {
+      console.log(`[search] Using Tavily for: "${query.slice(0, 50)}..."`);
+      return await tavilySearch(query, tavilyKey, maxResults);
+    } catch (err) {
+      console.warn(`[search] Tavily failed, falling back to DuckDuckGo:`, err instanceof Error ? err.message : err);
+    }
   }
 
-  console.log(`[search] No Tavily key — using DuckDuckGo (free) for: "${query.slice(0, 50)}..."`);
+  console.log(`[search] Using DuckDuckGo for: "${query.slice(0, 50)}..."`);
   return duckDuckGoSearch(query, maxResults);
 }

@@ -1,16 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 export default function SignupPage() {
+  return (
+    <Suspense>
+      <SignupForm />
+    </Suspense>
+  );
+}
+
+function SignupForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const searchParams = useSearchParams();
+  const plan = searchParams.get("plan");
+  const billing = searchParams.get("billing");
 
   const supabase = createClient();
 
@@ -19,11 +31,16 @@ export default function SignupPage() {
     setLoading(true);
     setError(null);
 
+    const callbackUrl = new URL("/auth/callback", window.location.origin);
+    callbackUrl.searchParams.set("redirect", "/w");
+    if (plan) callbackUrl.searchParams.set("plan", plan);
+    if (billing) callbackUrl.searchParams.set("billing", billing);
+
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: callbackUrl.toString(),
       },
     });
 
@@ -38,10 +55,15 @@ export default function SignupPage() {
   }
 
   async function handleOAuth(provider: "google") {
+    const callbackUrl = new URL("/auth/callback", window.location.origin);
+    callbackUrl.searchParams.set("redirect", "/w");
+    if (plan) callbackUrl.searchParams.set("plan", plan);
+    if (billing) callbackUrl.searchParams.set("billing", billing);
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: callbackUrl.toString(),
       },
     });
     if (error) setError(error.message);

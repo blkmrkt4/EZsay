@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
 import { flags, sections, documents, flagOptions, llmCallLog } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { executeActivity } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 
@@ -55,14 +55,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Get document type to pick the right slug
+  // Get document type to pick the right slug — also verifies ownership
   const [doc] = await db
     .select()
     .from(documents)
-    .where(eq(documents.id, section.documentId))
+    .where(and(eq(documents.id, section.documentId), eq(documents.userId, user.id)))
     .limit(1);
 
-  const docType = doc?.documentType || "professional";
+  if (!doc) {
+    return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
+  }
+
+  const docType = doc.documentType || "professional";
   const slug = docType === "academic" ? "suggest-academic" : "suggest-rewrite";
 
   try {

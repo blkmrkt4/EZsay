@@ -22,8 +22,19 @@ interface Document {
   aiArtifactScore: number | null;
   citationsScore: number | null;
   toneConsistencyScore: number | null;
+  plagiarismScore: number | null;
   spellingResults: unknown;
   grammarResults: unknown;
+  extractionMeta: {
+    sourceType: "pdf" | "docx" | "txt" | "pasted";
+    confidence: "high" | "medium" | "low";
+    likelyGraphicsHeavy: boolean;
+    pageCount?: number;
+    pagesWithText?: number;
+    extractedWordCount?: number;
+    averageWordsPerPage?: number;
+    coverageRatio?: number;
+  } | null;
   spellingScore: number | null;
   grammarScore: number | null;
   lastScanLevel: string | null;
@@ -888,18 +899,28 @@ export default function WorkspacePage() {
   const objectiveAuditorScore = useMemo(() => {
     if (!activeDoc) return null;
 
+    const extractionMeta = activeDoc.extractionMeta;
+    if (extractionMeta?.sourceType === "pdf" && extractionMeta.confidence === "low") {
+      return null;
+    }
+
     // Normalize all scores to "higher = better" (0-100)
     const scores: { key: string; value: number | null; weight: number }[] = [
       { key: "aiDetectability", value: activeDoc.aiRiskScore != null ? 100 - activeDoc.aiRiskScore : null, weight: 25 },
       { key: "aiArtifacts", value: activeDoc.aiArtifactScore ?? null, weight: 12 }, // stored as 100=clean, already correct direction
       { key: "writingQuality", value: activeDoc.writingQualityScore ?? null, weight: 10 },
-      { key: "plagiarism", value: plagiarismResults.length > 0 ? (() => {
-        const plagOnly = plagiarismResults.filter((r) => r.verdict === "plagiarism");
-        const checked = plagiarismResults.filter((r) => r.verdict !== "error").length;
-        if (checked === 0) return null;
-        const rawPlag = Math.round((plagOnly.reduce((s, r) => s + (r.confidence ?? 0.5), 0) / checked) * 100);
-        return 100 - rawPlag;
-      })() : null, weight: 30 },
+      { key: "plagiarism", value: activeDoc.plagiarismScore != null
+        ? 100 - activeDoc.plagiarismScore
+        : plagiarismResults.length > 0
+          ? (() => {
+              // Fallback: calculate from results for docs scanned before plagiarismScore was persisted
+              const plagOnly = plagiarismResults.filter((r) => r.verdict === "plagiarism");
+              const checked = plagiarismResults.filter((r) => r.verdict !== "error").length;
+              if (checked === 0) return null;
+              const rawPlag = Math.round((plagOnly.reduce((s, r) => s + (r.confidence ?? 0.5), 0) / checked) * 100);
+              return 100 - rawPlag;
+            })()
+          : null, weight: 30 },
       { key: "citations", value: activeDoc.citationsScore ?? null, weight: 15 },
       { key: "toneConsistency", value: activeDoc.toneConsistencyScore ?? null, weight: 8 },
     ];
@@ -1273,7 +1294,19 @@ export default function WorkspacePage() {
               {docs.map((doc) => (
                 <button key={doc.id} onClick={() => selectDocument(doc.id)} className={`mb-0.5 flex w-full items-center justify-between rounded px-2 py-1.5 text-left ${activeDocId === doc.id ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"}`}>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs font-medium">{doc.title}</p>
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <p className="truncate text-xs font-medium">{doc.title}</p>
+                      {doc.extractionMeta?.sourceType === "pdf" && (doc.extractionMeta.confidence === "low" || doc.extractionMeta.likelyGraphicsHeavy) && (
+                        <span
+                          className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-700"
+                          title={doc.extractionMeta.coverageRatio != null
+                            ? `Low text coverage: ${Math.round(doc.extractionMeta.coverageRatio * 100)}% of PDF pages had extractable text. Scores are based on extracted text only.`
+                            : "Low text coverage: this PDF appears graphics-heavy or image-based. Scores are based on extracted text only."}
+                        >
+                          Low text coverage
+                        </span>
+                      )}
+                    </div>
                     <p className="text-[10px] text-gray-400">
                       {doc.versionCount > 0 ? (
                         <>

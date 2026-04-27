@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
 import { flags, flagOptions, sections, libraryEntries, documents } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { logStyleSignal } from "@/lib/style/logger";
 import { validateReplacement } from "@/lib/analysis/corruption-checker";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
@@ -21,6 +21,32 @@ export async function POST(request: NextRequest) {
   if (gateResponse) return gateResponse;
 
   const { flagId, action, optionId, manualText } = await request.json();
+
+  // Verify ownership: flag → section → document → userId
+  const [ownerFlag] = await db
+    .select({ sectionId: flags.sectionId })
+    .from(flags)
+    .where(eq(flags.id, flagId))
+    .limit(1);
+  if (!ownerFlag) {
+    return NextResponse.json({ success: false, error: "Flag not found" }, { status: 404 });
+  }
+  const [ownerSection] = await db
+    .select({ documentId: sections.documentId })
+    .from(sections)
+    .where(eq(sections.id, ownerFlag.sectionId))
+    .limit(1);
+  if (!ownerSection) {
+    return NextResponse.json({ success: false, error: "Section not found" }, { status: 404 });
+  }
+  const [ownerDoc] = await db
+    .select({ userId: documents.userId })
+    .from(documents)
+    .where(and(eq(documents.id, ownerSection.documentId), eq(documents.userId, user.id)))
+    .limit(1);
+  if (!ownerDoc) {
+    return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
+  }
 
   // Update flag status
   const updateData: Record<string, unknown> = {

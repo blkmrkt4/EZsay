@@ -328,16 +328,6 @@ export default function Home() {
         {/* Divider */}
         <div className="mx-auto max-w-5xl border-t border-white/10" />
 
-        {/* Customer quote — placeholder */}
-        <section className="mx-auto max-w-3xl px-6 py-20 text-center sm:py-24">
-          <p className="mx-auto max-w-xl text-lg italic leading-relaxed text-gray-500">
-            &ldquo;Customer quote coming soon.&rdquo;
-          </p>
-        </section>
-
-        {/* Divider */}
-        <div className="mx-auto max-w-5xl border-t border-white/10" />
-
         {/* Final CTA */}
         <section className="mx-auto max-w-3xl px-6 py-20 text-center sm:py-24">
           <h2 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">

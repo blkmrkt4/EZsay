@@ -87,6 +87,7 @@ function FreeScanInner() {
 
   // Post-claim sample flags
   const [sampleFlags, setSampleFlags] = useState<SampleFlag[]>([]);
+  const [sampleFlagsFetched, setSampleFlagsFetched] = useState(false);
 
   // ── Mount: detect session, restore prior scan if user is returning from
   //          the verification email, listen for auth state changes.
@@ -134,12 +135,14 @@ function FreeScanInner() {
   // Whenever the user transitions from anonymous → permanent (and we have
   // a doc), fetch the sample flags to populate the post-claim reveal.
   useEffect(() => {
-    if (!isAnonymous && documentId && stage === "results" && sampleFlags.length === 0) {
+    if (!isAnonymous && documentId && stage === "results" && !sampleFlagsFetched) {
       fetchSampleFlags(documentId);
     }
-  }, [isAnonymous, documentId, stage, sampleFlags.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAnonymous, documentId, stage, sampleFlagsFetched]);
 
   async function fetchSampleFlags(docId: string) {
+    setSampleFlagsFetched(true);
     try {
       const res = await fetch(`/api/documents/${docId}`);
       const json = await res.json();

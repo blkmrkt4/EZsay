@@ -17,61 +17,70 @@ export async function POST(request: NextRequest) {
 
   const { documentId } = await request.json();
 
-  const [doc] = await db
-    .select()
-    .from(documents)
-    .where(and(eq(documents.id, documentId), eq(documents.userId, user.id)))
-    .limit(1);
+  try {
+    const [doc] = await db
+      .select()
+      .from(documents)
+      .where(and(eq(documents.id, documentId), eq(documents.userId, user.id)))
+      .limit(1);
 
-  if (!doc) {
-    return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
-  }
-
-  // Delete all existing flags and options
-  const docSections = await db.select().from(sections).where(eq(sections.documentId, documentId));
-  for (const sec of docSections) {
-    const sFlags = await db.select({ id: flags.id }).from(flags).where(eq(flags.sectionId, sec.id));
-    for (const f of sFlags) {
-      await db.delete(flagOptions).where(eq(flagOptions.flagId, f.id));
+    if (!doc) {
+      return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
     }
-    await db.delete(flags).where(eq(flags.sectionId, sec.id));
+
+    // Delete all existing flags and options
+    const docSections = await db.select().from(sections).where(eq(sections.documentId, documentId));
+    for (const sec of docSections) {
+      const sFlags = await db.select({ id: flags.id }).from(flags).where(eq(flags.sectionId, sec.id));
+      for (const f of sFlags) {
+        await db.delete(flagOptions).where(eq(flagOptions.flagId, f.id));
+      }
+      await db.delete(flags).where(eq(flags.sectionId, sec.id));
+    }
+
+    // Delete all existing sections
+    await db.delete(sections).where(eq(sections.documentId, documentId));
+
+    // Re-parse from original rawText
+    const parsed = parseAndSplit(doc.rawText);
+
+    // Re-create sections
+    const sectionValues = parsed.sections.map((s, i) => ({
+      documentId,
+      index: i,
+      rawText: s.text,
+      currentText: s.text,
+      isLocked: s.isLocked,
+    }));
+
+    if (sectionValues.length > 0) {
+      await db.insert(sections).values(sectionValues);
+    }
+
+    // Reset document scores and status
+    await db.update(documents).set({
+      status: "uploaded",
+      aiRiskScore: null,
+      writingQualityScore: null,
+      aiArtifactScore: null,
+      citationsScore: null,
+      toneConsistencyScore: null,
+      plagiarismScore: null,
+      lastRescoreAt: null,
+      updatedAt: new Date(),
+    }).where(eq(documents.id, documentId));
+
+    console.log(`[reset] Document ${documentId} reset to original text (${sectionValues.length} sections)`);
+
+    return NextResponse.json({
+      success: true,
+      data: { sectionCount: sectionValues.length },
+    });
+  } catch (err) {
+    console.error("Document reset failed:", err);
+    return NextResponse.json(
+      { success: false, error: "Failed to reset document." },
+      { status: 500 }
+    );
   }
-
-  // Delete all existing sections
-  await db.delete(sections).where(eq(sections.documentId, documentId));
-
-  // Re-parse from original rawText
-  const parsed = parseAndSplit(doc.rawText);
-
-  // Re-create sections
-  const sectionValues = parsed.sections.map((s, i) => ({
-    documentId,
-    index: i,
-    rawText: s.text,
-    currentText: s.text,
-    isLocked: s.isLocked,
-  }));
-
-  if (sectionValues.length > 0) {
-    await db.insert(sections).values(sectionValues);
-  }
-
-  // Reset document scores and status
-  await db.update(documents).set({
-    status: "uploaded",
-    aiRiskScore: null,
-    writingQualityScore: null,
-    aiArtifactScore: null,
-    citationsScore: null,
-    toneConsistencyScore: null,
-    lastRescoreAt: null,
-    updatedAt: new Date(),
-  }).where(eq(documents.id, documentId));
-
-  console.log(`[reset] Document ${documentId} reset to original text (${sectionValues.length} sections)`);
-
-  return NextResponse.json({
-    success: true,
-    data: { sectionCount: sectionValues.length },
-  });
 }

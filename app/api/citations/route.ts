@@ -23,22 +23,30 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, error: "documentId required" }, { status: 400 });
   }
 
-  // Verify ownership
-  const [doc] = await db
-    .select()
-    .from(documents)
-    .where(and(eq(documents.id, documentId), eq(documents.userId, user.id)))
-    .limit(1);
-  if (!doc) {
-    return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
+  try {
+    // Verify ownership
+    const [doc] = await db
+      .select()
+      .from(documents)
+      .where(and(eq(documents.id, documentId), eq(documents.userId, user.id)))
+      .limit(1);
+    if (!doc) {
+      return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
+    }
+
+    const docCitations = await db
+      .select()
+      .from(citations)
+      .where(eq(citations.documentId, documentId));
+
+    return NextResponse.json({ success: true, data: docCitations });
+  } catch (err) {
+    console.error("Citations load failed:", err);
+    return NextResponse.json(
+      { success: false, error: "Failed to load citations." },
+      { status: 500 }
+    );
   }
-
-  const docCitations = await db
-    .select()
-    .from(citations)
-    .where(eq(citations.documentId, documentId));
-
-  return NextResponse.json({ success: true, data: docCitations });
 }
 
 export async function POST(request: NextRequest) {
@@ -47,30 +55,38 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = await request.json();
-  const { action } = body;
+  try {
+    const body = await request.json();
+    const { action } = body;
 
-  if (action === "structural_check") {
-    return handleStructuralCheck(body, user.id);
+    if (action === "structural_check") {
+      return handleStructuralCheck(body, user.id);
+    }
+
+    if (action === "resolve") {
+      return handleResolve(body, user.id);
+    }
+
+    if (action === "verify_all") {
+      return handleVerifyAll(body, user.id);
+    }
+
+    if (action === "convert_all") {
+      return handleConvertAll(body, user.id);
+    }
+
+    if (action === "compute_score") {
+      return handleComputeScore(body, user.id);
+    }
+
+    return NextResponse.json({ success: false, error: "Unknown action" }, { status: 400 });
+  } catch (err) {
+    console.error("Citations action failed:", err);
+    return NextResponse.json(
+      { success: false, error: "Citations operation failed. Please try again." },
+      { status: 500 }
+    );
   }
-
-  if (action === "resolve") {
-    return handleResolve(body);
-  }
-
-  if (action === "verify_all") {
-    return handleVerifyAll(body, user.id);
-  }
-
-  if (action === "convert_all") {
-    return handleConvertAll(body, user.id);
-  }
-
-  if (action === "compute_score") {
-    return handleComputeScore(body, user.id);
-  }
-
-  return NextResponse.json({ success: false, error: "Unknown action" }, { status: 400 });
 }
 
 async function handleStructuralCheck(
@@ -138,8 +154,26 @@ async function handleResolve(body: {
   citationId: string;
   userAction: "accepted" | "edited" | "verified" | "dismissed";
   correctedText?: string;
-}) {
+}, userId: string) {
   const { citationId, userAction, correctedText } = body;
+
+  // Verify ownership: citation → document → userId
+  const [citation] = await db
+    .select({ documentId: citations.documentId })
+    .from(citations)
+    .where(eq(citations.id, citationId))
+    .limit(1);
+  if (!citation) {
+    return NextResponse.json({ success: false, error: "Citation not found" }, { status: 404 });
+  }
+  const [doc] = await db
+    .select({ userId: documents.userId })
+    .from(documents)
+    .where(and(eq(documents.id, citation.documentId), eq(documents.userId, userId)))
+    .limit(1);
+  if (!doc) {
+    return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
+  }
 
   const [updated] = await db
     .update(citations)

@@ -15,6 +15,13 @@
       "when": 1776962417053,
       "tag": "0001_lying_goliath",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777270800000,
+      "tag": "0002_text_coverage_meta",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
 
 export default function AdminRecoveryPage() {
   const [code, setCode] = useState("");
@@ -11,7 +12,10 @@ export default function AdminRecoveryPage() {
     adminEmail: string | null;
     remainingCodes: number;
   } | null>(null);
+  const [resetSent, setResetSent] = useState(false);
+  const [resetSending, setResetSending] = useState(false);
   const router = useRouter();
+  const supabase = createClient();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -65,9 +69,30 @@ export default function AdminRecoveryPage() {
               " Generate new codes from the admin panel after logging in."}
           </p>
           <div className="mt-6 space-y-2">
+            {success.adminEmail && !resetSent && (
+              <button
+                onClick={async () => {
+                  setResetSending(true);
+                  await supabase.auth.resetPasswordForEmail(success.adminEmail!, {
+                    redirectTo: `${window.location.origin}/auth/callback?redirect=/w`,
+                  });
+                  setResetSent(true);
+                  setResetSending(false);
+                }}
+                disabled={resetSending}
+                className="block w-full rounded-lg bg-gray-900 py-3 text-sm font-semibold text-white hover:bg-gray-800 disabled:opacity-50"
+              >
+                {resetSending ? "Sending..." : "Send Password Reset Email"}
+              </button>
+            )}
+            {resetSent && (
+              <p className="text-sm text-green-600">
+                Password reset email sent to {success.adminEmail}. Check your inbox.
+              </p>
+            )}
             <button
               onClick={() => router.push("/login")}
-              className="block w-full rounded-lg bg-gray-900 py-3 text-sm font-semibold text-white hover:bg-gray-800"
+              className="block w-full rounded-lg border border-gray-300 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
             >
               Go to Login
             </button>

@@ -328,7 +328,23 @@ export async function POST(request: NextRequest) {
   const totalChecked = results.length;
   const cleanCount = results.filter((r) => r.verdict === "coincidence").length;
 
-  console.log(`[plagiarism] Done: ${totalChecked} paragraphs checked, ${matchesFound} plagiarism matches, ${cleanCount} clean, ${skippedShort.length} skipped (too short)`);
+  // Calculate and persist plagiarism score
+  const plagOnly = results.filter((r) => r.verdict === "plagiarism");
+  const checkedNonError = results.filter((r) => r.verdict !== "error").length;
+  let plagiarismScore: number | null = null;
+  if (checkedNonError > 0) {
+    const rawPlag = Math.round(
+      (plagOnly.reduce((s, r) => s + (r.confidence ?? 0.5), 0) / checkedNonError) * 100
+    );
+    plagiarismScore = Math.max(0, Math.min(100, rawPlag));
+
+    await db
+      .update(documents)
+      .set({ plagiarismScore, updatedAt: new Date() })
+      .where(eq(documents.id, documentId));
+  }
+
+  console.log(`[plagiarism] Done: ${totalChecked} paragraphs checked, ${matchesFound} plagiarism matches, ${cleanCount} clean, ${skippedShort.length} skipped (too short), score=${plagiarismScore}`);
 
   return NextResponse.json({
     success: true,

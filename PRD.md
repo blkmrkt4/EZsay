@@ -60,7 +60,7 @@ Both served equally from day one. No feature gating by user type at launch.
 | Model routing | OpenRouter | — | Multi-model, hidden from users |
 | PDF parsing | pdfjs-dist | 5.6.205 | Server-side text extraction |
 | DOCX parsing | mammoth | 1.12.0 | Preserves headings and footnotes |
-| Web search | DuckDuckGo (free) / Tavily (paid) | — | Used for plagiarism + citation verification |
+| Web search | Tavily (primary) / DuckDuckGo (fallback) | — | Plagiarism + citation verification. Tavily is the primary search provider in production. If Tavily fails (API error, rate limit, key missing), falls back to DuckDuckGo automatically. |
 
 ---
 

@@ -69,7 +69,13 @@ export async function POST(request: NextRequest) {
   const { exactPhrases, regexPatterns, semanticPatterns } =
     await loadEntriesByType(doc.documentType);
 
+  // Build entry lookup for severity weighting (same as scan endpoint)
+  const allEntries = [...exactPhrases, ...regexPatterns, ...semanticPatterns];
+  const entryById = new Map(allEntries.map((e) => [e.id, e]));
+  const SEVERITY_WEIGHT: Record<string, number> = { high: 3, medium: 1.5, low: 1 };
+
   let totalFlags = 0;
+  let totalWeightedFlags = 0;
 
   for (const section of docSections) {
     if (section.isLocked) continue;
@@ -138,16 +144,23 @@ export async function POST(request: NextRequest) {
       .where(eq(sections.id, section.id));
 
     totalFlags += newFlagCount;
+    totalWeightedFlags += sectionFlags.reduce((sum, f) => {
+      const entry = entryById.get(f.libraryEntryId);
+      const w = entry ? SEVERITY_WEIGHT[entry.severity] ?? 1 : 1;
+      return sum + w;
+    }, 0);
   }
 
-  // Recalculate score
+  // Recalculate score — severity-weighted sigmoid (same formula as scan endpoint)
   const unlockedSections = docSections.filter((s) => !s.isLocked);
   const wordCount = unlockedSections
     .map((s) => s.currentText.split(/\s+/).length)
     .reduce((a, b) => a + b, 0);
 
-  const flagDensity = wordCount > 0 ? (totalFlags / wordCount) * 100 : 0;
-  const aiRiskScore = Math.min(100, Math.round(flagDensity * 10));
+  const weightedDensity = wordCount > 0 ? (totalWeightedFlags / wordCount) * 100 : 0;
+  const rawScore = (weightedDensity / (weightedDensity + 5)) * 100;
+  const dampener = Math.min(1, wordCount / 200);
+  const aiRiskScore = Math.min(100, Math.round(rawScore * dampener));
 
   const fullText = unlockedSections.map((s) => s.currentText).join("\n\n");
   const { qualityScore: writingQualityScore } = calculateWritingQuality(fullText);

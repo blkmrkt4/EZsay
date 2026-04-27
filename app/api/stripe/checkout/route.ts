@@ -88,6 +88,13 @@ export async function POST(request: NextRequest) {
       allow_promotion_codes: true,
     });
 
+    if (!session.url) {
+      return NextResponse.json(
+        { success: false, error: "Stripe did not return a checkout URL. Please try again." },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json({ success: true, url: session.url });
   } catch (err) {
     console.error("Stripe checkout error:", err);
