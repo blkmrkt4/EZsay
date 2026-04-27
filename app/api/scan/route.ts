@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
 import { documents, sections, flags, flagOptions, styleTraining } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { loadEntriesByType } from "@/lib/library/loader";
 import { findExactMatches } from "@/lib/analysis/exact-matcher";
 import { findRegexMatches } from "@/lib/analysis/regex-matcher";
@@ -10,7 +10,7 @@ import { analyzeSemanticPatterns } from "@/lib/analysis/semantic-analyzer";
 import { calculateWritingQuality } from "@/lib/analysis/quality-scorer";
 import { detectSpellingErrors } from "@/lib/analysis/spelling-detector";
 import { detectGrammarErrors } from "@/lib/analysis/grammar-detector";
-import { checkLimit, recordScanUsage } from "@/lib/stripe/plan-limits";
+import { checkAllLimits, recordScanUsage } from "@/lib/stripe/plan-limits";
 
 /**
  * Maps a library entry to the most appropriate flag patternType.
@@ -85,23 +85,29 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Check plan limits before scanning
+  // Check plan limits before scanning (single DB round trip for all limits)
   const docWordCount = doc.rawText.split(/\s+/).length;
 
-  const wordCheck = await checkLimit(user.id, "monthlyWordLimit", docWordCount);
-  if (!wordCheck.allowed) {
-    return NextResponse.json(
-      { success: false, error: `Monthly word limit reached (${wordCheck.current.toLocaleString()} / ${wordCheck.limit.toLocaleString()} words). Upgrade for more.`, limitType: "monthlyWordLimit" },
-      { status: 402 }
-    );
-  }
+  const { allAllowed, results: limitResults } = await checkAllLimits(user.id, [
+    { limitType: "monthlyWordLimit", additionalAmount: docWordCount },
+    { limitType: "monthlyScanLimit", additionalAmount: 1 },
+  ]);
 
-  const scanCheck = await checkLimit(user.id, "monthlyScanLimit", 1);
-  if (!scanCheck.allowed) {
-    return NextResponse.json(
-      { success: false, error: `Monthly scan limit reached (${scanCheck.current} / ${scanCheck.limit} scans). Upgrade for more.`, limitType: "monthlyScanLimit" },
-      { status: 402 }
-    );
+  if (!allAllowed) {
+    const wordCheck = limitResults.monthlyWordLimit;
+    if (wordCheck && !wordCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: `Monthly word limit reached (${wordCheck.current.toLocaleString()} / ${wordCheck.limit.toLocaleString()} words). Upgrade for more.`, limitType: "monthlyWordLimit" },
+        { status: 402 }
+      );
+    }
+    const scanCheck = limitResults.monthlyScanLimit;
+    if (scanCheck && !scanCheck.allowed) {
+      return NextResponse.json(
+        { success: false, error: `Monthly scan limit reached (${scanCheck.current} / ${scanCheck.limit} scans). Upgrade for more.`, limitType: "monthlyScanLimit" },
+        { status: 402 }
+      );
+    }
   }
 
   // Mark as scanning
@@ -118,15 +124,18 @@ export async function POST(request: NextRequest) {
     .where(eq(sections.documentId, documentId))
     .orderBy(sections.index);
 
-  // Clear all previous flags before re-scanning.
-  // Resolved flags are already captured in style_profiles and llm_call_log —
-  // keeping them here inflates the count and confuses users.
-  for (const section of docSections) {
-    const sectionFlags = await db.select({ id: flags.id }).from(flags).where(eq(flags.sectionId, section.id));
-    for (const f of sectionFlags) {
-      await db.delete(flagOptions).where(eq(flagOptions.flagId, f.id));
+  // Clear all previous flags before re-scanning (bulk delete).
+  // Resolved flags are already captured in style_profiles and llm_call_log.
+  const sectionIds = docSections.map((s) => s.id);
+  if (sectionIds.length > 0) {
+    // Delete all flag options for flags in these sections
+    const existingFlags = await db.select({ id: flags.id }).from(flags).where(inArray(flags.sectionId, sectionIds));
+    const existingFlagIds = existingFlags.map((f) => f.id);
+    if (existingFlagIds.length > 0) {
+      await db.delete(flagOptions).where(inArray(flagOptions.flagId, existingFlagIds));
     }
-    await db.delete(flags).where(eq(flags.sectionId, section.id));
+    // Delete all flags in these sections
+    await db.delete(flags).where(inArray(flags.sectionId, sectionIds));
   }
 
   // Load library entries with sensitivity filter

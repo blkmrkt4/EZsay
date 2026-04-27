@@ -106,13 +106,23 @@ type EditQueueItem =
   | { type: "artifact_batch"; findings: ArtifactFinding[] }
   | { type: "artifact_individual"; flag: Flag }
   | { type: "writing_quality"; advisory: WritingQualityAdvisory }
-  | { type: "plagiarism"; result: PlagiarismResult };
+  | { type: "plagiarism"; result: PlagiarismResult }
+  | { type: "citation_fix"; citation: CitationSummary };
+
+interface CitationStructuralFlag {
+  type: string;
+  message: string;
+  severity: "error" | "warning";
+  suggestedFix?: string | null;
+}
 
 interface CitationSummary {
   id: string;
+  rawText: string;
+  correctedText: string | null;
   status: string;
   userAction: string | null;
-  structuralFlags: { type: string; message: string; severity: "error" | "warning" }[] | null;
+  structuralFlags: CitationStructuralFlag[] | null;
   verificationFlags: { verdict?: string } | null;
 }
 
@@ -274,9 +284,15 @@ export default function WorkspacePage() {
   // ── Data loading ─────────────────────────────────────────────────────
 
   const loadDocs = useCallback(async () => {
-    const res = await fetch("/api/documents");
-    const json = await res.json();
-    if (json.success) setDocs(json.data);
+    try {
+      const res = await fetch("/api/documents");
+      const text = await res.text();
+      if (!text) return;
+      const json = JSON.parse(text);
+      if (json.success) setDocs(json.data);
+    } catch {
+      // Network or parse error — ignore silently, docs list stays empty
+    }
   }, []);
 
   useEffect(() => { loadDocs(); }, [loadDocs]);
@@ -338,8 +354,11 @@ export default function WorkspacePage() {
         setFlags(json.data.flags);
         setFlagOptions(json.data.flagOptions || []);
       }
-      // Fetch versions
-      const vRes = await fetch(`/api/documents/${docId}/versions`);
+      // Fetch versions and plagiarism results in parallel
+      const [vRes, pRes] = await Promise.all([
+        fetch(`/api/documents/${docId}/versions`),
+        fetch(`/api/plagiarism?documentId=${docId}`),
+      ]);
       if (vRes.ok) {
         const vText = await vRes.text();
         if (vText) {
@@ -347,8 +366,6 @@ export default function WorkspacePage() {
           if (vJson.success) setDocVersions(vJson.data);
         }
       }
-      // Fetch plagiarism results
-      const pRes = await fetch(`/api/plagiarism?documentId=${docId}`);
       if (pRes.ok) {
         const pText = await pRes.text();
         if (pText) {
@@ -572,6 +589,31 @@ export default function WorkspacePage() {
     setManualEditText("");
   }
 
+  // ── Citation fix resolution ──────────────────────────────────────────
+
+  async function handleCitationFixResolve(
+    citationId: string,
+    userAction: "accepted" | "edited" | "dismissed",
+    correctedText?: string
+  ) {
+    await fetch("/api/citations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "resolve", citationId, userAction, correctedText }),
+    });
+
+    setDocCitations((prev) =>
+      prev.map((c) => c.id === citationId
+        ? { ...c, status: userAction === "dismissed" ? "dismissed" : "resolved", userAction, correctedText: correctedText ?? c.correctedText }
+        : c
+      )
+    );
+    if (activeDocId) await loadDocument(activeDocId);
+    setSelectedFlagIdx((prev) => prev + 1);
+    setSelectedOptionIdx(null);
+    setManualEditText("");
+  }
+
   // ── Upload ─────────────────────────────────────────────────────────────
 
   async function handleUpload() {
@@ -585,6 +627,10 @@ export default function WorkspacePage() {
 
     const res = await fetch("/api/upload", { method: "POST", body: formData });
     const json = await res.json();
+    if (!json.success) {
+      console.error("[upload] Server rejected:", json.error);
+      alert(json.error || "Upload failed");
+    }
     if (json.success) {
       await loadDocs();
       selectDocument(json.data.documentId);
@@ -805,25 +851,20 @@ export default function WorkspacePage() {
   }, [fullDocText, skipAllWritingQuality]);
 
   // Open plagiarism results
-  // Only actual plagiarism enters the edit queue as actionable flags
+  // Plagiarism and close_match enter the edit queue as actionable flags
   // Common knowledge and quotation are informational — shown in detail panel only
   const openPlagiarismResults = useMemo(
-    () => plagiarismResults.filter((r) => r.verdict === "plagiarism" && r.status === "open"),
+    () => plagiarismResults.filter((r) => (r.verdict === "plagiarism" || r.verdict === "close_match") && r.status === "open"),
     [plagiarismResults]
   );
 
-  // Citations needing review — mirrors the server score rule at
-  // app/api/citations/route.ts (hasStructIssue || hasVerifyIssue). Used to
-  // surface pending citations in the edit-queue footer and the end-of-queue
-  // handoff. Citations live in their own tab (PRD §10) and never enter the
-  // edit queue itself (PRD §9); this count is the bridge documented in §9.1.
+  // Citations needing review in the Citations tab — only verification issues,
+  // since structural issues now enter the edit queue as citation_fix items.
   const citationsNeedingReview = useMemo(() => {
     return docCitations.filter((c) => {
-      const structFlags = c.structuralFlags ?? [];
-      const hasStructIssue = structFlags.length > 0 && c.status === "open";
       const verdict = c.verificationFlags?.verdict;
       const hasVerifyIssue = verdict === "unverified" || verdict === "wrong_details";
-      return hasStructIssue || hasVerifyIssue;
+      return hasVerifyIssue;
     }).length;
   }, [docCitations]);
 
@@ -881,8 +922,16 @@ export default function WorkspacePage() {
       queue.push({ type: "plagiarism", result });
     }
 
+    // 6. Citation structural fixes
+    for (const cit of docCitations) {
+      const flags = cit.structuralFlags ?? [];
+      if (flags.length > 0 && cit.status === "open") {
+        queue.push({ type: "citation_fix", citation: cit });
+      }
+    }
+
     return queue;
-  }, [openFlags, artifactFindings, artifactFlags, writingQualityAdvisories, openPlagiarismResults, processedArtifacts]);
+  }, [openFlags, artifactFindings, artifactFlags, writingQualityAdvisories, openPlagiarismResults, processedArtifacts, docCitations]);
 
   // Current queue item
   const currentQueueItem = editQueue[selectedFlagIdx] ?? null;
@@ -915,9 +964,12 @@ export default function WorkspacePage() {
           ? (() => {
               // Fallback: calculate from results for docs scanned before plagiarismScore was persisted
               const plagOnly = plagiarismResults.filter((r) => r.verdict === "plagiarism");
+              const closeOnly = plagiarismResults.filter((r) => r.verdict === "close_match");
               const checked = plagiarismResults.filter((r) => r.verdict !== "error").length;
               if (checked === 0) return null;
-              const rawPlag = Math.round((plagOnly.reduce((s, r) => s + (r.confidence ?? 0.5), 0) / checked) * 100);
+              const plagW = plagOnly.reduce((s, r) => s + (r.confidence ?? 0.5), 0);
+              const closeW = closeOnly.reduce((s, r) => s + (r.confidence ?? 0.5) * 0.15, 0);
+              const rawPlag = Math.round(((plagW + closeW) / checked) * 100);
               return 100 - rawPlag;
             })()
           : null, weight: 30 },
@@ -1548,8 +1600,10 @@ export default function WorkspacePage() {
                       currentQueueItem.type === "ai_detection" ? "bg-amber-100 text-amber-700" :
                       currentQueueItem.type === "artifact_batch" || currentQueueItem.type === "artifact_individual" ? "bg-purple-100 text-purple-700" :
                       currentQueueItem.type === "writing_quality" ? "bg-blue-100 text-blue-700" :
+                      currentQueueItem.type === "citation_fix" ? "bg-orange-100 text-orange-700" :
                       currentQueueItem.type === "plagiarism" ? (
                         currentQueueItem.result.verdict === "plagiarism" ? "bg-red-100 text-red-700" :
+                        currentQueueItem.result.verdict === "close_match" ? "bg-orange-100 text-orange-700" :
                         currentQueueItem.result.verdict === "common_knowledge" ? "bg-yellow-100 text-yellow-700" :
                         currentQueueItem.result.verdict === "quotation" ? "bg-blue-100 text-blue-700" :
                         "bg-gray-100 text-gray-600"
@@ -1560,8 +1614,10 @@ export default function WorkspacePage() {
                        currentQueueItem.type === "artifact_batch" ? "AI Artifacts" :
                        currentQueueItem.type === "artifact_individual" ? "AI Artifact" :
                        currentQueueItem.type === "writing_quality" ? "Writing Quality (Advisory)" :
+                       currentQueueItem.type === "citation_fix" ? "Citation Format" :
                        currentQueueItem.type === "plagiarism" ? (
                          currentQueueItem.result.verdict === "plagiarism" ? "Plagiarism" :
+                         currentQueueItem.result.verdict === "close_match" ? "Close Match" :
                          currentQueueItem.result.verdict === "common_knowledge" ? "Common Knowledge" :
                          currentQueueItem.result.verdict === "quotation" ? "Quotation" :
                          "Plagiarism Check"
@@ -1662,11 +1718,13 @@ export default function WorkspacePage() {
                   <div className="flex items-center gap-2">
                     <span className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
                       currentQueueItem.result.verdict === "plagiarism" ? "bg-red-100 text-red-700" :
+                      currentQueueItem.result.verdict === "close_match" ? "bg-orange-100 text-orange-700" :
                       currentQueueItem.result.verdict === "common_knowledge" ? "bg-yellow-100 text-yellow-700" :
                       currentQueueItem.result.verdict === "quotation" ? "bg-blue-100 text-blue-700" :
                       "bg-gray-100 text-gray-600"
                     }`}>
                       {currentQueueItem.result.verdict === "plagiarism" ? "Plagiarism Match" :
+                       currentQueueItem.result.verdict === "close_match" ? "Close Match — Consider Rephrasing" :
                        currentQueueItem.result.verdict === "common_knowledge" ? "Common Knowledge" :
                        currentQueueItem.result.verdict === "quotation" ? "Quotation" :
                        currentQueueItem.result.verdict}
@@ -1677,6 +1735,7 @@ export default function WorkspacePage() {
                   </div>
                   <div className={`rounded-lg border p-4 ${
                     currentQueueItem.result.verdict === "plagiarism" ? "border-red-200 bg-red-50" :
+                    currentQueueItem.result.verdict === "close_match" ? "border-orange-200 bg-orange-50" :
                     currentQueueItem.result.verdict === "common_knowledge" ? "border-yellow-200 bg-yellow-50" :
                     "border-blue-200 bg-blue-50"
                   }`}>
@@ -1703,6 +1762,47 @@ export default function WorkspacePage() {
                       value={manualEditText || currentQueueItem.result.passageText}
                       onChange={(e) => setManualEditText(e.target.value)}
                       rows={4}
+                      className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-gray-700 focus:border-blue-400 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* ── Citation Format Fix ──────────────────────────────── */}
+              {nav === "edit" && currentQueueItem?.type === "citation_fix" && (
+                <div className="p-4 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <span className="rounded bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700">Citation Format</span>
+                    <span className="text-[10px] text-gray-400">{(currentQueueItem.citation.structuralFlags ?? []).length} issue{(currentQueueItem.citation.structuralFlags ?? []).length !== 1 ? "s" : ""}</span>
+                  </div>
+                  {/* Original citation */}
+                  <div className="rounded-lg border-2 border-gray-300 bg-white p-4">
+                    <p className="text-[10px] font-medium text-gray-500 mb-1">Original citation:</p>
+                    <p className="text-sm text-gray-800 leading-relaxed">{currentQueueItem.citation.rawText}</p>
+                  </div>
+                  {/* Structural flags */}
+                  <div className="space-y-1.5">
+                    {(currentQueueItem.citation.structuralFlags ?? []).map((f, i) => (
+                      <div key={i} className={`flex items-start gap-2 rounded px-2.5 py-1.5 text-[10px] ${f.severity === "error" ? "bg-red-50 text-red-700" : "bg-orange-50 text-orange-700"}`}>
+                        <span className="shrink-0 mt-0.5">{f.severity === "error" ? "\u2717" : "\u26A0"}</span>
+                        <span>{f.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Suggested fix */}
+                  {currentQueueItem.citation.correctedText && (
+                    <div className="rounded-lg border border-green-200 bg-green-50 p-4">
+                      <p className="text-[10px] font-medium text-green-700 mb-1">Suggested fix:</p>
+                      <p className="text-sm text-green-900 leading-relaxed">{currentQueueItem.citation.correctedText}</p>
+                    </div>
+                  )}
+                  {/* Manual edit textarea — always available */}
+                  <div className="rounded-lg border border-gray-300 bg-white p-3">
+                    <label className="text-[10px] font-medium text-gray-600 mb-1 block">Or edit manually:</label>
+                    <textarea
+                      value={manualEditText || currentQueueItem.citation.correctedText || currentQueueItem.citation.rawText}
+                      onChange={(e) => setManualEditText(e.target.value)}
+                      rows={3}
                       className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-gray-700 focus:border-blue-400 focus:outline-none"
                     />
                   </div>
@@ -2212,6 +2312,41 @@ export default function WorkspacePage() {
                           className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-500 hover:bg-gray-100"
                         >
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">3</span>
+                          <span>Dismiss</span>
+                        </button>
+                      </>
+                    )}
+
+                    {/* ── Citation fix choices ─────────────────────────── */}
+                    {currentQueueItem.type === "citation_fix" && (
+                      <>
+                        {currentQueueItem.citation.correctedText && (
+                          <button
+                            onClick={() => handleCitationFixResolve(currentQueueItem.citation.id, "accepted", currentQueueItem.citation.correctedText!)}
+                            className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-white bg-green-600 hover:bg-green-700"
+                          >
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white text-[9px] font-bold text-green-600">1</span>
+                            <span>Apply Fix</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => {
+                            const edited = manualEditText;
+                            if (edited && edited !== currentQueueItem.citation.rawText) {
+                              handleCitationFixResolve(currentQueueItem.citation.id, "edited", edited);
+                            }
+                          }}
+                          disabled={!manualEditText || manualEditText === currentQueueItem.citation.rawText}
+                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-40"
+                        >
+                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">{currentQueueItem.citation.correctedText ? "2" : "1"}</span>
+                          <span>Save Manual Edit</span>
+                        </button>
+                        <button
+                          onClick={() => handleCitationFixResolve(currentQueueItem.citation.id, "dismissed")}
+                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-500 hover:bg-gray-100"
+                        >
+                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">{currentQueueItem.citation.correctedText ? "3" : "2"}</span>
                           <span>Dismiss</span>
                         </button>
                       </>

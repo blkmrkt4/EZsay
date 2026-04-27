@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
 import { documents, sections, flags, llmCallLog } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { callOpenRouter } from "@/lib/routing/openrouter";
 
 const SYSTEM_PROMPT = `You are a writing consistency analyser. Examine the document for:
@@ -64,15 +64,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
   }
 
-  // Load tone_inconsistency flags for this document
+  // Load tone_inconsistency flags for this document in one query
   const docSections = await db.select().from(sections).where(eq(sections.documentId, documentId));
   const sectionIds = docSections.map((s) => s.id);
 
-  const toneFlags: (typeof flags.$inferSelect)[] = [];
-  for (const sid of sectionIds) {
-    const sFlags = await db.select().from(flags).where(and(eq(flags.sectionId, sid), eq(flags.patternType, "tone_inconsistency")));
-    toneFlags.push(...sFlags);
-  }
+  const toneFlags = sectionIds.length > 0
+    ? await db.select().from(flags).where(and(inArray(flags.sectionId, sectionIds), eq(flags.patternType, "tone_inconsistency")))
+    : [];
 
   return NextResponse.json({ success: true, data: toneFlags });
 }

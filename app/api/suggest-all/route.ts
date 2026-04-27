@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
 import { flags, sections, documents, flagOptions, llmCallLog } from "@/db/schema";
-import { eq, and, or } from "drizzle-orm";
+import { eq, and, or, inArray } from "drizzle-orm";
 import { executeActivity } from "@/lib/routing/openrouter";
 import { checkForCorruption } from "@/lib/analysis/corruption-checker";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
@@ -41,11 +41,9 @@ export async function POST(request: NextRequest) {
     .where(eq(sections.documentId, documentId));
 
   const sectionIds = docSections.map((s) => s.id);
-  let allFlags: (typeof flags.$inferSelect)[] = [];
-  for (const sid of sectionIds) {
-    const sFlags = await db.select().from(flags).where(and(eq(flags.sectionId, sid), or(eq(flags.status, "open"), eq(flags.status, "generation_failed"))));
-    allFlags.push(...sFlags);
-  }
+  const allFlags = sectionIds.length > 0
+    ? await db.select().from(flags).where(and(inArray(flags.sectionId, sectionIds), or(eq(flags.status, "open"), eq(flags.status, "generation_failed"))))
+    : [];
 
   if (allFlags.length === 0) {
     return NextResponse.json({ success: true, data: { generated: 0, total: 0, results: [] } });
@@ -54,31 +52,28 @@ export async function POST(request: NextRequest) {
   const docType = doc.documentType || "professional";
   const slug = docType === "academic" ? "suggest-academic" : "suggest-rewrite";
 
-  // Generate suggestions for each flag
-  const results: { flagId: string; status: "success" | "failed"; optionCount: number; explanation?: string; principle?: string; error?: string }[] = [];
+  // Generate suggestions with bounded concurrency (2 workers)
+  type FlagResult = { flagId: string; status: "success" | "failed"; optionCount: number; explanation?: string; principle?: string; error?: string };
+  const results: FlagResult[] = [];
+  const CONCURRENCY = 2;
 
-  for (let i = 0; i < allFlags.length; i++) {
-    const flag = allFlags[i];
+  // Build a section lookup map for O(1) access
+  const sectionMap = new Map(docSections.map((s) => [s.id, s]));
 
-    // Small delay between LLM calls to avoid rate limiting
-    if (i > 0) await new Promise((r) => setTimeout(r, 500));
-
-    // Get the section for this flag
-    const section = docSections.find((s) => s.id === flag.sectionId);
+  async function processFlag(flag: typeof allFlags[number], idx: number): Promise<FlagResult> {
+    const section = sectionMap.get(flag.sectionId);
     if (!section) {
-      results.push({ flagId: flag.id, status: "failed", optionCount: 0, error: "Section not found" });
-      continue;
+      return { flagId: flag.id, status: "failed", optionCount: 0, error: "Section not found" };
     }
 
-    // Check if options already exist for this flag
+    // Check if options already exist
     const existing = await db.select({ id: flagOptions.id }).from(flagOptions).where(eq(flagOptions.flagId, flag.id));
     if (existing.length > 0) {
-      results.push({ flagId: flag.id, status: "success", optionCount: existing.length, explanation: "Already generated" });
-      continue;
+      return { flagId: flag.id, status: "success", optionCount: existing.length, explanation: "Already generated" };
     }
 
     try {
-      console.log(`[suggest-all] Processing flag ${i + 1}/${allFlags.length}: ${flag.id.slice(0, 8)} (phrase: "${flag.flaggedPhrase?.slice(0, 30)}")`);
+      console.log(`[suggest-all] Processing flag ${idx + 1}/${allFlags.length}: ${flag.id.slice(0, 8)} (phrase: "${flag.flaggedPhrase?.slice(0, 30)}")`);
       const startTime = Date.now();
 
       const result = await executeActivity(slug, {
@@ -94,11 +89,8 @@ export async function POST(request: NextRequest) {
       });
 
       const latencyMs = Date.now() - startTime;
-
-      // Parse response
       const parsed = parseFullResponse(result.content);
 
-      // Save options — filter out any with corruption artifacts
       const cleanOptions = parsed.options.filter((opt) => {
         const issues = checkForCorruption(opt.text);
         if (issues.length > 0) {
@@ -119,7 +111,6 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Log the call
       await db.insert(llmCallLog).values({
         activityType: slug,
         modelUsed: result.modelUsed,
@@ -130,25 +121,31 @@ export async function POST(request: NextRequest) {
         outcome: "pending",
       });
 
-      results.push({
+      return {
         flagId: flag.id,
         status: "success",
         optionCount: parsed.options.length,
         explanation: parsed.explanation,
         principle: parsed.principle,
-      });
+      };
     } catch (err) {
-      console.error(`[suggest-all] FAILED flag ${i + 1}/${allFlags.length} (${flag.id.slice(0, 8)}):`, err instanceof Error ? err.message : err);
-
-      // Keep flag as "open" so it still appears for manual editing
-      // Only log the failure — don't change the flag status
-      results.push({
+      console.error(`[suggest-all] FAILED flag ${idx + 1}/${allFlags.length} (${flag.id.slice(0, 8)}):`, err instanceof Error ? err.message : err);
+      return {
         flagId: flag.id,
         status: "failed",
         optionCount: 0,
         error: err instanceof Error ? err.message : "Generation failed",
-      });
+      };
     }
+  }
+
+  // Process flags with bounded concurrency
+  for (let i = 0; i < allFlags.length; i += CONCURRENCY) {
+    const batch = allFlags.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map((flag, j) => processFlag(flag, i + j))
+    );
+    results.push(...batchResults);
   }
 
   const succeeded = results.filter((r) => r.status === "success").length;

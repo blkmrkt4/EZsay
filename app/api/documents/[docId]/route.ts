@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
 import { documents, sections, flags, flagOptions } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 
 export async function GET(
   _request: NextRequest,
@@ -38,29 +38,17 @@ export async function GET(
       .where(eq(sections.documentId, docId))
       .orderBy(sections.index);
 
-    // Load flags for all sections
+    // Load all flags for this document's sections in one query
     const sectionIds = docSections.map((s) => s.id);
-    let docFlags: (typeof flags.$inferSelect)[] = [];
-    if (sectionIds.length > 0) {
-      const allFlags = await Promise.all(
-        sectionIds.map((sid) =>
-          db.select().from(flags).where(eq(flags.sectionId, sid))
-        )
-      );
-      docFlags = allFlags.flat();
-    }
+    const docFlags = sectionIds.length > 0
+      ? await db.select().from(flags).where(inArray(flags.sectionId, sectionIds))
+      : [];
 
-    // Load flag options
+    // Load all flag options in one query
     const flagIds = docFlags.map((f) => f.id);
-    let docFlagOptions: (typeof flagOptions.$inferSelect)[] = [];
-    if (flagIds.length > 0) {
-      const allOptions = await Promise.all(
-        flagIds.map((fid) =>
-          db.select().from(flagOptions).where(eq(flagOptions.flagId, fid))
-        )
-      );
-      docFlagOptions = allOptions.flat();
-    }
+    const docFlagOptions = flagIds.length > 0
+      ? await db.select().from(flagOptions).where(inArray(flagOptions.flagId, flagIds))
+      : [];
 
     return NextResponse.json({
       success: true,

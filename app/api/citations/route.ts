@@ -117,13 +117,15 @@ async function handleStructuralCheck(
   // Detect citation style
   const detectedStyle = detectCitationStyle(rawCitations);
 
-  // Run structural checks per citation
+  // Run structural checks per citation and generate auto-fix suggestions
   const results = rawCitations.map((raw) => {
     const structuralFlags = checkStructure(raw, detectedStyle);
+    const correctedText = buildCorrectedText(raw, structuralFlags);
     return {
       rawText: raw,
       style: detectedStyle,
       structuralFlags,
+      correctedText,
     };
   });
 
@@ -140,6 +142,7 @@ async function handleStructuralCheck(
         style: r.style,
         structuralFlags: r.structuralFlags,
         verificationFlags: null,
+        correctedText: r.correctedText,
         status: r.structuralFlags.length > 0 ? ("open" as const) : ("resolved" as const),
       }))
     )
@@ -175,6 +178,9 @@ async function handleResolve(body: {
     return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
   }
 
+  // Load the full citation record before updating (need rawText for section replacement)
+  const [fullCitation] = await db.select().from(citations).where(eq(citations.id, citationId)).limit(1);
+
   const [updated] = await db
     .update(citations)
     .set({
@@ -184,6 +190,19 @@ async function handleResolve(body: {
     })
     .where(eq(citations.id, citationId))
     .returning();
+
+  // When accepting or editing a fix, also replace the citation in the document text
+  if (correctedText && fullCitation && (userAction === "accepted" || userAction === "edited")) {
+    const docSections = await db.select().from(sections).where(eq(sections.documentId, fullCitation.documentId));
+    for (const section of docSections) {
+      if (section.currentText.includes(fullCitation.rawText)) {
+        const newText = section.currentText.replaceAll(fullCitation.rawText, correctedText);
+        if (newText !== section.currentText) {
+          await db.update(sections).set({ currentText: newText }).where(eq(sections.id, section.id));
+        }
+      }
+    }
+  }
 
   // Recompute score after resolving
   let score: number | null = null;
@@ -241,6 +260,7 @@ interface StructuralFlag {
   type: string;
   message: string;
   severity: "error" | "warning";
+  suggestedFix: string | null;
 }
 
 function checkStructure(citation: string, style: CitationStyle): StructuralFlag[] {
@@ -253,6 +273,7 @@ function checkStructure(citation: string, style: CitationStyle): StructuralFlag[
         type: "missing_year",
         message: "No publication year found.",
         severity: "error",
+        suggestedFix: null,
       });
     }
 
@@ -262,26 +283,32 @@ function checkStructure(citation: string, style: CitationStyle): StructuralFlag[
         type: "missing_author",
         message: "No author name detected.",
         severity: "error",
+        suggestedFix: null,
       });
     }
 
     // Reference list entries: check for period after year
     if (citation.length > 30 && /\d{4}/.test(citation)) {
       if (!/\d{4}\)?\.\s/.test(citation)) {
+        // Auto-fix: insert period after year (or after closing paren if year is in parens)
+        const fixed = citation.replace(/(\d{4}\)?)\s/, "$1. ");
         flags.push({
           type: "format_period",
           message: "Period expected after year in APA format.",
           severity: "warning",
+          suggestedFix: fixed !== citation ? fixed : null,
         });
       }
 
-      // Check for italicized title (we can't check formatting, but check for title case)
       // Check for URL or DOI if it looks like a web source
       if (/http|www|doi/i.test(citation) && !/https?:\/\//.test(citation)) {
+        // Auto-fix: prepend https:// to bare www or http URLs
+        const fixed = citation.replace(/\b(www\.)/gi, "https://$1");
         flags.push({
           type: "malformed_url",
           message: "URL appears incomplete or malformed.",
           severity: "warning",
+          suggestedFix: fixed !== citation ? fixed : null,
         });
       }
     }
@@ -290,15 +317,54 @@ function checkStructure(citation: string, style: CitationStyle): StructuralFlag[
   if (style === "mla") {
     // MLA: author last, first format
     if (citation.length > 30 && !/,/.test(citation.split(".")[0] || "")) {
+      // Auto-fix: try to swap "First Last" → "Last, First" in the author segment
+      const authorSegment = citation.split(".")[0]?.trim() ?? "";
+      const parts = authorSegment.split(/\s+/);
+      let fixed: string | null = null;
+      if (parts.length === 2) {
+        const swapped = `${parts[1]}, ${parts[0]}`;
+        fixed = citation.replace(authorSegment, swapped);
+      }
       flags.push({
         type: "author_format",
         message: 'MLA requires "Last, First" author format.',
         severity: "warning",
+        suggestedFix: fixed,
       });
     }
   }
 
   return flags;
+}
+
+/**
+ * Given structural flags for a citation, pick the best auto-fix.
+ * Applies all fixable flags sequentially to produce a single corrected text.
+ */
+function buildCorrectedText(citation: string, flags: StructuralFlag[]): string | null {
+  let result = citation;
+  let changed = false;
+  for (const flag of flags) {
+    if (flag.suggestedFix) {
+      // Re-apply the same fix type to the evolving result
+      if (flag.type === "format_period" && !/\d{4}\)?\.\s/.test(result)) {
+        const fixed = result.replace(/(\d{4}\)?)\s/, "$1. ");
+        if (fixed !== result) { result = fixed; changed = true; }
+      } else if (flag.type === "malformed_url" && /\b(www\.)/i.test(result) && !/https?:\/\//.test(result)) {
+        const fixed = result.replace(/\b(www\.)/gi, "https://$1");
+        if (fixed !== result) { result = fixed; changed = true; }
+      } else if (flag.type === "author_format") {
+        const authorSegment = result.split(".")[0]?.trim() ?? "";
+        const parts = authorSegment.split(/\s+/);
+        if (parts.length === 2 && !/,/.test(authorSegment)) {
+          const swapped = `${parts[1]}, ${parts[0]}`;
+          result = result.replace(authorSegment, swapped);
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed ? result : null;
 }
 
 // ── Citation verification ─────────────────────────────────────────────────

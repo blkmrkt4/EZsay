@@ -25,12 +25,13 @@ const ASSESS_SYSTEM = `You assess whether a passage from a student document matc
 
 Given the original passage and search results, determine:
 - "plagiarism" — the passage closely matches a source without attribution
-- "common_knowledge" — the match is widely known facts anyone might write similarly
+- "close_match" — the underlying idea is common knowledge or widely discussed, but the specific phrasing closely mirrors a source. The student should consider rephrasing in their own words. Use this when the CONCEPT is not unique but the WORDING is too close to a particular source to be coincidental.
+- "common_knowledge" — ONLY for basic, universally known facts (dates, definitions, widely documented events) that any informed person would state in nearly identical terms. If the passage uses specific phrasing, specific arguments, or domain-specific analysis — even on a well-known topic — it is NOT common knowledge. Err on the side of "close_match" when in doubt.
 - "coincidence" — surface similarity but different meaning or context
 - "quotation" — the passage is a properly attributed quote
 
 Respond in EXACTLY this format:
-VERDICT: [plagiarism/common_knowledge/coincidence/quotation]
+VERDICT: [plagiarism/close_match/common_knowledge/coincidence/quotation]
 CONFIDENCE: [0.0 to 1.0]
 EXPLANATION: [2-3 sentences explaining your assessment]
 TOP_URL: [the most relevant matching URL, or "none"]
@@ -202,21 +203,19 @@ export async function POST(request: NextRequest) {
     console.log("[plagiarism] Falling back to raw text queries");
   }
 
-  // ── Step 3 & 4: Search and assess every paragraph ───────────────────
+  // ── Step 3 & 4: Search and assess with bounded concurrency ──────────
   const results: (typeof plagiarismResults.$inferSelect)[] = [];
   let matchesFound = 0;
+  const CONCURRENCY = 2;
 
-  for (let i = 0; i < paragraphs.length; i++) {
-    const para = paragraphs[i];
-    const searchQuery = queryMap.get(i + 1) ?? para.text.slice(0, 80);
+  async function checkParagraph(para: typeof paragraphs[number], idx: number) {
+    const searchQuery = queryMap.get(idx + 1) ?? para.text.slice(0, 80);
 
-    console.log(`[plagiarism] Checking ${i + 1}/${paragraphs.length}: "${para.text.slice(0, 50)}..."`);
+    console.log(`[plagiarism] Checking ${idx + 1}/${paragraphs.length}: "${para.text.slice(0, 50)}..."`);
 
-    // Find position in full text
     const passageStart = fullText.indexOf(para.text);
     const passageEnd = passageStart >= 0 ? passageStart + para.text.length : 0;
 
-    // Find which section
     let sectionId: string | null = null;
     for (const sec of docSections) {
       if (sec.currentText.includes(para.text)) {
@@ -226,7 +225,6 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      // Web search
       const searchResults = await webSearch(searchQuery, 5);
       const relevantResults = searchResults.filter((r) => r.score >= MIN_SEARCH_SCORE);
 
@@ -244,14 +242,11 @@ export async function POST(request: NextRequest) {
           confidence: 0.95,
           status: "dismissed",
         }).returning();
-
-        results.push(inserted);
-        continue;
+        return inserted;
       }
 
-      // LLM assessment
       const searchContext = relevantResults
-        .map((r, idx) => `[${idx + 1}] URL: ${r.url}\nTitle: ${r.title}\nSnippet: ${r.content}`)
+        .map((r, i) => `[${i + 1}] URL: ${r.url}\nTitle: ${r.title}\nSnippet: ${r.content}`)
         .join("\n\n");
 
       const assessResult = await callOpenRouter(
@@ -298,15 +293,10 @@ export async function POST(request: NextRequest) {
         modelUsed: assessResult.modelUsed,
       }).returning();
 
-      results.push(inserted);
-      console.log(`[plagiarism] Paragraph ${i + 1}: verdict=${parsed.verdict}, confidence=${parsed.confidence}`);
-
-      // Small delay between searches
-      if (i < paragraphs.length - 1) {
-        await new Promise((r) => setTimeout(r, 300));
-      }
+      console.log(`[plagiarism] Paragraph ${idx + 1}: verdict=${parsed.verdict}, confidence=${parsed.confidence}`);
+      return inserted;
     } catch (err) {
-      console.error(`[plagiarism] Error on paragraph ${i + 1}:`, err);
+      console.error(`[plagiarism] Error on paragraph ${idx + 1}:`, err);
 
       const [inserted] = await db.insert(plagiarismResults).values({
         documentId,
@@ -320,21 +310,33 @@ export async function POST(request: NextRequest) {
         explanation: err instanceof Error ? err.message : "Search or assessment failed",
         status: "open",
       }).returning();
-
-      results.push(inserted);
+      return inserted;
     }
+  }
+
+  // Process paragraphs with bounded concurrency
+  for (let i = 0; i < paragraphs.length; i += CONCURRENCY) {
+    const batch = paragraphs.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map((para, j) => checkParagraph(para, i + j))
+    );
+    results.push(...batchResults);
   }
 
   const totalChecked = results.length;
   const cleanCount = results.filter((r) => r.verdict === "coincidence").length;
 
   // Calculate and persist plagiarism score
+  // plagiarism = full confidence weight, close_match = 0.15x weight
   const plagOnly = results.filter((r) => r.verdict === "plagiarism");
+  const closeMatchOnly = results.filter((r) => r.verdict === "close_match");
   const checkedNonError = results.filter((r) => r.verdict !== "error").length;
   let plagiarismScore: number | null = null;
   if (checkedNonError > 0) {
+    const plagWeight = plagOnly.reduce((s, r) => s + (r.confidence ?? 0.5), 0);
+    const closeWeight = closeMatchOnly.reduce((s, r) => s + (r.confidence ?? 0.5) * 0.15, 0);
     const rawPlag = Math.round(
-      (plagOnly.reduce((s, r) => s + (r.confidence ?? 0.5), 0) / checkedNonError) * 100
+      ((plagWeight + closeWeight) / checkedNonError) * 100
     );
     plagiarismScore = Math.max(0, Math.min(100, rawPlag));
 
@@ -358,14 +360,14 @@ export async function POST(request: NextRequest) {
 }
 
 function parseAssessment(response: string): {
-  verdict: "plagiarism" | "common_knowledge" | "coincidence" | "quotation";
+  verdict: "plagiarism" | "close_match" | "common_knowledge" | "coincidence" | "quotation";
   confidence: number;
   explanation: string;
   topUrl: string | null;
   topTitle: string | null;
   topSnippet: string | null;
 } {
-  const verdictMatch = response.match(/VERDICT:\s*(plagiarism|common_knowledge|coincidence|quotation)/i);
+  const verdictMatch = response.match(/VERDICT:\s*(plagiarism|close_match|common_knowledge|coincidence|quotation)/i);
   const confMatch = response.match(/CONFIDENCE:\s*([\d.]+)/i);
   const explMatch = response.match(/EXPLANATION:\s*([\s\S]*?)(?=\nTOP_URL:|$)/i);
   const urlMatch = response.match(/TOP_URL:\s*(.+)/i);
@@ -377,7 +379,7 @@ function parseAssessment(response: string): {
   const topSnippet = snippetMatch?.[1]?.trim();
 
   return {
-    verdict: (verdictMatch?.[1]?.toLowerCase() as "plagiarism" | "common_knowledge" | "coincidence" | "quotation") ?? "coincidence",
+    verdict: (verdictMatch?.[1]?.toLowerCase() as "plagiarism" | "close_match" | "common_knowledge" | "coincidence" | "quotation") ?? "coincidence",
     confidence: confMatch ? parseFloat(confMatch[1]) : 0.5,
     explanation: explMatch?.[1]?.trim() ?? response.trim(),
     topUrl: topUrl && topUrl !== "none" ? topUrl : null,

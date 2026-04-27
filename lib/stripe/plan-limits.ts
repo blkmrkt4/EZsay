@@ -158,9 +158,17 @@ export async function checkLimit(
   const limits = await getPlanLimits(planSlug);
   const usage = await getCurrentUsage(userId);
 
+  return checkLimitFromData(limits, usage, limitType, additionalAmount);
+}
+
+function checkLimitFromData(
+  limits: PlanLimits,
+  usage: Usage,
+  limitType: keyof PlanLimits,
+  additionalAmount: number,
+): LimitCheck {
   const limit = limits[limitType];
 
-  // Unlimited
   if (limit === -1) {
     return { allowed: true, current: 0, limit: -1, percent: 0 };
   }
@@ -177,7 +185,7 @@ export async function checkLimit(
       current = usage.documentCount + additionalAmount;
       break;
     case "perDocumentWordLimit":
-      current = additionalAmount; // Just the document being checked
+      current = additionalAmount;
       break;
     default:
       current = 0;
@@ -185,12 +193,32 @@ export async function checkLimit(
 
   const percent = Math.min(100, Math.round((current / limit) * 100));
 
-  return {
-    allowed: current <= limit,
-    current,
-    limit,
-    percent,
-  };
+  return { allowed: current <= limit, current, limit, percent };
+}
+
+/**
+ * Check multiple limits in one call, loading plan/usage data only once.
+ * Returns a map of limitType → LimitCheck. Stops early and returns
+ * the first failing check if any limit is exceeded.
+ */
+export async function checkAllLimits(
+  userId: string,
+  checks: { limitType: keyof PlanLimits; additionalAmount: number }[]
+): Promise<{ allAllowed: boolean; results: Record<string, LimitCheck> }> {
+  const planSlug = await getUserPlanSlug(userId);
+  const limits = await getPlanLimits(planSlug);
+  const usage = await getCurrentUsage(userId);
+
+  const results: Record<string, LimitCheck> = {};
+  let allAllowed = true;
+
+  for (const { limitType, additionalAmount } of checks) {
+    const result = checkLimitFromData(limits, usage, limitType, additionalAmount);
+    results[limitType] = result;
+    if (!result.allowed) allAllowed = false;
+  }
+
+  return { allAllowed, results };
 }
 
 /**

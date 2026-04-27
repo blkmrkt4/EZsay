@@ -5,7 +5,7 @@ import { documents, sections } from "@/db/schema";
 import { parseDocument, detectFileType } from "@/lib/parsers";
 import { parsePdfWithMeta } from "@/lib/parsers/pdf-parser";
 import { parseAndSplit } from "@/lib/citations/parser";
-import { checkLimit } from "@/lib/stripe/plan-limits";
+import { checkAllLimits } from "@/lib/stripe/plan-limits";
 
 type ExtractionMeta = {
   sourceType: "pdf" | "docx" | "txt" | "pasted";
@@ -61,18 +61,29 @@ export async function POST(request: NextRequest) {
     try {
       const buffer = await file.arrayBuffer();
       if (fileType === "pdf") {
-        const parsed = await parsePdfWithMeta(buffer);
-        rawText = parsed.text;
-        extractionMeta = {
-          sourceType: "pdf",
-          confidence: parsed.meta.confidence,
-          likelyGraphicsHeavy: parsed.meta.likelyGraphicsHeavy,
-          pageCount: parsed.meta.pageCount,
-          pagesWithText: parsed.meta.pagesWithText,
-          extractedWordCount: parsed.meta.extractedWordCount,
-          averageWordsPerPage: parsed.meta.averageWordsPerPage,
-          coverageRatio: parsed.meta.coverageRatio,
-        };
+        try {
+          const parsed = await parsePdfWithMeta(buffer);
+          rawText = parsed.text;
+          extractionMeta = {
+            sourceType: "pdf",
+            confidence: parsed.meta.confidence,
+            likelyGraphicsHeavy: parsed.meta.likelyGraphicsHeavy,
+            pageCount: parsed.meta.pageCount,
+            pagesWithText: parsed.meta.pagesWithText,
+            extractedWordCount: parsed.meta.extractedWordCount,
+            averageWordsPerPage: parsed.meta.averageWordsPerPage,
+            coverageRatio: parsed.meta.coverageRatio,
+          };
+        } catch (pdfErr) {
+          // parsePdfWithMeta failed — fall back to basic parser
+          console.warn("parsePdfWithMeta failed, falling back to parseDocument:", pdfErr instanceof Error ? pdfErr.message : pdfErr);
+          rawText = await parseDocument(buffer, fileType);
+          extractionMeta = {
+            sourceType: "pdf",
+            confidence: "medium",
+            likelyGraphicsHeavy: false,
+          };
+        }
       } else {
         rawText = await parseDocument(buffer, fileType);
         extractionMeta = {
@@ -83,8 +94,9 @@ export async function POST(request: NextRequest) {
       }
     } catch (err) {
       console.error("File parsing failed:", err);
+      const message = err instanceof Error ? err.message : String(err);
       return NextResponse.json(
-        { success: false, error: "Failed to parse the uploaded file. The file may be corrupted or in an unsupported format." },
+        { success: false, error: `Failed to parse the uploaded file: ${message}` },
         { status: 400 }
       );
     }
@@ -122,23 +134,29 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // Check plan limits
+    // Check plan limits (single DB round trip for all limits)
     const uploadWordCount = rawText.split(/\s+/).length;
 
-    const docWordCheck = await checkLimit(user.id, "perDocumentWordLimit", uploadWordCount);
-    if (!docWordCheck.allowed) {
-      return NextResponse.json(
-        { success: false, error: `Document exceeds your plan's per-document limit (${uploadWordCount.toLocaleString()} words, limit is ${docWordCheck.limit.toLocaleString()}).`, limitType: "perDocumentWordLimit" },
-        { status: 402 }
-      );
-    }
+    const { allAllowed, results: limitResults } = await checkAllLimits(user.id, [
+      { limitType: "perDocumentWordLimit", additionalAmount: uploadWordCount },
+      { limitType: "documentStorageLimit", additionalAmount: 1 },
+    ]);
 
-    const storageCheck = await checkLimit(user.id, "documentStorageLimit", 1);
-    if (!storageCheck.allowed) {
-      return NextResponse.json(
-        { success: false, error: `Document storage limit reached (${storageCheck.current} / ${storageCheck.limit} documents). Delete a document or upgrade.`, limitType: "documentStorageLimit" },
-        { status: 402 }
-      );
+    if (!allAllowed) {
+      const docWordCheck = limitResults.perDocumentWordLimit;
+      if (docWordCheck && !docWordCheck.allowed) {
+        return NextResponse.json(
+          { success: false, error: `Document exceeds your plan's per-document limit (${uploadWordCount.toLocaleString()} words, limit is ${docWordCheck.limit.toLocaleString()}).`, limitType: "perDocumentWordLimit" },
+          { status: 402 }
+        );
+      }
+      const storageCheck = limitResults.documentStorageLimit;
+      if (storageCheck && !storageCheck.allowed) {
+        return NextResponse.json(
+          { success: false, error: `Document storage limit reached (${storageCheck.current} / ${storageCheck.limit} documents). Delete a document or upgrade.`, limitType: "documentStorageLimit" },
+          { status: 402 }
+        );
+      }
     }
 
     // Parse, lock citations, split into sections

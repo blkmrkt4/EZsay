@@ -108,14 +108,15 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
   // Artifact instance count
   const artifactInstanceCount = artifactFindings.reduce((sum, f) => sum + f.count, 0);
 
-  // Plagiarism counts — separate actual plagiarism from common knowledge
+  // Plagiarism counts — separate actual plagiarism from close match from common knowledge
   // Counts show ALL results (not just open) so they match what the user sees in the detail panel
   const plagiarismFlagCount = plagiarismResults.filter((r) => r.verdict === "plagiarism").length;
+  const closeMatchCount = plagiarismResults.filter((r) => r.verdict === "close_match").length;
   const commonKnowledgeCount = plagiarismResults.filter((r) => r.verdict === "common_knowledge").length;
   const plagiarismCheckedTotal = plagiarismResults.filter((r) => r.verdict !== "error").length;
 
   // Total across all types
-  const totalToReview = aiDetectionOpen + (artifactFindings.length > 0 ? 1 : 0) + plagiarismFlagCount;
+  const totalToReview = aiDetectionOpen + (artifactFindings.length > 0 ? 1 : 0) + plagiarismFlagCount + closeMatchCount;
 
   const aiScore = doc.aiRiskScore ?? 0;
   const qualScore = doc.writingQualityScore ?? 50;
@@ -128,11 +129,14 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
     ? Math.round(extractionMeta.coverageRatio * 100)
     : null;
 
-  // Plagiarism score — only actual plagiarism counts, weighted by confidence
+  // Plagiarism score — plagiarism = full weight, close_match = 0.15x weight
   const plagiarismOnly = plagiarismResults.filter((r) => r.verdict === "plagiarism");
+  const closeMatchResults = plagiarismResults.filter((r) => r.verdict === "close_match");
   const plagScore = plagiarismCheckedTotal > 0
     ? Math.round(
-        (plagiarismOnly.reduce((sum, r) => sum + (r.confidence ?? 0.5), 0) / plagiarismCheckedTotal) * 100
+        ((plagiarismOnly.reduce((sum, r) => sum + (r.confidence ?? 0.5), 0)
+          + closeMatchResults.reduce((sum, r) => sum + (r.confidence ?? 0.5) * 0.15, 0))
+          / plagiarismCheckedTotal) * 100
       )
     : null;
 
@@ -177,6 +181,7 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
                 <strong>{aiDetectionOpen}</strong> AI flag{aiDetectionOpen !== 1 ? "s" : ""}
                 {artifactFindings.length > 0 && <>, <strong>{artifactInstanceCount}</strong> artifact{artifactInstanceCount !== 1 ? "s" : ""}</>}
                 {plagiarismFlagCount > 0 && <>, <strong>{plagiarismFlagCount}</strong> plagiarism</>}
+                {closeMatchCount > 0 && <>, <strong>{closeMatchCount}</strong> close match{closeMatchCount !== 1 ? "es" : ""}</>}
                 {commonKnowledgeCount > 0 && <>, <strong>{commonKnowledgeCount}</strong> common knowledge</>}
               </span>
               <button
@@ -349,19 +354,19 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
 
         {/* Plagiarism detail */}
         {expandedScore === "plagiarism" && (
-          <DetailPanel title={`Plagiarism — ${plagiarismCheckedTotal} passages checked, ${plagiarismFlagCount} plagiarism${commonKnowledgeCount > 0 ? `, ${commonKnowledgeCount} common knowledge` : ""}`}>
+          <DetailPanel title={`Plagiarism — ${plagiarismCheckedTotal} passages checked, ${plagiarismFlagCount} plagiarism${closeMatchCount > 0 ? `, ${closeMatchCount} close match${closeMatchCount !== 1 ? "es" : ""}` : ""}${commonKnowledgeCount > 0 ? `, ${commonKnowledgeCount} common knowledge` : ""}`}>
             {plagiarismResults.length === 0 && !plagiarismLoading && (
               <p className="text-xs text-gray-400">No plagiarism check has been run. Enable it in the scan configuration.</p>
             )}
-            {plagiarismResults.length > 0 && plagiarismFlagCount === 0 && commonKnowledgeCount === 0 && (
+            {plagiarismResults.length > 0 && plagiarismFlagCount === 0 && closeMatchCount === 0 && commonKnowledgeCount === 0 && (
               <p className="text-xs text-green-600 mb-2">No plagiarism detected across {plagiarismCheckedTotal} passages.</p>
             )}
-            {/* All results sorted by severity: plagiarism → common_knowledge → quotation → error → coincidence */}
+            {/* All results sorted by severity: plagiarism → close_match → common_knowledge → quotation → error → coincidence */}
             {(() => {
-              const VERDICT_ORDER: Record<string, number> = { plagiarism: 0, common_knowledge: 1, quotation: 2, error: 3, coincidence: 4 };
+              const VERDICT_ORDER: Record<string, number> = { plagiarism: 0, close_match: 1, common_knowledge: 2, quotation: 3, error: 4, coincidence: 5 };
               const sorted = [...plagiarismResults]
                 .filter((r) => r.verdict !== "error" || r.status === "open")
-                .sort((a, b) => (VERDICT_ORDER[a.verdict] ?? 5) - (VERDICT_ORDER[b.verdict] ?? 5));
+                .sort((a, b) => (VERDICT_ORDER[a.verdict] ?? 6) - (VERDICT_ORDER[b.verdict] ?? 6));
 
               const nonClean = sorted.filter((r) => r.verdict !== "coincidence");
               const clean = sorted.filter((r) => r.verdict === "coincidence");
@@ -371,6 +376,7 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
                   {nonClean.map((r) => (
                     <div key={r.id} className={`rounded-lg border-l-4 p-2.5 mb-2 ${
                       r.verdict === "plagiarism" ? "border-l-red-500 bg-red-50" :
+                      r.verdict === "close_match" ? "border-l-orange-400 bg-orange-50" :
                       r.verdict === "common_knowledge" ? "border-l-yellow-400 bg-yellow-50" :
                       r.verdict === "quotation" ? "border-l-blue-400 bg-blue-50" :
                       "border-l-gray-300 bg-gray-50"
@@ -378,14 +384,19 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
                       <div className="flex items-center gap-2 mb-1">
                         <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold ${
                           r.verdict === "plagiarism" ? "bg-red-100 text-red-700" :
+                          r.verdict === "close_match" ? "bg-orange-100 text-orange-700" :
                           r.verdict === "common_knowledge" ? "bg-yellow-100 text-yellow-700" :
                           r.verdict === "quotation" ? "bg-blue-100 text-blue-700" :
                           "bg-gray-200 text-gray-600"
                         }`}>
                           {r.verdict === "plagiarism" ? "Plagiarism" :
+                           r.verdict === "close_match" ? "Close Match" :
                            r.verdict === "common_knowledge" ? "Common Knowledge" :
                            r.verdict === "quotation" ? "Quotation" : r.verdict}
                         </span>
+                        {r.verdict === "close_match" && (
+                          <span className="text-[8px] text-orange-600 italic">consider rephrasing</span>
+                        )}
                         {r.verdict === "common_knowledge" && (
                           <span className="text-[8px] text-yellow-600 italic">not plagiarism</span>
                         )}
@@ -397,10 +408,22 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
                       {r.verdict === "plagiarism" && (
                         <p className="text-[9px] text-red-600 mb-1">This closely matches a specific source without attribution.</p>
                       )}
+                      {r.verdict === "close_match" && (
+                        <p className="text-[9px] text-orange-600 mb-1">The idea is common, but the phrasing closely mirrors a source. Consider rephrasing in your own words.</p>
+                      )}
                       {r.verdict === "common_knowledge" && (
                         <p className="text-[9px] text-yellow-600 mb-1">This matches web sources but is widely known factual information — no citation needed.</p>
                       )}
-                      <p className="text-[10px] text-gray-700 leading-relaxed italic">&ldquo;{r.passageText.length > 200 ? r.passageText.slice(0, 200) + "..." : r.passageText}&rdquo;</p>
+                      {r.passageText.length > 200 ? (
+                        <details>
+                          <summary className="text-[10px] text-gray-700 leading-relaxed italic cursor-pointer select-none">
+                            &ldquo;{r.passageText.slice(0, 200)}&hellip;&rdquo; <span className="text-[8px] text-blue-500 not-italic">(show full)</span>
+                          </summary>
+                          <p className="text-[10px] text-gray-700 leading-relaxed italic mt-1">&ldquo;{r.passageText}&rdquo;</p>
+                        </details>
+                      ) : (
+                        <p className="text-[10px] text-gray-700 leading-relaxed italic">&ldquo;{r.passageText}&rdquo;</p>
+                      )}
                       {r.explanation && <p className="mt-1 text-[9px] text-gray-500">{r.explanation}</p>}
                       {r.topMatchUrl && (
                         <a href={r.topMatchUrl} target="_blank" rel="noopener noreferrer" className="mt-1 block text-[9px] text-blue-600 hover:underline truncate">
@@ -418,7 +441,16 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
                       <div className="mt-1 space-y-1">
                         {clean.map((r) => (
                           <div key={r.id} className="rounded border-l-2 border-l-gray-200 bg-gray-50 p-2">
-                            <p className="text-[9px] text-gray-500 italic">&ldquo;{r.passageText.length > 120 ? r.passageText.slice(0, 120) + "..." : r.passageText}&rdquo;</p>
+                            {r.passageText.length > 120 ? (
+                              <details>
+                                <summary className="text-[9px] text-gray-500 italic cursor-pointer select-none">
+                                  &ldquo;{r.passageText.slice(0, 120)}&hellip;&rdquo; <span className="text-[8px] text-blue-400 not-italic">(show full)</span>
+                                </summary>
+                                <p className="text-[9px] text-gray-500 italic mt-1">&ldquo;{r.passageText}&rdquo;</p>
+                              </details>
+                            ) : (
+                              <p className="text-[9px] text-gray-500 italic">&ldquo;{r.passageText}&rdquo;</p>
+                            )}
                           </div>
                         ))}
                       </div>

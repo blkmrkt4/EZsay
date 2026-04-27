@@ -469,6 +469,7 @@ export const llmCallLog = pgTable("llm_call_log", {
 
 export const plagiarismVerdictEnum = pgEnum("plagiarism_verdict", [
   "plagiarism",
+  "close_match",
   "common_knowledge",
   "coincidence",
   "quotation",
