@@ -7,6 +7,7 @@ import { parsePdfWithMeta } from "@/lib/parsers/pdf-parser";
 import { parseAndSplit } from "@/lib/citations/parser";
 import { checkAllLimits } from "@/lib/stripe/plan-limits";
 import { rateLimit } from "@/lib/rate-limit";
+import { trackEvent } from "@/lib/events/track";
 
 type ExtractionMeta = {
   sourceType: "pdf" | "docx" | "txt" | "pasted";
@@ -44,6 +45,8 @@ export async function POST(request: NextRequest) {
   const title = (formData.get("title") as string) || "Untitled Document";
   const documentType =
     (formData.get("documentType") as string) || "professional";
+  const intakeRaw = formData.get("intake") as string | null;
+  const intake = intakeRaw ? JSON.parse(intakeRaw) : null;
 
   let rawText: string;
   let extractionMeta: ExtractionMeta | null = null;
@@ -155,6 +158,7 @@ export async function POST(request: NextRequest) {
     if (!allAllowed) {
       const docWordCheck = limitResults.perDocumentWordLimit;
       if (docWordCheck && !docWordCheck.allowed) {
+        trackEvent("limit_hit", user.id, { limit_type: "word", words: uploadWordCount, limit: docWordCheck.limit });
         return NextResponse.json(
           { success: false, error: `Document exceeds your plan's per-document limit (${uploadWordCount.toLocaleString()} words, limit is ${docWordCheck.limit.toLocaleString()}).`, limitType: "perDocumentWordLimit" },
           { status: 402 }
@@ -162,6 +166,7 @@ export async function POST(request: NextRequest) {
       }
       const storageCheck = limitResults.documentStorageLimit;
       if (storageCheck && !storageCheck.allowed) {
+        trackEvent("limit_hit", user.id, { limit_type: "document", current: storageCheck.current, limit: storageCheck.limit });
         return NextResponse.json(
           { success: false, error: `Document storage limit reached (${storageCheck.current} / ${storageCheck.limit} documents). Delete a document or upgrade.`, limitType: "documentStorageLimit" },
           { status: 402 }
@@ -186,6 +191,7 @@ export async function POST(request: NextRequest) {
           | "legal",
         status: "uploaded",
         extractionMeta,
+        intake,
       })
       .returning();
 
@@ -203,6 +209,9 @@ export async function POST(request: NextRequest) {
     }
 
     const wordCount = rawText.split(/\s+/).length;
+
+    trackEvent("upload_completed", user.id, { documentId: doc.id, wordCount, documentType });
+    trackEvent("document_created", user.id, { documentId: doc.id });
 
     return NextResponse.json({
       success: true,

@@ -79,11 +79,14 @@ export async function PATCH(
   }
 
   try {
-    const { title } = await request.json();
+    const body = await request.json();
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (body.title !== undefined) updates.title = body.title;
+    if (body.intake !== undefined) updates.intake = body.intake;
 
     const [updated] = await db
       .update(documents)
-      .set({ title, updatedAt: new Date() })
+      .set(updates)
       .where(and(eq(documents.id, docId), eq(documents.userId, user.id)))
       .returning();
 

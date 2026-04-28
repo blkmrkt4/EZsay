@@ -30,23 +30,35 @@ export async function GET(request: NextRequest) {
   if (source) conditions.push(eq(libraryEntries.source, source as "manual" | "user_derived" | "ai_proposed"));
   if (search) conditions.push(sql`${libraryEntries.value} ILIKE ${"%" + search + "%"}`);
 
-  const entries = await db
-    .select()
-    .from(libraryEntries)
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(desc(libraryEntries.createdAt))
-    .limit(limit)
-    .offset(offset);
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  // Count under_review for the badge
-  const [reviewCount] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(libraryEntries)
-    .where(eq(libraryEntries.status, "under_review"));
+  const [entries, [totalRow], [reviewCount]] = await Promise.all([
+    db
+      .select()
+      .from(libraryEntries)
+      .where(where)
+      .orderBy(desc(libraryEntries.createdAt))
+      .limit(limit)
+      .offset(offset),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(libraryEntries)
+      .where(where),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(libraryEntries)
+      .where(eq(libraryEntries.status, "under_review")),
+  ]);
 
   return NextResponse.json({
     success: true,
-    data: { entries, reviewCount: Number(reviewCount.count) },
+    data: {
+      entries,
+      total: Number(totalRow.count),
+      reviewCount: Number(reviewCount.count),
+      limit,
+      offset,
+    },
   });
 }
 

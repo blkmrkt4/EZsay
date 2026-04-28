@@ -6,6 +6,7 @@ import { eq, and, sql } from "drizzle-orm";
 import { logStyleSignal } from "@/lib/style/logger";
 import { validateReplacement } from "@/lib/analysis/corruption-checker";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
+import { trackEvent } from "@/lib/events/track";
 
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
@@ -125,6 +126,12 @@ export async function POST(request: NextRequest) {
         })
         .where(eq(libraryEntries.id, updatedFlag.libraryEntryId));
     }
+
+    // ── Event tracking ────────────────────────────────────────────────
+    const eventName = action === "accepted" ? "flag_accepted" as const
+      : action === "rejected" ? "flag_rejected" as const
+      : "flag_skipped" as const;
+    trackEvent(eventName, user.id, { flagId, patternType: updatedFlag.patternType });
 
     // ── Fire-and-forget style profile logging ────────────────────────
     const signalWeight = manualText

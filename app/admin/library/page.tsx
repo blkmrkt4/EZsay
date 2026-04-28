@@ -44,9 +44,13 @@ const CATEGORIES = [
 const ENTRY_TYPES = ["exact_phrase", "regex_pattern", "semantic_pattern"];
 const DOC_TYPES = ["all", "academic", "professional", "casual", "legal"];
 
+const PAGE_SIZE = 50;
+
 export default function AdminLibraryPage() {
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
+  const [total, setTotal] = useState(0);
   const [reviewCount, setReviewCount] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [filters, setFilters] = useState({
     status: "",
     entryType: "",
@@ -71,6 +75,8 @@ export default function AdminLibraryPage() {
 
   const loadData = useCallback(async () => {
     const params = new URLSearchParams();
+    params.set("limit", String(PAGE_SIZE));
+    params.set("offset", String(offset));
     if (filters.status) params.set("status", filters.status);
     if (filters.entryType) params.set("entryType", filters.entryType);
     if (filters.category) params.set("category", filters.category);
@@ -81,9 +87,10 @@ export default function AdminLibraryPage() {
     const json = await res.json();
     if (json.success) {
       setEntries(json.data.entries);
+      setTotal(json.data.total);
       setReviewCount(json.data.reviewCount);
     }
-  }, [filters]);
+  }, [filters, offset]);
 
   useEffect(() => {
     loadData();
@@ -177,7 +184,7 @@ export default function AdminLibraryPage() {
         <div>
           <h1 className="text-2xl font-bold">Phrase Library</h1>
           <p className="mt-1 text-sm text-gray-500">
-            {entries.length} entries loaded
+            {total} entr{total !== 1 ? "ies" : "y"} total
             {reviewCount > 0 && (
               <span className="ml-2 rounded bg-orange-100 px-1.5 py-0.5 text-xs font-medium text-orange-700">
                 {reviewCount} pending review
@@ -351,7 +358,7 @@ export default function AdminLibraryPage() {
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <select
           value={filters.status}
-          onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+          onChange={(e) => { setFilters({ ...filters, status: e.target.value }); setOffset(0); }}
           className="rounded border border-gray-300 px-2 py-1.5 text-sm"
         >
           <option value="">All statuses</option>
@@ -361,7 +368,7 @@ export default function AdminLibraryPage() {
         </select>
         <select
           value={filters.entryType}
-          onChange={(e) => setFilters({ ...filters, entryType: e.target.value })}
+          onChange={(e) => { setFilters({ ...filters, entryType: e.target.value }); setOffset(0); }}
           className="rounded border border-gray-300 px-2 py-1.5 text-sm"
         >
           <option value="">All types</option>
@@ -373,7 +380,7 @@ export default function AdminLibraryPage() {
         </select>
         <select
           value={filters.category}
-          onChange={(e) => setFilters({ ...filters, category: e.target.value })}
+          onChange={(e) => { setFilters({ ...filters, category: e.target.value }); setOffset(0); }}
           className="rounded border border-gray-300 px-2 py-1.5 text-sm"
         >
           <option value="">All categories</option>
@@ -385,7 +392,7 @@ export default function AdminLibraryPage() {
         </select>
         <select
           value={filters.source}
-          onChange={(e) => setFilters({ ...filters, source: e.target.value })}
+          onChange={(e) => { setFilters({ ...filters, source: e.target.value }); setOffset(0); }}
           className="rounded border border-gray-300 px-2 py-1.5 text-sm"
         >
           <option value="">All sources</option>
@@ -396,7 +403,7 @@ export default function AdminLibraryPage() {
         <input
           type="text"
           value={filters.search}
-          onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+          onChange={(e) => { setFilters({ ...filters, search: e.target.value }); setOffset(0); }}
           placeholder="Search value..."
           className="rounded border border-gray-300 px-2 py-1.5 text-sm"
         />
@@ -535,6 +542,33 @@ export default function AdminLibraryPage() {
           </div>
         )}
       </div>
+
+      {/* Pagination */}
+      {total > PAGE_SIZE && (
+        <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
+          <span>{total} result{total !== 1 ? "s" : ""}</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+              disabled={offset === 0}
+              className="rounded border border-gray-300 px-2 py-1 disabled:opacity-30"
+            >
+              Prev
+            </button>
+            <span>
+              Page {Math.floor(offset / PAGE_SIZE) + 1} of{" "}
+              {Math.ceil(total / PAGE_SIZE)}
+            </span>
+            <button
+              onClick={() => setOffset(offset + PAGE_SIZE)}
+              disabled={offset + PAGE_SIZE >= total}
+              className="rounded border border-gray-300 px-2 py-1 disabled:opacity-30"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

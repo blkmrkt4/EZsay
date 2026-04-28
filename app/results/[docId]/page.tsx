@@ -184,12 +184,12 @@ export default function ResultsPage() {
         <div className="mt-6 rounded-lg border border-gray-200 bg-gray-50 p-4">
           <p className="text-sm text-gray-700">
             {doc.aiRiskScore >= 70
-              ? "This document has a high AI signal. Multiple patterns typical of AI-generated text were detected across most sections."
+              ? "This document contains several patterns commonly associated with AI-assisted writing across most sections."
               : doc.aiRiskScore >= 40
-                ? "This document has a moderate AI signal. Some sections contain patterns that detectors typically flag."
+                ? "Some sections contain phrases and structures that detection tools may flag."
                 : doc.aiRiskScore >= 15
-                  ? "This document has a low AI signal. A few patterns were detected but overall the writing reads naturally."
-                  : "This document has very low AI signal. Minimal patterns detected."}
+                  ? "A few patterns were found, but overall the writing has few characteristics associated with AI."
+                  : "Minimal patterns associated with AI-assisted writing were found."}
           </p>
         </div>
       )}
@@ -200,7 +200,7 @@ export default function ResultsPage() {
           <div className="mt-8">
             <h2 className="text-lg font-semibold">Flagged Sections</h2>
             <p className="mt-1 text-sm text-gray-500">
-              Each section shows detected AI patterns. Subscribe to fix them.
+              Each section shows potential AI patterns. Subscribe to review and fix them.
             </p>
           </div>
 

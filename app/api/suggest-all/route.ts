@@ -6,6 +6,7 @@ import { eq, and, or, inArray } from "drizzle-orm";
 import { executeActivity } from "@/lib/routing/openrouter";
 import { checkForCorruption } from "@/lib/analysis/corruption-checker";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
+import { buildIntakeTokens } from "@/lib/prompts/intake-tokens";
 
 /**
  * Generates suggestions for ALL open flags in a document.
@@ -51,6 +52,7 @@ export async function POST(request: NextRequest) {
 
   const docType = doc.documentType || "professional";
   const slug = docType === "academic" ? "suggest-academic" : "suggest-rewrite";
+  const intakeTokens = buildIntakeTokens(docType, doc.intake as Record<string, string> | null);
 
   // Generate suggestions with bounded concurrency (2 workers)
   type FlagResult = { flagId: string; status: "success" | "failed"; optionCount: number; explanation?: string; principle?: string; error?: string };
@@ -77,15 +79,10 @@ export async function POST(request: NextRequest) {
       const startTime = Date.now();
 
       const result = await executeActivity(slug, {
-        DOCUMENT_TYPE: docType,
+        ...intakeTokens,
         FLAGGED_PHRASE: flag.flaggedPhrase,
         SECTION_TEXT: section.currentText,
         EXPLANATION: flag.explanation,
-        PERSONA: "a pragmatic writer who values clarity over formality",
-        VERBAL_TICS: "basically, I mean, honestly",
-        ACADEMIC_LEVEL: "Year 2 undergraduate",
-        SUBJECT: "the subject area of the document",
-        WRITER_DESCRIPTION: "engaged with the core argument but less confident with abstract theory",
       });
 
       const latencyMs = Date.now() - startTime;

@@ -185,6 +185,7 @@ export const documents = pgTable("documents", {
   spellingResults: jsonb("spelling_results"),
   grammarResults: jsonb("grammar_results"),
   extractionMeta: jsonb("extraction_meta"),
+  intake: jsonb("intake"),  // questionnaire answers: audience, purpose, aiUsage, discipline, etc.
   spellingScore: integer("spelling_score"),
   grammarScore: integer("grammar_score"),
   lastRescoreAt: timestamp("last_rescore_at", { withTimezone: true }),
@@ -475,6 +476,21 @@ export const llmCallLog = pgTable("llm_call_log", {
   outcome: llmOutcomeEnum("outcome").notNull().default("pending"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+// ── Analytics Events ─────────────────────────────────────────────────────
+
+export const events = pgTable("events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id"),
+  eventName: text("event_name").notNull(),
+  category: text("category").notNull(),
+  metadata: jsonb("metadata").default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index("events_name_idx").on(t.eventName),
+  index("events_user_id_idx").on(t.userId),
+  index("events_created_at_idx").on(t.createdAt),
+]);
 
 // ── Plagiarism Results ────────────────────────────────────────────────────
 

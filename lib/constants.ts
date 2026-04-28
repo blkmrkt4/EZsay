@@ -2,7 +2,7 @@ export const PATTERN_TYPE_LABELS: Record<string, { label: string; color: string;
   banned_word: {
     label: "Common AI Phrase",
     color: "bg-red-100 text-red-700 border border-red-200",
-    description: "This word or phrase is strongly associated with AI-generated text and is frequently flagged by detection tools.",
+    description: "This word or phrase is commonly associated with AI-assisted writing and is often flagged by detection tools.",
   },
   banned_structure: {
     label: "Sentence Structure",
@@ -12,7 +12,7 @@ export const PATTERN_TYPE_LABELS: Record<string, { label: string; color: string;
   synonym_rotation: {
     label: "Synonym Rotation",
     color: "bg-purple-100 text-purple-700 border border-purple-200",
-    description: "The same concept is described with different synonyms — a hallmark of AI text. Humans repeat their preferred words.",
+    description: "The same concept is described with different synonyms — a pattern commonly seen in AI-assisted writing. Most people tend to stick with their preferred words.",
   },
   uniform_length: {
     label: "Uniform Length",

@@ -12,6 +12,7 @@ import { detectSpellingErrors } from "@/lib/analysis/spelling-detector";
 import { detectGrammarErrors } from "@/lib/analysis/grammar-detector";
 import { checkAllLimits, recordScanUsage } from "@/lib/stripe/plan-limits";
 import { rateLimit } from "@/lib/rate-limit";
+import { trackEvent } from "@/lib/events/track";
 
 /**
  * Maps a library entry to the most appropriate flag patternType.
@@ -106,6 +107,7 @@ export async function POST(request: NextRequest) {
   if (!allAllowed) {
     const wordCheck = limitResults.monthlyWordLimit;
     if (wordCheck && !wordCheck.allowed) {
+      trackEvent("limit_hit", user.id, { limit_type: "scan_words", current: wordCheck.current, limit: wordCheck.limit });
       return NextResponse.json(
         { success: false, error: `Monthly word limit reached (${wordCheck.current.toLocaleString()} / ${wordCheck.limit.toLocaleString()} words). Upgrade for more.`, limitType: "monthlyWordLimit" },
         { status: 402 }
@@ -113,6 +115,7 @@ export async function POST(request: NextRequest) {
     }
     const scanCheck = limitResults.monthlyScanLimit;
     if (scanCheck && !scanCheck.allowed) {
+      trackEvent("limit_hit", user.id, { limit_type: "scan_count", current: scanCheck.current, limit: scanCheck.limit });
       return NextResponse.json(
         { success: false, error: `Monthly scan limit reached (${scanCheck.current} / ${scanCheck.limit} scans). Upgrade for more.`, limitType: "monthlyScanLimit" },
         { status: 402 }
@@ -125,6 +128,8 @@ export async function POST(request: NextRequest) {
     .update(documents)
     .set({ status: "scanning", updatedAt: new Date() })
     .where(eq(documents.id, documentId));
+
+  trackEvent("scan_started", user.id, { documentId, depth: aiDetectionDepth });
 
   try {
   // Load all sections
@@ -322,6 +327,13 @@ export async function POST(request: NextRequest) {
 
   // Record usage
   await recordScanUsage(user.id, docWordCount);
+
+  trackEvent("scan_completed", user.id, {
+    documentId,
+    ai_risk_score: aiRiskScore,
+    flag_count: totalFlags,
+    word_count: docWordCount,
+  });
 
   return NextResponse.json({
     success: true,

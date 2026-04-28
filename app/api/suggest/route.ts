@@ -5,6 +5,7 @@ import { flags, sections, documents, flagOptions, llmCallLog } from "@/db/schema
 import { eq, and } from "drizzle-orm";
 import { executeActivity } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
+import { buildIntakeTokens } from "@/lib/prompts/intake-tokens";
 
 /**
  * Generates replacement options for a flag by calling OpenRouter
@@ -68,19 +69,15 @@ export async function POST(request: NextRequest) {
 
   const docType = doc.documentType || "professional";
   const slug = docType === "academic" ? "suggest-academic" : "suggest-rewrite";
+  const intakeTokens = buildIntakeTokens(docType, doc.intake as Record<string, string> | null);
 
   try {
     // Call OpenRouter via Activity Binds
     const result = await executeActivity(slug, {
-      DOCUMENT_TYPE: docType,
+      ...intakeTokens,
       FLAGGED_PHRASE: flag.flaggedPhrase,
       SECTION_TEXT: section.currentText,
       EXPLANATION: flag.explanation,
-      PERSONA: "a pragmatic writer who values clarity over formality",
-      VERBAL_TICS: "basically, I mean, honestly",
-      ACADEMIC_LEVEL: "Year 2 undergraduate",
-      SUBJECT: "the subject area of the document",
-      WRITER_DESCRIPTION: "engaged with the core argument but less confident with abstract theory",
     });
 
     // Parse the full response — explanation, principle, and options

@@ -8,6 +8,10 @@ import { getRemovalDescription } from "@/lib/analysis/artifact-removals";
 import CitationsPage from "@/components/citations/CitationsPage";
 import CommandCapsule from "@/components/editor/CommandCapsule";
 import HeatmapScrollbar, { type HeatmapTick } from "@/components/editor/HeatmapScrollbar";
+import DiffDocPanel from "@/components/editor/DiffDocPanel";
+import DiffEditPanel from "@/components/editor/DiffEditPanel";
+import DiffChoicesPanel from "@/components/editor/DiffChoicesPanel";
+import { trackEvent } from "@/lib/events/track-client";
 import Link from "next/link";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -49,6 +53,7 @@ interface Document {
 interface Section {
   id: string;
   index: number;
+  rawText: string;
   currentText: string;
   isLocked: boolean;
   flagCount: number;
@@ -66,6 +71,8 @@ interface Flag {
   patternType: string;
   status: string;
   metadata: unknown;
+  acceptedOptionId: string | null;
+  manualReplacement: string | null;
 }
 
 interface FlagOption {
@@ -76,7 +83,7 @@ interface FlagOption {
 }
 
 type ScanLevel = "surface" | "deep" | "plagiarism" | "citations" | "style-cleanup" | "comprehensive";
-type NavItem = "documents" | "scan" | "analysis" | "edit" | "citations" | "spelling" | "grammar" | "style-training" | "bigtest";
+type NavItem = "documents" | "scan" | "analysis" | "edit" | "review" | "citations" | "spelling" | "grammar" | "style-training" | "intake";
 
 interface PlagiarismResult {
   id: string;
@@ -140,6 +147,66 @@ const DOC_TYPES = [
   { value: "professional", label: "Professional" },
   { value: "casual", label: "Casual" },
   { value: "legal", label: "Legal" },
+];
+
+const INTAKE_QUESTIONS = [
+  {
+    key: "audience" as const,
+    title: "Who is this for?",
+    subtitle: "Knowing your audience helps us suggest replacements that sound right for the reader.",
+    options: [
+      { value: "professor", label: "Professor / Marker" },
+      { value: "client", label: "Client" },
+      { value: "board", label: "Board / Executives" },
+      { value: "team", label: "Internal team" },
+      { value: "public", label: "Public audience" },
+      { value: "peers", label: "Peers / Colleagues" },
+    ],
+  },
+  {
+    key: "purpose" as const,
+    title: "What kind of document is this?",
+    subtitle: "Different formats have different expectations for tone and structure.",
+    options: [
+      { value: "assignment", label: "Assignment / Essay" },
+      { value: "thesis", label: "Thesis / Dissertation" },
+      { value: "report", label: "Report / Analysis" },
+      { value: "memo", label: "Memo / Brief" },
+      { value: "proposal", label: "Proposal" },
+      { value: "article", label: "Article / Blog post" },
+      { value: "email", label: "Email / Letter" },
+      { value: "presentation", label: "Presentation / Deck" },
+    ],
+  },
+  {
+    key: "aiUsage" as const,
+    title: "How did you use AI?",
+    subtitle: "This helps us calibrate — a fully AI-drafted document needs different edits than one you wrote yourself.",
+    options: [
+      { value: "drafted", label: "AI drafted most of it" },
+      { value: "outlined", label: "AI outlined, I wrote" },
+      { value: "edited", label: "I wrote, AI helped edit" },
+      { value: "research", label: "AI helped with research only" },
+      { value: "none", label: "No AI used" },
+    ],
+  },
+  {
+    key: "discipline" as const,
+    title: "What discipline is this in?",
+    subtitle: "Academic writing in law looks very different from psychology or engineering.",
+    academicOnly: true,
+    options: [
+      { value: "business", label: "Business / Management" },
+      { value: "law", label: "Law" },
+      { value: "medicine", label: "Medicine / Health" },
+      { value: "psychology", label: "Psychology" },
+      { value: "education", label: "Education" },
+      { value: "humanities", label: "Humanities / Arts" },
+      { value: "engineering", label: "Engineering / CS" },
+      { value: "social_science", label: "Social Science" },
+      { value: "natural_science", label: "Natural Science" },
+    ],
+  },
 ];
 
 const SIGNAL_COLORS: Record<string, string> = {
@@ -260,16 +327,11 @@ export default function WorkspacePage() {
   const [navExpanded, setNavExpanded] = useState(false);
   const [navPinned, setNavPinned] = useState(false);
   const [showScanDialog, setShowScanDialog] = useState(false);
-  const [debugAiScores, setDebugAiScores] = useState<{
-    loading: boolean;
-    results: { model: string; label: string; score: number; confidence: string; reasoning: string; error?: string; latencyMs: number }[];
-  }>({ loading: false, results: [] });
   const [suggestProgress, setSuggestProgress] = useState<{
     generating: boolean;
     current: number;
     total: number;
-    results: { flagId: string; status: string; optionCount?: number; explanation?: string; error?: string }[];
-  }>({ generating: false, current: 0, total: 0, results: [] });
+  }>({ generating: false, current: 0, total: 0 });
 
   // Upload state (inline in documents panel)
   const [showUpload, setShowUpload] = useState(false);
@@ -277,6 +339,13 @@ export default function WorkspacePage() {
   const [pasteText, setPasteText] = useState("");
   const [uploadTitle, setUploadTitle] = useState("");
   const [uploadDocType, setUploadDocType] = useState("professional");
+  const [intakeStep, setIntakeStep] = useState(0);
+  const [intakeAnswers, setIntakeAnswers] = useState({
+    audience: "",
+    purpose: "",
+    aiUsage: "",
+    discipline: "",
+  });
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -418,22 +487,25 @@ export default function WorkspacePage() {
       await loadDocs();
 
       // Immediately generate suggestions for all flags
-      setSuggestProgress({ generating: true, current: 0, total: json.data.totalFlags, results: [] });
+      setSuggestProgress({ generating: true, current: 0, total: json.data.totalFlags });
       generateAllSuggestions(activeDocId);
 
       // Run plagiarism check in parallel if enabled
       if (scanConfig.categories.plagiarism) {
         runPlagiarismCheck(activeDocId);
+        trackEvent("feature_used", { feature: "plagiarism" });
       }
 
       // Run tone consistency check in parallel if enabled
       if (scanConfig.categories.toneConsistency) {
         runToneConsistencyCheck(activeDocId);
+        trackEvent("feature_used", { feature: "tone_consistency" });
       }
 
       // Run citation extraction and structural check if enabled
       if (scanConfig.categories.citations) {
         runCitationCheck(activeDocId);
+        trackEvent("feature_used", { feature: "citations" });
       }
     }
     setScanning(false);
@@ -638,8 +710,45 @@ export default function WorkspacePage() {
       setPasteText("");
       setUploadTitle("");
       setShowUpload(false);
+      // Navigate to intake questionnaire flow
+      setIntakeStep(0);
+      setIntakeAnswers({ audience: "", purpose: "", aiUsage: "", discipline: "" });
+      setNav("intake");
     }
     setUploading(false);
+  }
+
+  // ── Intake questionnaire ────────────────────────────────────────────────
+
+  const activeIntakeQuestions = INTAKE_QUESTIONS.filter(
+    (q) => !q.academicOnly || activeDoc?.documentType === "academic"
+  );
+  const currentIntakeQ = activeIntakeQuestions[intakeStep] ?? null;
+
+  async function saveIntake() {
+    if (!activeDocId) return;
+    const filled = Object.fromEntries(
+      Object.entries(intakeAnswers).filter(([, v]) => v !== "")
+    );
+    if (Object.keys(filled).length > 0) {
+      await fetch(`/api/documents/${activeDocId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intake: filled }),
+      });
+      trackEvent("intake_completed", { answersCount: Object.keys(filled).length });
+    } else {
+      trackEvent("intake_skipped");
+    }
+    setNav("scan");
+  }
+
+  function advanceIntake() {
+    if (intakeStep < activeIntakeQuestions.length - 1) {
+      setIntakeStep(intakeStep + 1);
+    } else {
+      saveIntake();
+    }
   }
 
   // ── Flag resolution ────────────────────────────────────────────────────
@@ -691,7 +800,6 @@ export default function WorkspacePage() {
           generating: false,
           current: json.data.total,
           total: json.data.total,
-          results: json.data.results,
         });
         // Reload document to pick up new flag options
         await loadDocument(docId);
@@ -705,29 +813,6 @@ export default function WorkspacePage() {
     }
   }
 
-  // ── Debug: multi-model AI scoring ───────────────────────────────────────
-
-  async function runDebugAiScore() {
-    if (!activeDocId) return;
-    setDebugAiScores({ loading: true, results: [] });
-    try {
-      const res = await fetch("/api/debug/ai-score", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentId: activeDocId }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setDebugAiScores({ loading: false, results: json.data.results });
-      } else {
-        console.error("debug ai-score failed:", json.error);
-        setDebugAiScores({ loading: false, results: [] });
-      }
-    } catch (err) {
-      console.error("debug ai-score error:", err);
-      setDebugAiScores({ loading: false, results: [] });
-    }
-  }
 
   // ── Save version ────────────────────────────────────────────────────────
 
@@ -892,6 +977,45 @@ export default function WorkspacePage() {
     }
     return out;
   }, [flags, plagiarismResults]);
+
+  // ── Review diff: resolved changes ──────────────────────────────────────
+
+  const [activeChangeId, setActiveChangeId] = useState<string | null>(null);
+
+  const resolvedChanges = useMemo(() => {
+    let num = 0;
+    return flags
+      .filter((f) => f.status === "accepted")
+      .map((f) => {
+        const section = sectionMap.get(f.sectionId);
+        const replacementText =
+          f.manualReplacement ??
+          flagOptions.find((o) => o.id === f.acceptedOptionId)?.text ??
+          null;
+        return {
+          id: f.id,
+          sectionId: f.sectionId,
+          sectionIndex: section?.index ?? 0,
+          originalPhrase: f.flaggedPhrase,
+          replacementText: replacementText ?? "",
+          explanation: f.explanation,
+          patternType: f.patternType,
+          phraseStart: f.phraseStart,
+          phraseEnd: f.phraseEnd,
+          changeNumber: 0,
+        };
+      })
+      .filter((c) => c.replacementText !== "")
+      .sort((a, b) => a.sectionIndex !== b.sectionIndex ? a.sectionIndex - b.sectionIndex : a.phraseStart - b.phraseStart)
+      .map((c) => ({ ...c, changeNumber: ++num }));
+  }, [flags, flagOptions, sectionMap]);
+
+  const reviewStats = useMemo(() => ({
+    acceptedCount: flags.filter((f) => f.status === "accepted").length,
+    rejectedCount: flags.filter((f) => f.status === "rejected").length,
+    skippedCount: flags.filter((f) => f.status === "skipped").length,
+    totalFlags: flags.length,
+  }), [flags]);
 
   // ── Unified Edit Queue ────────────────────────────────────────────────
   const editQueue = useMemo((): EditQueueItem[] => {
@@ -1186,6 +1310,13 @@ export default function WorkspacePage() {
             <NavButton label="Edit" active={nav === "edit"} expanded={navExpanded || navPinned} onClick={() => setNav("edit")}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" /></svg>}
             />
+            {/* Review Changes */}
+            <NavButton label="Review" active={nav === "review"} expanded={navExpanded || navPinned} onClick={() => { setNav("review"); setShowDocPanel(true); trackEvent("review_tab_opened"); }}
+              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" /></svg>}
+            />
+
+            <div className="my-1.5 mx-3 border-t border-gray-100" />
+
             {/* Citations */}
             <NavButton label="Citations" active={nav === "citations"} expanded={navExpanded || navPinned} onClick={() => setNav("citations")}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>}
@@ -1204,12 +1335,6 @@ export default function WorkspacePage() {
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75" /></svg>}
             />
 
-            <div className="my-1.5 mx-3 border-t border-gray-100" />
-
-            {/* Big Test — multi-model AI detection debug */}
-            <NavButton label="Big Test" active={nav === "bigtest"} expanded={navExpanded || navPinned} onClick={() => setNav("bigtest")}
-              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" /></svg>}
-            />
           </div>
 
           {/* Admin link */}
@@ -1225,17 +1350,6 @@ export default function WorkspacePage() {
           </div>
         </nav>
 
-        {/* ── Big Test: full-page takeover ────────────────────────────────── */}
-        {nav === "bigtest" ? (
-          <BigTestView
-            docs={docs}
-            activeDocId={activeDocId}
-            onSelectDoc={(docId) => { setActiveDocId(docId); loadDocument(docId); }}
-            debugAiScores={debugAiScores}
-            onRunScores={runDebugAiScore}
-            onFinish={() => setNav("edit")}
-          />
-        ) : (
         <div className="flex flex-1 min-w-0">
 
           {/* ── Library Panel (hidden once a doc is loaded) ───────────────── */}
@@ -1398,6 +1512,14 @@ export default function WorkspacePage() {
                   </button>
                 </div>
                 <div className="flex flex-1 min-h-0">
+                  {nav === "review" ? (
+                    <DiffDocPanel
+                      sections={sections}
+                      changes={resolvedChanges}
+                      activeChangeId={activeChangeId}
+                      onChangeClick={setActiveChangeId}
+                    />
+                  ) : (
                   <div ref={docScrollRef} className="flex-1 overflow-auto p-3">
                     <div className="space-y-1">
                     {sections.map((section) => {
@@ -1407,11 +1529,6 @@ export default function WorkspacePage() {
                       const allResolved = hasFlags && sectionFlags.every((f) => f.status !== "open" && f.status !== "generation_failed");
                       const hasOpenFlags = sectionFlags.some((f) => f.status === "open" || f.status === "generation_failed");
 
-                      // Determine section state for colouring:
-                      // Yellow = currently being edited
-                      // Light green = all flags resolved (completed)
-                      // Light pink = has open flags but not currently being edited (not yet reached)
-                      // No colour = no flags (clean section)
                       let sectionColor = "text-gray-700 hover:bg-gray-50";
                       if (section.isLocked) {
                         sectionColor = "text-gray-400 bg-gray-50 cursor-default";
@@ -1449,15 +1566,18 @@ export default function WorkspacePage() {
                     })}
                   </div>
                   </div>
-                  <HeatmapScrollbar
-                    scrollRef={docScrollRef}
-                    ticks={heatmapTicks}
-                    onNavigate={(sectionId) => {
-                      const idx = openFlags.findIndex((f) => f.sectionId === sectionId);
-                      if (idx !== -1) { setSelectedFlagIdx(idx); setSelectedOptionIdx(null); }
-                    }}
-                    activeSectionId={currentFlag?.sectionId ?? null}
-                  />
+                  )}
+                  {nav !== "review" && (
+                    <HeatmapScrollbar
+                      scrollRef={docScrollRef}
+                      ticks={heatmapTicks}
+                      onNavigate={(sectionId) => {
+                        const idx = openFlags.findIndex((f) => f.sectionId === sectionId);
+                        if (idx !== -1) { setSelectedFlagIdx(idx); setSelectedOptionIdx(null); }
+                      }}
+                      activeSectionId={currentFlag?.sectionId ?? null}
+                    />
+                  )}
                 </div>
               </div>
             ) : (
@@ -1522,7 +1642,7 @@ export default function WorkspacePage() {
           <div className="flex flex-[5] flex-col min-w-[300px] bg-white border-r border-gray-200">
             <div className="border-b border-gray-100 px-3 py-2 flex items-center justify-between">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-                {nav === "style-training" ? "Style Training" : nav === "citations" ? "Citations" : nav === "spelling" ? "Spelling" : nav === "grammar" ? "Grammar" : nav === "analysis" || nav === "scan" ? "Analysis" : "Edit"}
+                {nav === "review" ? "Review Changes" : nav === "intake" ? "Context" : nav === "style-training" ? "Style Training" : nav === "citations" ? "Citations" : nav === "spelling" ? "Spelling" : nav === "grammar" ? "Grammar" : nav === "analysis" || nav === "scan" ? "Analysis" : "Edit"}
               </h2>
               <button onClick={() => setShowEditPanel(false)} title="Collapse edit panel (E)" className="text-gray-400 hover:text-gray-600">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
@@ -1882,7 +2002,7 @@ export default function WorkspacePage() {
                           <>You&apos;ve used different synonyms for the same concept across the document. Humans tend to repeat their preferred word — &quot;use&quot; not alternating between &quot;use,&quot; &quot;utilise,&quot; and &quot;employ.&quot; Pick one word and stick with it. The repetition is what makes writing sound natural.</>
                         )}
                         {currentFlag.patternType === "uniform_length" && (
-                          <>Your sentences or paragraphs are too similar in length. Human writing has dramatic variation — some sentences are 5 words, others 40+. Mix short punchy statements with longer, more complex ones. This variation is called &quot;burstiness&quot; and it&apos;s one of the strongest signals detectors check.</>
+                          <>Your sentences or paragraphs are too similar in length. Human writing has dramatic variation — some sentences are 5 words, others 40+. Mix short punchy statements with longer, more complex ones. This variation is called &quot;burstiness&quot; and it&apos;s one of the patterns that detection tools commonly look for.</>
                         )}
                         {currentFlag.patternType === "uniform_density" && (
                           <>Every sentence carries roughly the same amount of information. In natural writing, some sentences are just breathing room — restating something casually, making an observation, or just being voice. Add a few low-information sentences that sound like you thinking out loud.</>
@@ -2112,12 +2232,58 @@ export default function WorkspacePage() {
                 />
               )}
 
+              {/* Review changes diff view */}
+              {nav === "review" && (
+                resolvedChanges.length > 0 ? (
+                  <DiffEditPanel
+                    sections={sections}
+                    changes={resolvedChanges}
+                    activeChangeId={activeChangeId}
+                    onChangeClick={setActiveChangeId}
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center p-8">
+                    <div className="text-center max-w-sm">
+                      <p className="text-lg font-semibold text-gray-400">No changes yet</p>
+                      <p className="mt-2 text-sm text-gray-400">Edit your document first, then come back here to review what changed.</p>
+                    </div>
+                  </div>
+                )
+              )}
+
+              {/* Intake questionnaire — shown after upload */}
+              {nav === "intake" && currentIntakeQ && (
+                <div className="flex h-full flex-col items-center justify-center p-8">
+                  <div className="max-w-md w-full space-y-6">
+                    <div className="text-center">
+                      <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Question {intakeStep + 1} of {activeIntakeQuestions.length} — optional</p>
+                      <h2 className="text-lg font-bold text-gray-800">{currentIntakeQ.title}</h2>
+                      <p className="mt-2 text-sm text-gray-500">{currentIntakeQ.subtitle}</p>
+                    </div>
+                    <div className="text-center">
+                      <button onClick={saveIntake} className="text-xs text-gray-400 hover:text-gray-600 underline">
+                        Skip and start scanning
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {nav === "intake" && !currentIntakeQ && (
+                <div className="flex h-full items-center justify-center p-8">
+                  <div className="text-center max-w-sm">
+                    <p className="text-lg font-semibold text-gray-400">All done</p>
+                    <p className="mt-2 text-sm text-gray-400">Your document is ready to scan.</p>
+                  </div>
+                </div>
+              )}
+
               {nav === "style-training" && (
                 <StyleTrainingInline />
               )}
 
               {/* Default empty state — no document loaded */}
-              {!activeDoc && nav !== "scan" && nav !== "edit" && nav !== "citations" && nav !== "style-training" && nav !== "analysis" && (
+              {!activeDoc && nav !== "scan" && nav !== "edit" && nav !== "citations" && nav !== "style-training" && nav !== "analysis" && nav !== "intake" && (
                 <EmptyPanel
                   title="Edit Panel"
                   description="Load a document from the Library, then use the Scan button in the toolbar to analyse it. Flagged AI patterns will appear here for you to review and fix one by one."
@@ -2353,10 +2519,71 @@ export default function WorkspacePage() {
                     )}
                   </div>
                 </div>
+              ) : nav === "review" ? (
+                <DiffChoicesPanel
+                  changes={resolvedChanges}
+                  totalFlags={reviewStats.totalFlags}
+                  acceptedCount={reviewStats.acceptedCount}
+                  rejectedCount={reviewStats.rejectedCount}
+                  skippedCount={reviewStats.skippedCount}
+                  currentScore={activeDoc?.aiRiskScore ?? null}
+                  initialScore={docVersions.length > 0 ? (docVersions[0] as any)?.aiRiskScore ?? null : null}
+                  activeChangeId={activeChangeId}
+                  onChangeClick={setActiveChangeId}
+                />
+              ) : nav === "intake" && currentIntakeQ ? (
+                <div className="flex h-full flex-col">
+                  <div className="border-b border-gray-200 px-2 py-1.5">
+                    <p className="text-[10px] text-gray-400">{intakeStep + 1} of {activeIntakeQuestions.length} questions</p>
+                  </div>
+
+                  <div className="flex-1 p-2 space-y-1.5">
+                    {currentIntakeQ.options.map((opt) => {
+                      const isSelected = intakeAnswers[currentIntakeQ.key] === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          onClick={() => {
+                            setIntakeAnswers({ ...intakeAnswers, [currentIntakeQ.key]: opt.value });
+                            // Auto-advance after a short delay for feel
+                            setTimeout(() => advanceIntake(), 200);
+                          }}
+                          className={`group relative flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs backdrop-blur-[10px] transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none ${
+                            isSelected
+                              ? "border-2 border-blue-500 bg-blue-50/50 text-blue-900 shadow-sm"
+                              : "border border-white/40 bg-white/60 text-gray-700 hover:bg-white/80 hover:border-blue-200"
+                          }`}
+                        >
+                          <span className="min-w-0 flex-1">{opt.label}</span>
+                          {isSelected && (
+                            <svg className="h-3.5 w-3.5 shrink-0 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="border-t border-gray-200 px-2 py-2 space-y-1.5">
+                    <button
+                      onClick={advanceIntake}
+                      className="w-full rounded border border-gray-300 py-1.5 text-[10px] text-gray-600 hover:bg-gray-100"
+                    >
+                      Skip
+                    </button>
+                    <button
+                      onClick={saveIntake}
+                      className="w-full rounded bg-blue-600 py-1.5 text-[10px] font-medium text-white hover:bg-blue-700"
+                    >
+                      Done — start scanning
+                    </button>
+                  </div>
+                </div>
               ) : (
-                /* Dev debug panel + empty state */
+                /* Empty state */
                 <div className="flex-1 overflow-auto p-3">
-                  {/* Suggestion generation progress (dev debug) */}
+                  {/* Suggestion generation progress */}
                   {suggestProgress.generating && (
                     <div className="mb-3 rounded border border-blue-200 bg-blue-50 p-2 space-y-1.5">
                       <div className="flex items-center gap-2">
@@ -2367,20 +2594,7 @@ export default function WorkspacePage() {
                     </div>
                   )}
 
-                  {suggestProgress.results.length > 0 && (
-                    <div className="mb-3 space-y-1">
-                      <p className="text-[10px] font-semibold text-gray-500 uppercase">LLM Activity Log (dev)</p>
-                      {suggestProgress.results.map((r, i) => (
-                        <div key={i} className={`rounded px-2 py-1 text-[9px] ${r.status === "success" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"}`}>
-                          <span className="font-mono">{r.flagId.slice(0, 8)}</span>
-                          <span className="ml-1">{r.status === "success" ? `OK (${r.optionCount} opts)` : `FAIL: ${r.error}`}</span>
-                          {r.explanation && <p className="mt-0.5 text-[8px] text-gray-500 truncate">{r.explanation.slice(0, 80)}...</p>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {!suggestProgress.generating && suggestProgress.results.length === 0 && (
+                  {!suggestProgress.generating && (
                     <div className="flex h-full items-center justify-center">
                       <div className="text-center max-w-[180px]">
                         <p className="text-xs font-semibold text-gray-400">Choices</p>
@@ -2415,7 +2629,6 @@ export default function WorkspacePage() {
             </div>
           )}
         </div>
-        )}
       </div>
 
       {/* ═══ Scan config dialog ═════════════════════════════════════════════ */}
@@ -2549,164 +2762,6 @@ export default function WorkspacePage() {
 }
 
 // ── Nav button ───────────────────────────────────────────────────────────
-
-// ── Big Test view ────────────────────────────────────────────────────────
-
-function BigTestView({ docs, activeDocId, onSelectDoc, debugAiScores, onRunScores, onFinish }: {
-  docs: { id: string; title: string }[];
-  activeDocId: string | null;
-  onSelectDoc: (docId: string) => void;
-  debugAiScores: {
-    loading: boolean;
-    results: { model: string; label: string; score: number; confidence: string; reasoning: string; error?: string; latencyMs: number }[];
-  };
-  onRunScores: () => void;
-  onFinish: () => void;
-}) {
-  const avgScore = debugAiScores.results.length > 0
-    ? Math.round(debugAiScores.results.filter((r) => !r.error && r.score >= 0).reduce((sum, r) => sum + r.score, 0) / debugAiScores.results.filter((r) => !r.error && r.score >= 0).length)
-    : null;
-
-  return (
-    <div className="flex-1 flex flex-col min-w-0 bg-gray-50">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
-        <div className="flex items-center gap-4">
-          <h1 className="text-lg font-bold text-gray-800">Big Test</h1>
-          <span className="text-xs text-gray-400">Multi-model AI detection scoring (debug)</span>
-        </div>
-        <button
-          onClick={onFinish}
-          className="rounded border border-gray-300 bg-white px-4 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-        >
-          Finish
-        </button>
-      </div>
-
-      {/* Controls */}
-      <div className="border-b border-gray-200 bg-white px-6 py-3">
-        <div className="flex items-center gap-4">
-          <label className="text-xs font-medium text-gray-600">Document:</label>
-          <select
-            value={activeDocId ?? ""}
-            onChange={(e) => e.target.value && onSelectDoc(e.target.value)}
-            className="rounded border border-gray-300 px-3 py-1.5 text-sm text-gray-700"
-          >
-            <option value="">Select a document...</option>
-            {docs.map((d) => (
-              <option key={d.id} value={d.id}>{d.title}</option>
-            ))}
-          </select>
-          <button
-            onClick={onRunScores}
-            disabled={!activeDocId || debugAiScores.loading}
-            className="rounded bg-purple-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-40"
-          >
-            {debugAiScores.loading ? "Scoring..." : "Run 5 Models"}
-          </button>
-          {debugAiScores.loading && (
-            <div className="flex items-center gap-2 text-xs text-purple-600">
-              <div className="h-4 w-4 animate-spin rounded-full border-2 border-purple-200 border-t-purple-600" />
-              Querying models in parallel...
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Results */}
-      <div className="flex-1 overflow-auto p-6">
-        {debugAiScores.results.length === 0 && !debugAiScores.loading && (
-          <div className="flex h-full items-center justify-center">
-            <div className="text-center max-w-md">
-              <p className="text-lg font-semibold text-gray-400">No results yet</p>
-              <p className="mt-2 text-sm text-gray-400">Select a document and click "Run 5 Models" to score it across multiple AI detection models.</p>
-            </div>
-          </div>
-        )}
-
-        {debugAiScores.results.length > 0 && (
-          <div className="max-w-4xl mx-auto space-y-6">
-            {/* Summary bar */}
-            <div className="rounded-lg border border-gray-200 bg-white p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-700">Consensus Score</h2>
-                  <p className="text-xs text-gray-400 mt-0.5">Average across all successful models</p>
-                </div>
-                {avgScore !== null && (
-                  <div className="text-right">
-                    <span className={`text-3xl font-bold ${avgScore >= 70 ? "text-green-600" : avgScore >= 40 ? "text-yellow-600" : avgScore >= 15 ? "text-amber-600" : "text-red-600"}`}>
-                      {avgScore}
-                    </span>
-                    <span className="text-lg text-gray-400">/100</span>
-                    <p className={`text-xs mt-0.5 ${avgScore >= 70 ? "text-green-500" : avgScore >= 40 ? "text-yellow-500" : avgScore >= 15 ? "text-amber-500" : "text-red-500"}`}>
-                      {avgScore >= 90 ? "Undetectable" : avgScore >= 70 ? "Human-like" : avgScore >= 40 ? "Mixed signals" : avgScore >= 15 ? "Detectable" : "Clearly AI"}
-                    </p>
-                  </div>
-                )}
-              </div>
-              {/* Score bar visualization */}
-              {debugAiScores.results.filter((r) => !r.error).length > 0 && (
-                <div className="mt-4 flex items-center gap-3">
-                  {debugAiScores.results.filter((r) => !r.error && r.score >= 0).map((r) => (
-                    <div key={r.model} className="flex-1 text-center">
-                      <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
-                        <div
-                          className={`h-full rounded-full ${r.score >= 70 ? "bg-green-500" : r.score >= 40 ? "bg-yellow-500" : r.score >= 15 ? "bg-amber-500" : "bg-red-500"}`}
-                          style={{ width: `${r.score}%` }}
-                        />
-                      </div>
-                      <p className="text-[9px] text-gray-500 mt-1 truncate">{r.label}</p>
-                      <p className={`text-xs font-bold ${r.score >= 70 ? "text-green-600" : r.score >= 40 ? "text-yellow-600" : r.score >= 15 ? "text-amber-600" : "text-red-600"}`}>{r.score}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Individual model cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {debugAiScores.results.map((r) => (
-                <div key={r.model} className={`rounded-lg border p-5 ${r.error ? "border-red-200 bg-red-50" : "border-gray-200 bg-white"}`}>
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h3 className="text-sm font-bold text-gray-800">{r.label}</h3>
-                      <p className="text-[10px] text-gray-400 font-mono">{r.model}</p>
-                    </div>
-                    {r.error ? (
-                      <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-600">ERROR</span>
-                    ) : (
-                      <div className="text-right">
-                        <span className={`text-2xl font-bold ${r.score >= 70 ? "text-green-600" : r.score >= 40 ? "text-yellow-600" : r.score >= 15 ? "text-amber-600" : "text-red-600"}`}>
-                          {r.score}
-                        </span>
-                        <span className="text-sm text-gray-400">/100</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {r.error ? (
-                    <p className="mt-2 text-xs text-red-500">{r.error}</p>
-                  ) : (
-                    <div className="mt-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${r.confidence === "high" ? "bg-blue-100 text-blue-700" : r.confidence === "medium" ? "bg-yellow-100 text-yellow-700" : "bg-gray-200 text-gray-600"}`}>
-                          {r.confidence} confidence
-                        </span>
-                        <span className="text-[10px] text-gray-400">{r.latencyMs}ms</span>
-                      </div>
-                      <p className="text-xs text-gray-600 leading-relaxed">{r.reasoning}</p>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 // ── Scan config dialog ───────────────────────────────────────────────────
 
