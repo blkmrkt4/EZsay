@@ -4,8 +4,15 @@ import { adminSettings } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { requireAdmin } from "@/lib/supabase/require-admin";
 
+/** Only these keys can be written via the API. */
+const ALLOWED_KEYS = new Set([
+  "openrouter_api_key",
+  "tavily_api_key",
+  "plan_limits",
+]);
+
 /** Keys whose values should be masked in API responses. */
-const SENSITIVE_KEYS = new Set(["openrouter_api_key"]);
+const SENSITIVE_KEYS = new Set(["openrouter_api_key", "tavily_api_key"]);
 
 function maskValue(key: string, value: string): string {
   if (!SENSITIVE_KEYS.has(key) || !value || value.length < 8) return value;
@@ -35,6 +42,10 @@ export async function POST(request: NextRequest) {
 
     if (!key || typeof key !== "string" || typeof value !== "string") {
       return NextResponse.json({ success: false, error: "key and value must be non-empty strings" }, { status: 400 });
+    }
+
+    if (!ALLOWED_KEYS.has(key)) {
+      return NextResponse.json({ success: false, error: `Unknown setting key: ${key}` }, { status: 400 });
     }
 
     await db

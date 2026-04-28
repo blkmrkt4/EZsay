@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
 import { flags, flagOptions, sections, libraryEntries, documents } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { logStyleSignal } from "@/lib/style/logger";
 import { validateReplacement } from "@/lib/analysis/corruption-checker";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
   try {
     const { flagId, action, optionId, manualText } = await request.json();
 
-    // ── Single JOIN query for ownership check + all data we need ──────
+    // ── Single query: JOIN all tables we need (eliminates N+1 reads) ──
     const [flagRow] = await db
       .select({
         flag: flags,
@@ -33,10 +33,18 @@ export async function POST(request: NextRequest) {
         documentId: documents.id,
         documentUserId: documents.userId,
         documentType: documents.documentType,
+        optionText: flagOptions.text,
+        libraryFlagCount: libraryEntries.flagCount,
+        libraryAcceptanceRate: libraryEntries.acceptanceRate,
       })
       .from(flags)
       .innerJoin(sections, eq(sections.id, flags.sectionId))
       .innerJoin(documents, eq(documents.id, sections.documentId))
+      .leftJoin(
+        flagOptions,
+        optionId ? eq(flagOptions.id, optionId) : sql`false`
+      )
+      .leftJoin(libraryEntries, eq(libraryEntries.id, flags.libraryEntryId))
       .where(eq(flags.id, flagId))
       .limit(1);
 
@@ -73,32 +81,24 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Update section text if accepted with an option ────────────────
-    if (action === "accepted" && optionId) {
-      const [option] = await db
-        .select()
-        .from(flagOptions)
-        .where(eq(flagOptions.id, optionId))
-        .limit(1);
+    if (action === "accepted" && optionId && flagRow.optionText) {
+      const newText =
+        flagRow.sectionCurrentText.slice(0, updatedFlag.phraseStart) +
+        flagRow.optionText +
+        flagRow.sectionCurrentText.slice(updatedFlag.phraseEnd);
 
-      if (option) {
-        const newText =
-          flagRow.sectionCurrentText.slice(0, updatedFlag.phraseStart) +
-          option.text +
-          flagRow.sectionCurrentText.slice(updatedFlag.phraseEnd);
-
-        const corruption = validateReplacement(flagRow.sectionCurrentText, newText);
-        if (corruption) {
-          console.warn(`[flags/resolve] Corruption detected in replacement: ${corruption}`);
-        }
-
-        await db
-          .update(sections)
-          .set({
-            currentText: newText,
-            flagsResolved: flagRow.sectionFlagsResolved + 1,
-          })
-          .where(eq(sections.id, flagRow.sectionId));
+      const corruption = validateReplacement(flagRow.sectionCurrentText, newText);
+      if (corruption) {
+        console.warn(`[flags/resolve] Corruption detected in replacement: ${corruption}`);
       }
+
+      await db
+        .update(sections)
+        .set({
+          currentText: newText,
+          flagsResolved: flagRow.sectionFlagsResolved + 1,
+        })
+        .where(eq(sections.id, flagRow.sectionId));
     }
 
     // ── Increment resolved count for skip/reject ─────────────────────
@@ -109,29 +109,21 @@ export async function POST(request: NextRequest) {
         .where(eq(sections.id, flagRow.sectionId));
     }
 
-    // ── Update library entry stats (async) ───────────────────────────
-    if (updatedFlag.libraryEntryId) {
-      const [entry] = await db
-        .select()
-        .from(libraryEntries)
-        .where(eq(libraryEntries.id, updatedFlag.libraryEntryId))
-        .limit(1);
+    // ── Update library entry stats (uses data from initial JOIN) ─────
+    if (updatedFlag.libraryEntryId && flagRow.libraryFlagCount != null) {
+      const newFlagCount = flagRow.libraryFlagCount + 1;
+      const accepted = action === "accepted" ? 1 : 0;
+      const currentAccepted = (flagRow.libraryAcceptanceRate ?? 0) * flagRow.libraryFlagCount;
+      const newRate = (currentAccepted + accepted) / newFlagCount;
 
-      if (entry) {
-        const newFlagCount = entry.flagCount + 1;
-        const accepted = action === "accepted" ? 1 : 0;
-        const currentAccepted = (entry.acceptanceRate ?? 0) * entry.flagCount;
-        const newRate = (currentAccepted + accepted) / newFlagCount;
-
-        await db
-          .update(libraryEntries)
-          .set({
-            flagCount: newFlagCount,
-            acceptanceRate: newRate,
-            updatedAt: new Date(),
-          })
-          .where(eq(libraryEntries.id, updatedFlag.libraryEntryId));
-      }
+      await db
+        .update(libraryEntries)
+        .set({
+          flagCount: newFlagCount,
+          acceptanceRate: newRate,
+          updatedAt: new Date(),
+        })
+        .where(eq(libraryEntries.id, updatedFlag.libraryEntryId));
     }
 
     // ── Fire-and-forget style profile logging ────────────────────────
