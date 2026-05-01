@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, type RefObject } from "react";
 
 interface ResolvedChange {
   id: string;
@@ -28,13 +28,9 @@ interface DiffEditPanelProps {
   changes: ResolvedChange[];
   activeChangeId: string | null;
   onChangeClick: (id: string) => void;
+  scrollRef: RefObject<HTMLDivElement | null>;
 }
 
-/**
- * Finds replacement positions within currentText by searching for each
- * replacement string in document order. Handles position drift from
- * earlier replacements changing string lengths.
- */
 function findReplacementPositions(
   currentText: string,
   sectionChanges: ResolvedChange[],
@@ -53,7 +49,7 @@ function findReplacementPositions(
   return positions;
 }
 
-export default function DiffEditPanel({ sections, changes, activeChangeId, onChangeClick }: DiffEditPanelProps) {
+export default function DiffEditPanel({ sections, changes, activeChangeId, onChangeClick, scrollRef }: DiffEditPanelProps) {
   const activeRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
@@ -63,13 +59,13 @@ export default function DiffEditPanel({ sections, changes, activeChangeId, onCha
   }, [activeChangeId]);
 
   return (
-    <div className="flex-1 overflow-auto p-4">
-      <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-3">Edited Document</p>
+    <div ref={scrollRef} className="flex-1 overflow-auto p-4">
+      <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-3">Edited</p>
       <div className="space-y-3">
         {sections.map((section) => {
           if (section.isLocked) {
             return (
-              <div key={section.id} className="text-xs text-gray-400 italic">
+              <div key={section.id} data-section-id={section.id} className="text-xs text-gray-400 italic">
                 [Citations — locked]
               </div>
             );
@@ -81,7 +77,7 @@ export default function DiffEditPanel({ sections, changes, activeChangeId, onCha
 
           if (sectionChanges.length === 0) {
             return (
-              <p key={section.id} className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+              <p key={section.id} data-section-id={section.id} className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
                 {section.currentText}
               </p>
             );
@@ -91,7 +87,7 @@ export default function DiffEditPanel({ sections, changes, activeChangeId, onCha
 
           if (positions.length === 0) {
             return (
-              <p key={section.id} className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+              <p key={section.id} data-section-id={section.id} className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
                 {section.currentText}
               </p>
             );
@@ -139,7 +135,7 @@ export default function DiffEditPanel({ sections, changes, activeChangeId, onCha
           }
 
           return (
-            <p key={section.id} className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+            <p key={section.id} data-section-id={section.id} className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
               {fragments}
             </p>
           );

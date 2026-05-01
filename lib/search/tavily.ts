@@ -1,6 +1,6 @@
 import { db } from "@/db";
-import { adminSettings } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { adminSettings, events } from "@/db/schema";
+import { eq, sql } from "drizzle-orm";
 
 export interface SearchResult {
   url: string;
@@ -49,6 +49,11 @@ async function tavilySearch(
   }
 
   const data = await response.json();
+
+  // Track the search for usage counting (fire-and-forget)
+  db.insert(events)
+    .values({ eventName: "tavily_search", category: "usage", metadata: { credits: data.usage?.credits ?? 1 } })
+    .catch(() => {});
 
   return (data.results ?? []).map((r: { url: string; title: string; content: string; score: number }) => ({
     url: r.url,

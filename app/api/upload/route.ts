@@ -129,14 +129,12 @@ export async function POST(request: NextRequest) {
 
   if (rawText.trim().length < 50) {
     if (extractionMeta?.sourceType === "pdf") {
-      const coverageText = extractionMeta.coverageRatio != null
-        ? `about ${Math.round(extractionMeta.coverageRatio * 100)}% of pages with text`
-        : "very little extractable text";
+      const isGraphicsHeavy = extractionMeta.likelyGraphicsHeavy === true;
+      const errorMsg = isGraphicsHeavy
+        ? "This PDF appears to be primarily images or graphics. We couldn't extract enough text to analyse."
+        : "We couldn't extract enough text from this PDF. It may be scanned or image-based.";
       return NextResponse.json(
-        {
-          success: false,
-          error: `This PDF appears image/graphics-heavy. We found ${coverageText}, so there isn't enough text to score reliably.`,
-        },
+        { success: false, error: errorMsg },
         { status: 400 }
       );
     }

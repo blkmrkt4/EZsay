@@ -59,18 +59,23 @@ export async function parsePdfWithMeta(buffer: ArrayBuffer): Promise<PdfParseRes
     0
   );
 
-  const pages = joined.split(/\f|\n{3,}/);
-  const pagesWithText = pages.filter((p) => p.trim().length > 10).length;
   const extractedWordCount = joined.length > 0 ? joined.split(/\s+/).length : 0;
-  const coverageRatio = pageCount > 0 ? Math.min(1, pagesWithText / pageCount) : 0;
-  const averageWordsPerPage = pageCount > 0 ? extractedWordCount / pageCount : 0;
-  const likelyGraphicsHeavy = pageCount >= 2 && coverageRatio < 0.5 && averageWordsPerPage < 100;
-  const confidence =
-    (coverageRatio < 0.35 && averageWordsPerPage < 100) || averageWordsPerPage < 40 || extractedWordCount < 120
+  const averageWordsPerPage = pageCount > 0 ? extractedWordCount / pageCount : extractedWordCount;
+
+  // Confidence based on words-per-page — reliable regardless of page break encoding.
+  // A typical text page has 250-350 words. Cover pages, bibliography, etc. lower the average.
+  const likelyGraphicsHeavy = pageCount >= 2 && averageWordsPerPage < 30;
+  const confidence: "high" | "medium" | "low" =
+    extractedWordCount < 120 || averageWordsPerPage < 30
       ? "low"
-      : coverageRatio < 0.7 || averageWordsPerPage < 80
+      : averageWordsPerPage < 100
         ? "medium"
         : "high";
+
+  // Per-page text chunks (best-effort — many PDFs don't embed page breaks)
+  const pages = joined.split(/\f|\n{3,}/);
+  const pagesWithText = pages.filter((p) => p.trim().length > 10).length;
+  const coverageRatio = pageCount > 0 ? Math.min(1, pagesWithText / pageCount) : 1;
 
   return {
     text: joined,

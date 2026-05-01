@@ -5,6 +5,7 @@ import { citations, documents, sections, llmCallLog } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { callOpenRouter } from "@/lib/routing/openrouter";
 import { webSearch } from "@/lib/search/tavily";
+import { requireSubscription } from "@/lib/stripe/require-subscription";
 
 /**
  * GET: Load all citations for a document.
@@ -54,6 +55,9 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
   }
+
+  const gateResponse = await requireSubscription(user.id);
+  if (gateResponse) return gateResponse;
 
   try {
     const body = await request.json();

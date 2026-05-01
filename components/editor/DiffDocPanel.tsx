@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, type RefObject } from "react";
 
 interface ResolvedChange {
   id: string;
@@ -28,9 +28,10 @@ interface DiffDocPanelProps {
   changes: ResolvedChange[];
   activeChangeId: string | null;
   onChangeClick: (id: string) => void;
+  scrollRef: RefObject<HTMLDivElement | null>;
 }
 
-export default function DiffDocPanel({ sections, changes, activeChangeId, onChangeClick }: DiffDocPanelProps) {
+export default function DiffDocPanel({ sections, changes, activeChangeId, onChangeClick, scrollRef }: DiffDocPanelProps) {
   const activeRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
@@ -40,13 +41,13 @@ export default function DiffDocPanel({ sections, changes, activeChangeId, onChan
   }, [activeChangeId]);
 
   return (
-    <div className="flex-1 overflow-auto p-4">
-      <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-3">Original Document</p>
+    <div ref={scrollRef} className="flex-1 overflow-auto p-4">
+      <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-3">Original</p>
       <div className="space-y-3">
         {sections.map((section) => {
           if (section.isLocked) {
             return (
-              <div key={section.id} className="text-xs text-gray-400 italic">
+              <div key={section.id} data-section-id={section.id} className="text-xs text-gray-400 italic">
                 [Citations — locked]
               </div>
             );
@@ -58,18 +59,16 @@ export default function DiffDocPanel({ sections, changes, activeChangeId, onChan
 
           if (sectionChanges.length === 0) {
             return (
-              <p key={section.id} className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+              <p key={section.id} data-section-id={section.id} className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
                 {section.rawText}
               </p>
             );
           }
 
-          // Build annotated text with highlighted original phrases
           const fragments: React.ReactNode[] = [];
           let cursor = 0;
 
           for (const change of sectionChanges) {
-            // Text before this change
             if (change.phraseStart > cursor) {
               fragments.push(
                 <span key={`pre-${change.id}`}>
@@ -99,7 +98,6 @@ export default function DiffDocPanel({ sections, changes, activeChangeId, onChan
             cursor = change.phraseEnd;
           }
 
-          // Remaining text after last change
           if (cursor < section.rawText.length) {
             fragments.push(
               <span key={`post-${section.id}`}>
@@ -109,7 +107,7 @@ export default function DiffDocPanel({ sections, changes, activeChangeId, onChan
           }
 
           return (
-            <p key={section.id} className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+            <p key={section.id} data-section-id={section.id} className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
               {fragments}
             </p>
           );

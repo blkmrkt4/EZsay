@@ -27,10 +27,11 @@ export default async function AdminLayout({
   return (
     <div className="flex h-screen">
       <aside className="w-56 shrink-0 border-r border-gray-200 bg-gray-50 flex flex-col">
-        <div className="p-4 border-b border-gray-200">
-          <Link href="/admin" className="text-lg font-bold">
-            EzSay Admin
+        <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+          <Link href="/w" aria-label="Back to workspace">
+            <img src="/brand/ezsay-lockup-black.svg" alt="EzSay" className="h-16 w-auto" />
           </Link>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Admin</span>
         </div>
         <nav className="flex-1 space-y-1 px-2 py-3">
           <Link href="/admin" className="block rounded-md px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100">

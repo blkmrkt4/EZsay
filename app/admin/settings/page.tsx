@@ -12,10 +12,16 @@ const DEFAULT_PLAN_LIMITS: PlanLimitsConfig = {
   eaas: { monthlyWordLimit: -1, perDocumentWordLimit: -1, monthlyScanLimit: -1, documentStorageLimit: -1 },
 };
 
+interface ApiUsage {
+  openrouter: { total: number; used: number; remaining: number } | null;
+  tavily: { searches: number; credits: number } | null;
+}
+
 export default function AdminSettingsPage() {
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [planLimits, setPlanLimits] = useState<PlanLimitsConfig>(DEFAULT_PLAN_LIMITS);
+  const [apiUsage, setApiUsage] = useState<ApiUsage | null>(null);
 
   // Recovery codes
   const [recoveryStatus, setRecoveryStatus] = useState<{ total: number; remaining: number } | null>(null);
@@ -35,7 +41,15 @@ export default function AdminSettingsPage() {
     }
   }, []);
 
-  useEffect(() => { loadSettings(); loadRecoveryCodes(); }, [loadSettings]);
+  const loadApiUsage = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/api-usage");
+      const json = await res.json();
+      if (json.success) setApiUsage(json.data);
+    } catch { /* non-critical */ }
+  }, []);
+
+  useEffect(() => { loadSettings(); loadRecoveryCodes(); loadApiUsage(); }, [loadSettings, loadApiUsage]);
 
   const loadRecoveryCodes = useCallback(async () => {
     try {
@@ -80,8 +94,20 @@ export default function AdminSettingsPage() {
 
       <div className="mt-6 space-y-6">
         <div>
-          <h3 className="text-sm font-semibold text-gray-700">OpenRouter API Key</h3>
-          <p className="text-xs text-gray-500">Used for all LLM calls. Overrides the OPENROUTER_API_KEY env var.</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700">OpenRouter API Key</h3>
+              <p className="text-xs text-gray-500">Used for all LLM calls. Overrides the OPENROUTER_API_KEY env var.</p>
+            </div>
+            {apiUsage?.openrouter && (
+              <div className="text-right">
+                <p className={`text-sm font-bold ${apiUsage.openrouter.remaining > 1 ? "text-green-600" : "text-red-600"}`}>
+                  ${apiUsage.openrouter.remaining.toFixed(2)} remaining
+                </p>
+                <p className="text-[10px] text-gray-400">${apiUsage.openrouter.used.toFixed(2)} used of ${apiUsage.openrouter.total.toFixed(2)}</p>
+              </div>
+            )}
+          </div>
           <div className="mt-2 flex gap-2">
             <input
               type="password"
@@ -92,6 +118,35 @@ export default function AdminSettingsPage() {
             />
             <button onClick={() => saveSetting("openrouter_api_key", settings.openrouter_api_key || "")} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700">
               {saving === "openrouter_api_key" ? "Saved" : "Save"}
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700">Tavily API Key</h3>
+              <p className="text-xs text-gray-500">Used for plagiarism web search. Overrides the TAVILY_API_KEY env var.</p>
+            </div>
+            {apiUsage?.tavily && (
+              <div className="text-right">
+                <p className="text-sm font-bold text-gray-700">
+                  {apiUsage.tavily.searches.toLocaleString()} searches made
+                </p>
+                <p className="text-[10px] text-gray-400">{apiUsage.tavily.credits.toLocaleString()} credits used</p>
+              </div>
+            )}
+          </div>
+          <div className="mt-2 flex gap-2">
+            <input
+              type="password"
+              value={settings.tavily_api_key || ""}
+              onChange={(e) => setSettings({ ...settings, tavily_api_key: e.target.value })}
+              placeholder="tvly-..."
+              className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm font-mono"
+            />
+            <button onClick={() => saveSetting("tavily_api_key", settings.tavily_api_key || "")} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700">
+              {saving === "tavily_api_key" ? "Saved" : "Save"}
             </button>
           </div>
         </div>

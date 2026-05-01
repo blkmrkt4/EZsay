@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import AnalysisPanel from "@/components/results/AnalysisPanel";
 import { detectArtifacts, type ArtifactFinding } from "@/lib/analysis/artifact-detector";
-import { calculateWritingQuality } from "@/lib/analysis/quality-scorer";
+import { calculateWritingQuality, findComplexSentences } from "@/lib/analysis/quality-scorer";
 import { getRemovalDescription } from "@/lib/analysis/artifact-removals";
 import CitationsPage from "@/components/citations/CitationsPage";
 import CommandCapsule from "@/components/editor/CommandCapsule";
@@ -12,6 +12,7 @@ import DiffDocPanel from "@/components/editor/DiffDocPanel";
 import DiffEditPanel from "@/components/editor/DiffEditPanel";
 import DiffChoicesPanel from "@/components/editor/DiffChoicesPanel";
 import { trackEvent } from "@/lib/events/track-client";
+import { wordDiff } from "@/lib/analysis/word-diff";
 import Link from "next/link";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -106,6 +107,7 @@ interface WritingQualityAdvisory {
   score: number;
   description: string;
   suggestion: string;
+  examples?: string[];
 }
 
 type EditQueueItem =
@@ -231,38 +233,8 @@ function formatShortDate(dateStr: string): string {
   return `${months[d.getMonth()]}${d.getDate()}-${String(d.getFullYear()).slice(-2)}`;
 }
 
-const PATTERN_TYPE_LABELS: Record<string, { label: string; color: string; description: string }> = {
-  banned_word: {
-    label: "Common AI Phrase",
-    color: "bg-red-100 text-red-700 border border-red-200",
-    description: "This word or phrase is strongly associated with AI-generated text and is frequently flagged by detection tools.",
-  },
-  banned_structure: {
-    label: "Sentence Structure",
-    color: "bg-orange-100 text-orange-700 border border-orange-200",
-    description: "This sentence follows a structural pattern commonly produced by language models.",
-  },
-  synonym_rotation: {
-    label: "Synonym Rotation",
-    color: "bg-purple-100 text-purple-700 border border-purple-200",
-    description: "The same concept is described with different synonyms — a hallmark of AI text. Humans repeat their preferred words.",
-  },
-  uniform_length: {
-    label: "Uniform Length",
-    color: "bg-yellow-100 text-yellow-700 border border-yellow-200",
-    description: "Sentences or paragraphs are suspiciously similar in length, lacking natural variation.",
-  },
-  uniform_density: {
-    label: "Information Density",
-    color: "bg-teal-100 text-teal-700 border border-teal-200",
-    description: "Every sentence carries roughly equal weight — no breathing room, restatements, or casual observations.",
-  },
-  transition_pattern: {
-    label: "Transition Pattern",
-    color: "bg-indigo-100 text-indigo-700 border border-indigo-200",
-    description: "The same transition words repeat in a predictable cycle rather than using organic connectors.",
-  },
-};
+// Import shared pattern labels — single source of truth
+import { PATTERN_TYPE_LABELS } from "@/lib/constants";
 
 function scoreColor(score: number | null) {
   if (score == null) return "text-gray-300";
@@ -322,6 +294,9 @@ export default function WorkspacePage() {
   const [highlightedCitationText, setHighlightedCitationText] = useState<string | null>(null);
   const [docCitations, setDocCitations] = useState<CitationSummary[]>([]);
   const docScrollRef = useRef<HTMLDivElement>(null);
+  const diffDocRef = useRef<HTMLDivElement>(null);
+  const diffEditRef = useRef<HTMLDivElement>(null);
+  const diffSyncingRef = useRef(false);
   const [showEditPanel, setShowEditPanel] = useState(true);
   const [showChoicesPanel, setShowChoicesPanel] = useState(true);
   const [navExpanded, setNavExpanded] = useState(false);
@@ -927,7 +902,7 @@ export default function WorkspacePage() {
     if (!fullDocText || !hasScanned || skipAllWritingQuality) return [];
     const q = calculateWritingQuality(fullDocText);
     const advisories: WritingQualityAdvisory[] = [];
-    if (q.fleschScore < 40) advisories.push({ label: "Readability", score: q.fleschScore, description: "Your sentences are very complex.", suggestion: "Try mixing in shorter, simpler sentences." });
+    if (q.fleschScore < 40) advisories.push({ label: "Readability", score: q.fleschScore, description: "Your sentences are very complex.", suggestion: "Try mixing in shorter, simpler sentences.", examples: findComplexSentences(fullDocText, 3) });
     if (q.paragraphVariation < 40) advisories.push({ label: "Paragraph Variation", score: q.paragraphVariation, description: "Your paragraphs are very uniform in length.", suggestion: "Vary paragraph lengths — mix short punchy ones with longer detailed ones." });
     if (q.sentenceVariation < 40) advisories.push({ label: "Sentence Variation", score: q.sentenceVariation, description: "Your sentences are similar lengths.", suggestion: "Mix short sentences with longer compound-complex ones." });
     if (q.sectionCoherence < 40) advisories.push({ label: "Section Coherence", score: q.sectionCoherence, description: "Adjacent sentences don't connect well.", suggestion: "Ensure each sentence flows naturally from the previous one." });
@@ -977,6 +952,38 @@ export default function WorkspacePage() {
     }
     return out;
   }, [flags, plagiarismResults]);
+
+  // ── Review diff: scroll sync ───────────────────────────────────────────
+
+  const handleDiffScroll = useCallback((source: "doc" | "edit") => {
+    if (diffSyncingRef.current) return;
+    diffSyncingRef.current = true;
+
+    const sourceRef = source === "doc" ? diffDocRef.current : diffEditRef.current;
+    const targetRef = source === "doc" ? diffEditRef.current : diffDocRef.current;
+    if (!sourceRef || !targetRef) { diffSyncingRef.current = false; return; }
+
+    // Proportional scroll sync
+    const ratio = sourceRef.scrollTop / (sourceRef.scrollHeight - sourceRef.clientHeight || 1);
+    targetRef.scrollTop = ratio * (targetRef.scrollHeight - targetRef.clientHeight);
+
+    requestAnimationFrame(() => { diffSyncingRef.current = false; });
+  }, []);
+
+  useEffect(() => {
+    const docEl = diffDocRef.current;
+    const editEl = diffEditRef.current;
+    if (!docEl || !editEl || nav !== "review") return;
+
+    const onDocScroll = () => handleDiffScroll("doc");
+    const onEditScroll = () => handleDiffScroll("edit");
+    docEl.addEventListener("scroll", onDocScroll, { passive: true });
+    editEl.addEventListener("scroll", onEditScroll, { passive: true });
+    return () => {
+      docEl.removeEventListener("scroll", onDocScroll);
+      editEl.removeEventListener("scroll", onEditScroll);
+    };
+  }, [nav, handleDiffScroll]);
 
   // ── Review diff: resolved changes ──────────────────────────────────────
 
@@ -1499,10 +1506,10 @@ export default function WorkspacePage() {
           {/* ── Doc Panel (collapsible strip when closed) ─────────────────── */}
           {activeDoc ? (
             showDocPanel ? (
-              /* Expanded Doc Panel — takes remaining space when Edit is collapsed */
-              <div className={`${showEditPanel ? "flex-[3] min-w-[250px]" : "flex-1 min-w-[250px]"} border-r border-gray-200 bg-white flex flex-col`}>
+              /* Expanded Doc Panel — equal size in review mode, flex-3 otherwise */
+              <div className={`${nav === "review" ? "flex-1 min-w-[250px]" : showEditPanel ? "flex-[3] min-w-[250px]" : "flex-1 min-w-[250px]"} border-r border-gray-200 bg-white flex flex-col`}>
                 <div className="border-b border-gray-100 px-3 py-2 flex items-center justify-between">
-                  <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Document</h2>
+                  <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">{nav === "review" ? "Original" : "Document"}</h2>
                   <button
                     onClick={() => setShowDocPanel(false)}
                     title="Collapse document panel (D)"
@@ -1518,6 +1525,7 @@ export default function WorkspacePage() {
                       changes={resolvedChanges}
                       activeChangeId={activeChangeId}
                       onChangeClick={setActiveChangeId}
+                      scrollRef={diffDocRef}
                     />
                   ) : (
                   <div ref={docScrollRef} className="flex-1 overflow-auto p-3">
@@ -1533,12 +1541,80 @@ export default function WorkspacePage() {
                       if (section.isLocked) {
                         sectionColor = "text-gray-400 bg-gray-50 cursor-default";
                       } else if (isActive) {
-                        sectionColor = "bg-yellow-100 text-gray-900 ring-1 ring-yellow-300";
+                        sectionColor = "text-gray-900 border-l-2 border-amber-400";
                       } else if (allResolved) {
                         sectionColor = "bg-green-50 text-gray-600";
                       } else if (hasOpenFlags) {
                         sectionColor = "bg-pink-50 text-gray-700";
                       }
+
+                      // Three-layer highlighting for the active flag:
+                      // 1. Normal text (no background)
+                      // 2. The sentence containing the flag (yellow)
+                      // 3. The specific flagged phrase (amber)
+                      const renderSectionText = () => {
+                        if (section.isLocked) return <><span className="text-[10px] text-gray-400">[Citations] </span>{section.currentText}</>;
+                        // Citation highlight takes priority
+                        if (highlightedCitationText && section.currentText.includes(highlightedCitationText)) {
+                          const cidx = section.currentText.indexOf(highlightedCitationText);
+                          return (
+                            <>
+                              {section.currentText.slice(0, cidx)}
+                              <mark data-citation-highlight className="rounded bg-blue-200 px-0.5 text-gray-900 font-medium ring-2 ring-blue-400">{highlightedCitationText}</mark>
+                              {section.currentText.slice(cidx + highlightedCitationText.length)}
+                            </>
+                          );
+                        }
+                        // Sentence + phrase highlighting for active flag
+                        if (isActive && currentFlag && currentFlag.phraseStart >= 0 && currentFlag.phraseEnd > currentFlag.phraseStart) {
+                          const text = section.currentText;
+                          const pStart = Math.min(currentFlag.phraseStart, text.length);
+                          const pEnd = Math.min(currentFlag.phraseEnd, text.length);
+
+                          // Find sentence boundaries around the flagged phrase
+                          let sentStart = pStart;
+                          while (sentStart > 0) {
+                            const ch = text[sentStart - 1];
+                            if ((ch === "." || ch === "!" || ch === "?") && sentStart < pStart && (text[sentStart] === " " || text[sentStart] === "\n")) break;
+                            sentStart--;
+                          }
+                          // Skip leading whitespace
+                          while (sentStart < pStart && (text[sentStart] === " " || text[sentStart] === "\n")) sentStart++;
+
+                          let sentEnd = pEnd;
+                          while (sentEnd < text.length) {
+                            const ch = text[sentEnd];
+                            if (ch === "." || ch === "!" || ch === "?") { sentEnd++; break; }
+                            sentEnd++;
+                          }
+
+                          // Check if phrase IS the whole sentence
+                          const phraseIsSentence = sentStart === pStart && sentEnd === pEnd;
+
+                          if (phraseIsSentence) {
+                            // Entire sentence is the flag — just amber
+                            return (
+                              <>
+                                {text.slice(0, sentStart)}
+                                <mark className="rounded bg-amber-200 px-0.5 text-gray-900 font-medium ring-1 ring-amber-400">{text.slice(pStart, pEnd)}</mark>
+                                {text.slice(sentEnd)}
+                              </>
+                            );
+                          }
+
+                          // Three layers: normal → yellow sentence → amber phrase → yellow sentence → normal
+                          return (
+                            <>
+                              {text.slice(0, sentStart)}
+                              <span className="bg-yellow-100 rounded-sm">{text.slice(sentStart, pStart)}</span>
+                              <mark className="rounded bg-amber-200 px-0.5 text-gray-900 font-medium ring-1 ring-amber-400">{text.slice(pStart, pEnd)}</mark>
+                              <span className="bg-yellow-100 rounded-sm">{text.slice(pEnd, sentEnd)}</span>
+                              {text.slice(sentEnd)}
+                            </>
+                          );
+                        }
+                        return <>{section.currentText}</>;
+                      };
 
                       return (
                         <div
@@ -1550,17 +1626,7 @@ export default function WorkspacePage() {
                           }}
                           className={`cursor-pointer rounded px-2 py-1.5 text-xs leading-relaxed transition-colors ${sectionColor}`}
                         >
-                          {section.isLocked && <span className="text-[10px] text-gray-400">[Citations] </span>}
-                          {highlightedCitationText && section.currentText.includes(highlightedCitationText) ? (() => {
-                            const idx = section.currentText.indexOf(highlightedCitationText);
-                            return (
-                              <>
-                                {section.currentText.slice(0, idx)}
-                                <mark data-citation-highlight className="rounded bg-blue-200 px-0.5 text-gray-900 font-medium ring-2 ring-blue-400">{highlightedCitationText}</mark>
-                                {section.currentText.slice(idx + highlightedCitationText.length)}
-                              </>
-                            );
-                          })() : section.currentText}
+                          {renderSectionText()}
                         </div>
                       );
                     })}
@@ -1639,10 +1705,10 @@ export default function WorkspacePage() {
 
           {/* ── Edit Panel (collapsible) ──────────────────────────────────── */}
           {showEditPanel ? (
-          <div className="flex flex-[5] flex-col min-w-[300px] bg-white border-r border-gray-200">
+          <div className={`flex ${nav === "review" ? "flex-1" : "flex-[5]"} flex-col min-w-[300px] bg-white border-r border-gray-200`}>
             <div className="border-b border-gray-100 px-3 py-2 flex items-center justify-between">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-                {nav === "review" ? "Review Changes" : nav === "intake" ? "Context" : nav === "style-training" ? "Style Training" : nav === "citations" ? "Citations" : nav === "spelling" ? "Spelling" : nav === "grammar" ? "Grammar" : nav === "analysis" || nav === "scan" ? "Analysis" : "Edit"}
+                {nav === "review" ? "Edited" : nav === "intake" ? "Context" : nav === "style-training" ? "Style Training" : nav === "citations" ? "Citations" : nav === "spelling" ? "Spelling" : nav === "grammar" ? "Grammar" : nav === "analysis" || nav === "scan" ? "Analysis" : "Edit"}
               </h2>
               <button onClick={() => setShowEditPanel(false)} title="Collapse edit panel (E)" className="text-gray-400 hover:text-gray-600">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
@@ -1717,7 +1783,7 @@ export default function WorkspacePage() {
                       </button>
                     </div>
                     <span className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
-                      currentQueueItem.type === "ai_detection" ? "bg-amber-100 text-amber-700" :
+                      currentQueueItem.type === "ai_detection" ? (PATTERN_TYPE_LABELS[currentQueueItem.flag.patternType]?.color?.split(" ").filter(c => c.startsWith("bg-") || c.startsWith("text-")).join(" ") || "bg-amber-100 text-amber-700") :
                       currentQueueItem.type === "artifact_batch" || currentQueueItem.type === "artifact_individual" ? "bg-purple-100 text-purple-700" :
                       currentQueueItem.type === "writing_quality" ? "bg-blue-100 text-blue-700" :
                       currentQueueItem.type === "citation_fix" ? "bg-orange-100 text-orange-700" :
@@ -1730,7 +1796,7 @@ export default function WorkspacePage() {
                       ) :
                       "bg-gray-100 text-gray-600"
                     }`}>
-                      {currentQueueItem.type === "ai_detection" ? "AI Detection" :
+                      {currentQueueItem.type === "ai_detection" ? (PATTERN_TYPE_LABELS[currentQueueItem.flag.patternType]?.label || "AI Detection") :
                        currentQueueItem.type === "artifact_batch" ? "AI Artifacts" :
                        currentQueueItem.type === "artifact_individual" ? "AI Artifact" :
                        currentQueueItem.type === "writing_quality" ? "Writing Quality (Advisory)" :
@@ -1828,6 +1894,14 @@ export default function WorkspacePage() {
                     </div>
                     <p className="text-xs text-gray-600">{currentQueueItem.advisory.description}</p>
                     <p className="mt-2 text-xs text-blue-700 font-medium">{currentQueueItem.advisory.suggestion}</p>
+                    {currentQueueItem.advisory.examples && currentQueueItem.advisory.examples.length > 0 && (
+                      <div className="mt-3 space-y-1.5">
+                        <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">For example:</p>
+                        {currentQueueItem.advisory.examples.map((ex, i) => (
+                          <p key={i} className="text-xs text-gray-600 italic border-l-2 border-gray-300 pl-2">&ldquo;{ex}&rdquo;</p>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -2057,9 +2131,20 @@ export default function WorkspacePage() {
                           </div>
                           {replacementDesc ? (
                             <p className="text-sm text-purple-600 italic">{replacementDesc}</p>
-                          ) : (
-                            <p className="text-sm text-gray-700 leading-relaxed">{opt.text}</p>
-                          )}
+                          ) : (() => {
+                            const originalText = currentSection?.currentText?.slice(currentFlag.phraseStart, currentFlag.phraseEnd) || currentFlag.flaggedPhrase;
+                            const segments = wordDiff(originalText, opt.text);
+                            const hasChanges = segments.some(s => s.type === "changed");
+                            return (
+                              <p className="text-sm text-gray-700 leading-relaxed">
+                                {hasChanges ? segments.map((seg, si) => (
+                                  seg.type === "changed"
+                                    ? <span key={si} className="bg-green-100 text-green-800 font-medium">{seg.text}</span>
+                                    : <span key={si}>{seg.text}</span>
+                                )) : opt.text}
+                              </p>
+                            );
+                          })()}
                         </div>
                         );
                       })}
@@ -2240,6 +2325,7 @@ export default function WorkspacePage() {
                     changes={resolvedChanges}
                     activeChangeId={activeChangeId}
                     onChangeClick={setActiveChangeId}
+                    scrollRef={diffEditRef}
                   />
                 ) : (
                   <div className="flex h-full items-center justify-center p-8">
@@ -2327,6 +2413,45 @@ export default function WorkspacePage() {
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
               </button>
             </div>
+
+            {/* Progress bar — shown during scanning and suggestion generation */}
+            {(scanning || suggestProgress.generating || plagiarismLoading) && (
+              <div className="border-b border-gray-200 px-3 py-2 space-y-1.5">
+                {scanning && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] font-medium text-blue-700">Scanning</span>
+                      <div className="h-3 w-3 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
+                    </div>
+                    <div className="h-1.5 rounded-full bg-blue-100 overflow-hidden">
+                      <div className="h-full rounded-full bg-blue-500 animate-pulse" style={{ width: "60%" }} />
+                    </div>
+                  </div>
+                )}
+                {suggestProgress.generating && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] font-medium text-amber-700">Suggestions</span>
+                      <span className="text-[10px] text-amber-600">{suggestProgress.current}/{suggestProgress.total}</span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-amber-100 overflow-hidden">
+                      <div className="h-full rounded-full bg-amber-500 transition-all duration-500" style={{ width: `${suggestProgress.total > 0 ? (suggestProgress.current / suggestProgress.total) * 100 : 0}%` }} />
+                    </div>
+                  </div>
+                )}
+                {plagiarismLoading && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] font-medium text-purple-700">Plagiarism check</span>
+                      <div className="h-3 w-3 animate-spin rounded-full border-2 border-purple-200 border-t-purple-600" />
+                    </div>
+                    <div className="h-1.5 rounded-full bg-purple-100 overflow-hidden">
+                      <div className="h-full rounded-full bg-purple-500 animate-pulse" style={{ width: "40%" }} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex-1 overflow-auto">
               {nav === "edit" && currentQueueItem ? (

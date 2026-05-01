@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 
 interface ResolvedChange {
   id: string;
@@ -22,6 +22,17 @@ const PATTERN_COLORS: Record<string, string> = {
   uniform_length: "bg-blue-100 text-blue-700",
   uniform_density: "bg-blue-100 text-blue-700",
   transition_pattern: "bg-yellow-100 text-yellow-700",
+  tone_inconsistency: "bg-rose-100 text-rose-700",
+};
+
+const PATTERN_LABELS: Record<string, string> = {
+  banned_word: "AI Phrase",
+  banned_structure: "Structure",
+  synonym_rotation: "Synonym Rotation",
+  uniform_length: "Uniform Length",
+  uniform_density: "Density",
+  transition_pattern: "Transition",
+  tone_inconsistency: "Tone Shift",
 };
 
 interface DiffChoicesPanelProps {
@@ -48,6 +59,7 @@ export default function DiffChoicesPanel({
   onChangeClick,
 }: DiffChoicesPanelProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     if (activeChangeId && activeRef.current) {
@@ -61,9 +73,7 @@ export default function DiffChoicesPanel({
   return (
     <div className="flex h-full flex-col">
       {/* Stats summary */}
-      <div className="border-b border-gray-200 px-3 py-3 space-y-2">
-        <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Summary</p>
-
+      <div className="border-b border-gray-200 px-3 py-2.5 space-y-1.5">
         {hasScoreDelta && (
           <div className="flex items-center gap-2">
             <span className="text-xs text-gray-500">Score:</span>
@@ -85,12 +95,10 @@ export default function DiffChoicesPanel({
           <span className="text-gray-400">{skippedCount} skipped</span>
           <span className="text-red-500">{rejectedCount} rejected</span>
         </div>
-
-        <p className="text-[10px] text-gray-400">{totalFlags} flags total, {changes.length} changes applied</p>
       </div>
 
-      {/* Change list */}
-      <div className="flex-1 overflow-auto p-2 space-y-1.5">
+      {/* Compact change list */}
+      <div className="flex-1 overflow-auto p-1.5 space-y-0.5">
         {changes.length === 0 && (
           <div className="flex h-full items-center justify-center">
             <p className="text-xs text-gray-400 text-center">No changes made yet.</p>
@@ -99,41 +107,40 @@ export default function DiffChoicesPanel({
 
         {changes.map((change) => {
           const isActive = activeChangeId === change.id;
+          const isExpanded = expandedId === change.id;
           return (
-            <button
-              key={change.id}
-              ref={isActive ? activeRef : undefined}
-              onClick={() => onChangeClick(change.id)}
-              className={`w-full rounded-lg p-2.5 text-left transition-all ${
-                isActive
-                  ? "border-2 border-blue-500 bg-blue-50 shadow-sm"
-                  : "border border-gray-200 bg-white hover:border-blue-200 hover:shadow-sm"
-              }`}
-            >
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">
+            <div key={change.id}>
+              <button
+                ref={isActive ? activeRef : undefined}
+                onClick={() => {
+                  onChangeClick(change.id);
+                  setExpandedId(isExpanded ? null : change.id);
+                }}
+                className={`w-full flex items-center gap-1.5 rounded px-2 py-1.5 text-left transition-all ${
+                  isActive
+                    ? "bg-blue-50 border border-blue-400"
+                    : "border border-transparent hover:bg-gray-50"
+                }`}
+              >
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[8px] font-bold text-gray-600">
                   {change.changeNumber}
                 </span>
-                <span className={`rounded px-1.5 py-0.5 text-[9px] font-medium ${PATTERN_COLORS[change.patternType] ?? "bg-gray-100 text-gray-600"}`}>
-                  {change.patternType.replace(/_/g, " ")}
+                <span className={`rounded px-1 py-0.5 text-[8px] font-medium ${PATTERN_COLORS[change.patternType] ?? "bg-gray-100 text-gray-600"}`}>
+                  {PATTERN_LABELS[change.patternType] ?? change.patternType.replace(/_/g, " ")}
                 </span>
-              </div>
+                <svg className={`ml-auto h-3 w-3 shrink-0 text-gray-400 transition-transform ${isExpanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+              </button>
 
-              <div className="space-y-1">
-                <p className="text-[11px] text-red-500 line-through leading-snug">
-                  {change.originalPhrase}
-                </p>
-                <p className="text-[11px] text-green-700 font-medium leading-snug">
-                  {change.replacementText}
-                </p>
-              </div>
-
-              {change.explanation && (
-                <p className="mt-1.5 text-[9px] text-gray-400 leading-snug">
-                  {change.explanation}
-                </p>
+              {isExpanded && (
+                <div className="ml-6 mr-1 mb-1 rounded border border-gray-200 bg-white p-2 space-y-1">
+                  <p className="text-[10px] text-red-500 line-through leading-snug">{change.originalPhrase}</p>
+                  <p className="text-[10px] text-green-700 font-medium leading-snug">{change.replacementText}</p>
+                  {change.explanation && (
+                    <p className="text-[9px] text-gray-400 leading-snug">{change.explanation}</p>
+                  )}
+                </div>
               )}
-            </button>
+            </div>
           );
         })}
       </div>
