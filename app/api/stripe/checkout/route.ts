@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
       customer: stripeCustomerId,
       mode: "subscription",
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${origin}/w?checkout=success`,
+      success_url: `${origin}/api/stripe/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${origin}/pricing?checkout=cancelled`,
       // Top-level metadata is what the webhook handler reads from
       // session.metadata.supabaseUserId on checkout.session.completed.

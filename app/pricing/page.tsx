@@ -66,11 +66,24 @@ function PricingContent() {
   const searchParams = useSearchParams();
   const supabase = createClient();
 
-  // Show a friendly note if the user just bailed from Stripe Checkout.
-  // Stripe redirects back to /pricing?checkout=cancelled.
+  // Show a friendly note when the user lands on /pricing from somewhere
+  // that bounced them — cancelled checkout, gated workspace route, or a
+  // failed post-payment sync. Each `reason` maps to a tailored message so
+  // the user understands why they're here instead of where they expected.
   useEffect(() => {
     if (searchParams.get("checkout") === "cancelled") {
       setCheckoutError("Checkout cancelled — no charge was made.");
+      return;
+    }
+    const reason = searchParams.get("reason");
+    if (reason === "subscription_required") {
+      setCheckoutError("You'll need an active subscription to enter the workspace. Pick a plan to continue.");
+    } else if (reason === "sync_failed") {
+      setCheckoutError("We couldn't confirm your payment automatically. If you completed checkout, refresh in a moment or contact support.");
+    } else if (reason === "session_mismatch") {
+      setCheckoutError("That checkout session belongs to a different account. Sign in with the account you used to pay.");
+    } else if (reason === "missing_session" || reason === "no_subscription") {
+      setCheckoutError("Something went wrong returning from Stripe. Please try checkout again.");
     }
   }, [searchParams]);
 
