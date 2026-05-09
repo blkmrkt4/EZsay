@@ -8,7 +8,7 @@ interface PlanLimitsConfig {
 }
 
 const DEFAULT_PLAN_LIMITS: PlanLimitsConfig = {
-  individual: { monthlyWordLimit: 50000, perDocumentWordLimit: 10000, monthlyScanLimit: 30, documentStorageLimit: 20 },
+  individual: { monthlyWordLimit: 50000, perDocumentWordLimit: 20000, monthlyScanLimit: 30, documentStorageLimit: 20 },
   eaas: { monthlyWordLimit: -1, perDocumentWordLimit: -1, monthlyScanLimit: -1, documentStorageLimit: -1 },
 };
 

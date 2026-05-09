@@ -71,17 +71,47 @@ function SignupForm() {
 
   if (success) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-white px-4">
-        <div className="w-full max-w-sm text-center">
-          <span className="text-xl font-bold tracking-tight text-gray-900">
-            EzSay
-          </span>
-          <h1 className="mt-6 text-xl font-bold text-gray-900">
-            Check your email
+      <div className="flex min-h-screen items-center justify-center bg-white px-4 py-12">
+        <div className="w-full max-w-md text-center">
+          <div className="mb-10 flex justify-center">
+            <img
+              src="/brand/ezsay-lockup-black.svg"
+              alt="EzSay"
+              className="h-20 w-auto"
+            />
+          </div>
+
+          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-teal-50">
+            <svg
+              className="h-8 w-8 text-teal-600"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth={1.5}
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75"
+              />
+            </svg>
+          </div>
+
+          <h1 className="text-2xl font-bold tracking-tight text-gray-900">
+            Welcome to EzSay
           </h1>
-          <p className="mt-3 text-sm text-gray-500">
-            We sent a confirmation link to {email}. Click it to activate your
-            account.
+          <p className="mt-4 text-base text-gray-600">
+            We just sent a confirmation link to{" "}
+            <span className="font-semibold text-gray-900">{email}</span>.
+          </p>
+          <p className="mt-2 text-base text-gray-600">
+            Click it to activate your account and start making your writing
+            sound unmistakably you.
+          </p>
+
+          <p className="mt-10 text-xs text-gray-400">
+            Didn&apos;t see it? Check your spam folder, or wait a minute and
+            look again.
           </p>
         </div>
       </div>

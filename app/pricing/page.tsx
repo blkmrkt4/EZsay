@@ -19,6 +19,7 @@ const PLANS = [
     featured: false,
     features: [
       "Up to 50,000 words scanned / month",
+      "Up to 20,000 words per document",
       "All six Auditor Score spectrums",
       "AI detection + A/B rewrites",
       "Plagiarism + citation verification",

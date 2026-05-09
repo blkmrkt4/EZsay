@@ -36,7 +36,7 @@ const DEFAULT_LIMITS: Record<string, PlanLimits> = {
   },
   individual: {
     monthlyWordLimit: 50000,
-    perDocumentWordLimit: 10000,
+    perDocumentWordLimit: 20000,
     monthlyScanLimit: 30,
     documentStorageLimit: 20,
   },

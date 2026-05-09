@@ -79,7 +79,9 @@ function parseJsonResponse(content: string): unknown {
 
 /**
  * Validates that the text exists at the reported position.
- * Falls back to searching nearby, then anywhere in the text.
+ * Falls back to searching nearby, then anywhere in the text, then a
+ * fuzzy regex match that tolerates whitespace and curly-vs-straight quote
+ * differences (LLMs frequently normalize these in their output).
  */
 function validatePosition(
   text: string,
@@ -87,7 +89,6 @@ function validatePosition(
   reportedStart: number,
   reportedEnd: number
 ): { start: number; end: number } | null {
-  // Check exact position
   if (
     reportedStart >= 0 &&
     reportedEnd <= text.length &&
@@ -96,7 +97,6 @@ function validatePosition(
     return { start: reportedStart, end: reportedEnd };
   }
 
-  // Search near reported position
   const searchStart = Math.max(0, reportedStart - 100);
   const searchEnd = Math.min(text.length, (reportedEnd || reportedStart) + 100);
   const nearby = text.slice(searchStart, searchEnd);
@@ -105,11 +105,43 @@ function validatePosition(
     return { start: searchStart + idx, end: searchStart + idx + phrase.length };
   }
 
-  // Search entire text
   const globalIdx = text.indexOf(phrase);
   if (globalIdx !== -1) {
     return { start: globalIdx, end: globalIdx + phrase.length };
   }
 
+  const fuzzy = buildFuzzyRegex(phrase);
+  if (fuzzy) {
+    const m = fuzzy.exec(text);
+    if (m) {
+      return { start: m.index, end: m.index + m[0].length };
+    }
+  }
+
+  console.warn("[grammar-detector] dropped finding — could not locate phrase in section text", {
+    phrasePreview: phrase.slice(0, 80),
+    textLength: text.length,
+  });
   return null;
+}
+
+function buildFuzzyRegex(phrase: string): RegExp | null {
+  const normalized = phrase
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[“”„‟]/g, '"')
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return null;
+  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const flexed = escaped
+    .replace(/ /g, "\\s+")
+    .replace(/'/g, "['\\u2018\\u2019]")
+    .replace(/"/g, '["\\u201C\\u201D]')
+    .replace(/-/g, "[-\\u2013\\u2014]");
+  try {
+    return new RegExp(flexed, "i");
+  } catch {
+    return null;
+  }
 }

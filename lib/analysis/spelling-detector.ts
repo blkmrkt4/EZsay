@@ -88,7 +88,8 @@ function parseJsonResponse(content: string): unknown {
 
 /**
  * Validates that the word exists at the reported position.
- * Falls back to searching nearby, then anywhere in the text.
+ * Falls back to searching nearby, then anywhere in the text, then a
+ * case-insensitive search that tolerates the LLM normalizing capitalization.
  */
 function validatePosition(
   text: string,
@@ -96,7 +97,6 @@ function validatePosition(
   reportedStart: number,
   reportedEnd: number
 ): { start: number; end: number } | null {
-  // Check exact position
   if (
     reportedStart >= 0 &&
     reportedEnd <= text.length &&
@@ -105,7 +105,6 @@ function validatePosition(
     return { start: reportedStart, end: reportedEnd };
   }
 
-  // Search near reported position (within 50 chars)
   const searchStart = Math.max(0, reportedStart - 50);
   const searchEnd = Math.min(text.length, (reportedEnd || reportedStart) + 50);
   const nearby = text.slice(searchStart, searchEnd);
@@ -114,12 +113,20 @@ function validatePosition(
     return { start: searchStart + idx, end: searchStart + idx + word.length };
   }
 
-  // Search entire text — take first occurrence
   const globalIdx = text.indexOf(word);
   if (globalIdx !== -1) {
     return { start: globalIdx, end: globalIdx + word.length };
   }
 
+  const ciIdx = text.toLowerCase().indexOf(word.toLowerCase());
+  if (ciIdx !== -1) {
+    return { start: ciIdx, end: ciIdx + word.length };
+  }
+
+  console.warn("[spelling-detector] dropped finding — could not locate word in section text", {
+    wordPreview: word.slice(0, 40),
+    textLength: text.length,
+  });
   return null;
 }
 

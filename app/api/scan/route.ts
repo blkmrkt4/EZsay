@@ -291,6 +291,14 @@ export async function POST(request: NextRequest) {
       const findings = await detectSpellingErrors(docSections);
       spellingResults = findings;
       spellingScore = Math.max(0, 100 - findings.length * 5);
+      if (findings.length === 0) {
+        const unlocked = docSections.filter((s) => !s.isLocked);
+        console.warn("[scan] spelling check returned 0 findings", {
+          documentId,
+          sectionCount: unlocked.length,
+          totalChars: unlocked.reduce((a, s) => a + s.currentText.length, 0),
+        });
+      }
     } catch (err) {
       console.error("Spelling check failed during scan:", err);
     }
@@ -301,6 +309,14 @@ export async function POST(request: NextRequest) {
       const findings = await detectGrammarErrors(docSections);
       grammarResults = findings;
       grammarScore = Math.max(0, 100 - findings.length * 3);
+      if (findings.length === 0) {
+        const unlocked = docSections.filter((s) => !s.isLocked);
+        console.warn("[scan] grammar check returned 0 findings", {
+          documentId,
+          sectionCount: unlocked.length,
+          totalChars: unlocked.reduce((a, s) => a + s.currentText.length, 0),
+        });
+      }
     } catch (err) {
       console.error("Grammar check failed during scan:", err);
     }
