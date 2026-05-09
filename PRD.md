@@ -2,9 +2,9 @@
 
 **Product name:** EzSay
 **Version:** 1.0
-**Status:** In development — core workspace, scan pipeline, and editing flow functional
+**Status:** Pre-launch — feature-complete, deployed to production at `ezsay.byzyb.ai`. Outstanding before public launch: enable Supabase RLS, disable `DEV_BYPASS_AUTH`, remove dev-only UI buttons.
 **Owner:** Robin Hutchinson
-**Last updated:** April 24, 2026
+**Last updated:** May 9, 2026
 
 *This document is maintained by Claude Code. Any architectural decision, library version, constraint discovered during build, or resolved open question must be updated here immediately — not at the end of the session.*
 
@@ -38,7 +38,7 @@ Both served equally from day one. No feature gating by user type at launch.
 - Pricing: Monthly + Annual (annual shown first with discount badge).
 - One price for everyone. No student tier at launch.
 - Post-payment: full product unlocked, no further gates.
-- **Status:** Stripe integration stubbed (paywall modal UI built, webhook skeleton in place). Full checkout flow not yet wired.
+- **Status:** Stripe fully wired in live mode. Checkout, webhook, customer portal, and post-payment reconciliation all in place. Live webhook endpoint at `https://ezsay.byzyb.ai/api/webhooks/stripe` handles 9 events (checkout, subscription lifecycle, invoice success/failure, refunds, customer + payment-method deletion).
 
 ---
 
@@ -55,7 +55,7 @@ Both served equally from day one. No feature gating by user type at launch.
 | ORM CLI | drizzle-kit | 0.31.10 | Migrations and studio |
 | Auth | Supabase Auth (@supabase/ssr) | 0.10.2 | Email/password + Google SSO (Apple deferred post-V1) |
 | File storage | Supabase Storage | — | PDFs and .docx uploads |
-| Payments | Stripe | 22.0.2 | Stubbed — modal UI + webhook skeleton |
+| Payments | Stripe | 22.0.2 | Live mode wired. Two products (Individual, EaaS) × two intervals (monthly, annual) = 4 price IDs. Webhook handles checkout/subscription/invoice/refund/customer/payment-method events. Customer Portal enabled. |
 | DB driver | postgres (postgres.js) | 3.4.9 | Supabase Postgres direct connection |
 | Model routing | OpenRouter | — | Multi-model, hidden from users |
 | PDF parsing | pdfjs-dist | 5.6.205 | Server-side text extraction |
@@ -280,7 +280,8 @@ Validates text after replacements. Catches LLM response markers (CHANGED:, OPTIO
 | Phrase library (250 entries) | Done |
 | Admin: Activity Binds, Libraries, Settings, Log | Done |
 | Paywall modal UI | Done |
-| Stripe webhook | Stubbed |
+| Stripe checkout + webhook (live mode) | Done |
+| Production deployment to `ezsay.byzyb.ai` | Done |
 
 ---
 
@@ -290,7 +291,9 @@ Validates text after replacements. Catches LLM response markers (CHANGED:, OPTIO
 |---|---|---|
 | Citations bridge from edit queue | Done | Footer count shows pending citations; end-of-queue summary retitles and surfaces "Go to Citations" primary action when citations remain. Spec in section 9.1 — implemented 2026-04-24 (pending user verification in dev server). |
 | Free-scan funnel (anonymous → email gate → claimed reveal) | Done | `/scan` lets anonymous visitors scan via Supabase anonymous sign-in. Scores show immediately; sample flagged sentences gated behind email verification (`updateUser({ email })` magic link). New `free` plan tier in `lib/stripe/plan-limits.ts` caps unsubscribed users at 1 scan / 5,000-word doc / 1 doc storage. Spec in §22 — implemented 2026-04-25. **Requires:** Anonymous Sign-Ins enabled in Supabase Authentication → Providers. |
-| Full Stripe integration | High | Checkout, subscription sync, access gating |
+| Full Stripe integration | Done | Checkout, subscription sync, access gating live as of 2026-05-09. Live webhook at `https://ezsay.byzyb.ai/api/webhooks/stripe`. |
+| Enable Supabase Row-Level Security | High — pre-launch blocker | Tables currently unprotected at the DB level — all access control runs through API route guards. Before opening signup to the public, enable RLS on `documents`, `sections`, `flags`, `flag_options`, `citations`, `style_profiles`, `profiles`, and any user-scoped table, with policies that restrict reads/writes to `auth.uid() = user_id`. |
+| Disable `DEV_BYPASS_AUTH` and remove dev-only UI | High — pre-launch blocker | `DEV_BYPASS_AUTH` is currently `true` locally and not yet flipped to `false` in Vercel production. Dev-only buttons / debug controls are still rendered in some screens. Both must be cleaned up before public launch. References: `lib/supabase/middleware.ts`, `lib/supabase/dev-auth.ts`. |
 | PDF export | Rejected | Considered but server-side PDF generation produces poor output (broken Unicode, no font embedding, manual layout). Students can export .docx and use Word/Google Docs "Save as PDF" for better results. |
 | Mobile responsive | Medium | Desktop-first |
 | Grammar/spelling check | Medium | New scan category |
@@ -304,24 +307,26 @@ Validates text after replacements. Catches LLM response markers (CHANGED:, OPTIO
 # Supabase
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
-DATABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=         # server-side only — never expose to client
+DATABASE_URL=                       # Postgres connection string
 
-# Stripe (not yet wired)
-STRIPE_SECRET_KEY=
-STRIPE_WEBHOOK_SECRET=
-STRIPE_MONTHLY_PRICE_ID=
-STRIPE_ANNUAL_PRICE_ID=
-NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=
+# Stripe (live keys in Vercel production, test keys for local dev)
+STRIPE_SECRET_KEY=                  # sk_live_... in prod, sk_test_... in dev
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY= # pk_live_... in prod, pk_test_... in dev
+STRIPE_WEBHOOK_SECRET=              # whsec_... — unique per environment
+STRIPE_INDIVIDUAL_MONTHLY_PRICE_ID= # price_...
+STRIPE_INDIVIDUAL_ANNUAL_PRICE_ID=  # price_...
+STRIPE_EAAS_MONTHLY_PRICE_ID=       # price_...
+STRIPE_EAAS_ANNUAL_PRICE_ID=        # price_...
 
-# OpenRouter
+# OpenRouter (admin panel value in DB takes precedence at runtime)
 OPENROUTER_API_KEY=
 
-# Tavily (optional, falls back to DuckDuckGo)
+# Tavily (primary citation/plagiarism web search; falls back to DuckDuckGo)
 TAVILY_API_KEY=
 
-# Dev mode
-DEV_BYPASS_AUTH=true
+# Dev mode — must be false (or unset) in Vercel production
+DEV_BYPASS_AUTH=false
 ```
 
 ---
@@ -345,10 +350,50 @@ DEV_BYPASS_AUTH=true
 | 13 | Style Training | User-facing, not admin-only. 44 items, 7 categories | 2026-04-18 |
 | 14 | Artifact batch persistence | Stays in queue until all artifacts resolved | 2026-04-21 |
 | 15 | Writing Quality in edit queue | Advisory flags, skippable, don't count toward total | 2026-04-21 |
+| 16 | Production domain | Subdomain on existing portfolio domain — `ezsay.byzyb.ai` — not a new top-level domain | 2026-05-09 |
+| 17 | Stripe environment for launch | Live mode from day one. Two products × two intervals; no separate test deployment | 2026-05-09 |
 
 ---
 
-## 19. Brand assets
+## 19. Production deployment
+
+**Live URL:** `https://ezsay.byzyb.ai`
+
+### Hosting
+
+- **Vercel project name:** `ezsay`
+- **Domain:** subdomain of `byzyb.ai` (existing personal/portfolio domain). DNS managed at GoDaddy. Single CNAME record `ezsay → cname.vercel-dns.com` routes the subdomain to Vercel; SSL is provisioned automatically by Vercel.
+- **Build & deploy:** `git push origin main` triggers a Vercel production deployment automatically. No `vercel.json` — Next.js auto-detection is used. `next.config.ts` declares `pdf-parse` and `@napi-rs/canvas` as `serverExternalPackages`.
+
+### Stripe live-mode configuration
+
+- **Webhook endpoint:** `https://ezsay.byzyb.ai/api/webhooks/stripe`
+- **Subscribed events (9):** `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.payment_succeeded`, `invoice.payment_failed`, `charge.refunded`, `customer.deleted`, `payment_method.detached`
+- **API version:** `2026-04-22.dahlia` (Stripe account default)
+- **Defensive reconciliation:** `app/api/stripe/checkout/success/route.ts` retrieves the session direct from Stripe on the success redirect and syncs the profile row, so paying users are unblocked immediately even if the webhook is delayed. The webhook remains the authoritative source for renewals, cancellations, and `past_due` transitions.
+- **Customer Portal:** enabled in Stripe → Settings → Billing → Customer portal. The `/api/stripe/portal` route depends on this.
+
+### Supabase configuration for production
+
+- **Site URL:** `https://ezsay.byzyb.ai`
+- **Redirect URLs:** `https://ezsay.byzyb.ai/**`, `https://ezsay.byzyb.ai/auth/callback`, `http://localhost:3000/auth/callback` (kept for local dev).
+- **Single project for dev + prod.** Same `DATABASE_URL` used in local `.env.local` and in Vercel production env. No separate prod migration step needed unless we later split.
+- **Anonymous Sign-Ins** must remain enabled (Authentication → Providers) — required for the free-scan funnel at `/scan`.
+
+### Google OAuth
+
+Sign-in with Google is mediated by Supabase. Google's OAuth client is configured with Supabase's `*.supabase.co/auth/v1/callback` as the only redirect URI — Google never sees the app's domain — so adding `ezsay.byzyb.ai` to Google Cloud Console is **not required** when changing the app domain. Updating Supabase Redirect URLs is sufficient.
+
+### Pre-public-launch checklist (outstanding)
+
+- [ ] **Enable Row-Level Security** on all user-scoped tables in Supabase. Tables today are unprotected at the DB level — access control runs through API route guards only. RLS is the second line of defence and is required before opening signup to the public.
+- [ ] **Disable `DEV_BYPASS_AUTH`** in Vercel production environment (set to `false` or unset).
+- [ ] **Remove dev-only UI buttons** still rendered in some screens. References: `lib/supabase/middleware.ts`, `lib/supabase/dev-auth.ts`, plus any in-page dev shortcuts wired via these.
+- [ ] **End-to-end smoke test** in production: signup → upload → scan → paywall → real Stripe checkout → webhook delivery (200) → workspace access → refund flow.
+
+---
+
+## 20. Brand assets
 
 Six SVG files live in `public/brand/` — three variants × black/white pairs. All vector, transparent background.
 
@@ -364,7 +409,7 @@ Six SVG files live in `public/brand/` — three variants × black/white pairs. A
 
 **Favicon:** the mark serves as the favicon via `app/icon.svg` (Next.js file convention — auto-detected, no metadata wiring needed). The legacy `app/favicon.ico` stays in place as a fallback for browsers that don't accept SVG favicons.
 
-### 19.1 Live placements
+### 20.1 Live placements
 
 | Location | File | Rendered size | File |
 |---|---|---|---|
@@ -373,7 +418,7 @@ Six SVG files live in `public/brand/` — three variants × black/white pairs. A
 | Workspace header (top-left) | `ezsay-wordmark-black.svg` | `h-5` (20px tall) | `app/w/page.tsx` |
 | Browser tab favicon | `ezsay-mark-black.svg` (copied to `app/icon.svg`) | browser-controlled | `app/icon.svg` |
 
-### 19.2 Candidate placements (not yet wired)
+### 20.2 Candidate placements (not yet wired)
 
 - **Auth screens** (`app/(auth)/login/page.tsx`, signup, forgot-password): currently show "EzSay" as plain text above the form. Use lockup at `h-12` — pre-auth territory is marketing-adjacent, so the full treatment fits.
 - **Admin panel chrome** (`app/admin/*`): use wordmark for consistency with the workspace.

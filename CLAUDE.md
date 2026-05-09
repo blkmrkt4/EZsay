@@ -558,17 +558,34 @@ components/editor/
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=        # server-side only — never expose to client
+DATABASE_URL=
 
-# Stripe
-STRIPE_SECRET_KEY=
-STRIPE_WEBHOOK_SECRET=
-STRIPE_MONTHLY_PRICE_ID=
-STRIPE_ANNUAL_PRICE_ID=
-NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=
+# Stripe — live values in Vercel production, test values in local .env.local
+STRIPE_SECRET_KEY=                # sk_live_... (prod) / sk_test_... (dev)
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY= # pk_live_... (prod) / pk_test_... (dev)
+STRIPE_WEBHOOK_SECRET=            # whsec_... — unique per environment
+STRIPE_INDIVIDUAL_MONTHLY_PRICE_ID=
+STRIPE_INDIVIDUAL_ANNUAL_PRICE_ID=
+STRIPE_EAAS_MONTHLY_PRICE_ID=
+STRIPE_EAAS_ANNUAL_PRICE_ID=
 
-# OpenRouter
-OPENROUTER_API_KEY=               # DB value from admin panel overrides this at runtime
+# OpenRouter (admin panel value in DB takes precedence at runtime)
+OPENROUTER_API_KEY=
+
+# Tavily (citation/plagiarism web search; falls back to DuckDuckGo)
+TAVILY_API_KEY=
+
+# Dev mode — must be false (or unset) in Vercel production
+DEV_BYPASS_AUTH=false
 ```
+
+### Production deployment
+
+- **Live URL:** `https://ezsay.byzyb.ai` (subdomain of `byzyb.ai`, DNS at GoDaddy via CNAME → `cname.vercel-dns.com`).
+- **Vercel project:** `ezsay`. Auto-deploys on `git push origin main`.
+- **Stripe webhook (live):** `https://ezsay.byzyb.ai/api/webhooks/stripe` — subscribed to `checkout.session.completed`, `customer.subscription.{created,updated,deleted}`, `invoice.payment_{succeeded,failed}`, `charge.refunded`, `customer.deleted`, `payment_method.detached`.
+- **Single Supabase project** for dev + prod. Site URL and Redirect URLs include both `https://ezsay.byzyb.ai/**` and `http://localhost:3000/auth/callback`.
+- **Pre-public-launch blockers** (tracked in PRD §19): enable Supabase RLS on user-scoped tables, set `DEV_BYPASS_AUTH=false` in Vercel production, remove dev-only UI buttons.
 
 ---
 
