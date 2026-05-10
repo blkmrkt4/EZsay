@@ -220,24 +220,57 @@ async function handleResolve(body: {
 function extractCitationStrings(text: string): string[] {
   const results: string[] = [];
 
-  // APA-style: (Author, Year) or (Author et al., Year)
+  // APA-style inline: (Author, Year) or (Author et al., Year)
   const apaMatches = text.match(
     /\([A-Z][a-zA-Z'-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][a-zA-Z'-]+))?,?\s*\d{4}[a-z]?(?:,\s*p{1,2}\.\s*\d+(?:-\d+)?)?\)/g
   );
   if (apaMatches) results.push(...apaMatches);
 
-  // Reference list entries (lines starting with author names in a reference section)
+  // Reference list entries — find the reference section by header
   const refSectionMatch = text.match(
-    /(?:References|Bibliography|Works Cited)\s*\n([\s\S]*?)(?:\n\n\n|\z)/i
+    /(?:References|Bibliography|Works Cited|Reference List)\s*\n?([\s\S]*?)(?:\n\n\n|$)/i
   );
   if (refSectionMatch) {
-    const refLines = refSectionMatch[1]
-      .split("\n")
-      .filter((l) => l.trim().length > 10);
-    results.push(...refLines.map((l) => l.trim()));
+    const refText = refSectionMatch[1].trim();
+    const entries = splitReferenceEntries(refText);
+    results.push(...entries);
   }
 
   return results;
+}
+
+/**
+ * Splits a reference section into individual citation entries.
+ * Handles both newline-separated and run-together bibliography text
+ * (common after PDF extraction strips line breaks).
+ *
+ * Strategy: try newline split first. If that yields too few entries
+ * relative to the text length, fall back to pattern-based splitting
+ * that detects entry boundaries where a new author name begins
+ * (e.g. "Surname, I." or "Surname, Initial" after a sentence-ending period/number).
+ */
+function splitReferenceEntries(text: string): string[] {
+  // Try newline split first
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 10);
+
+  // Heuristic: if we got a reasonable number of entries from newlines, use them
+  // "Reasonable" = at least 1 entry per ~200 chars of text
+  if (lines.length >= Math.max(2, Math.floor(text.length / 300))) {
+    return lines;
+  }
+
+  // Newline split failed (text is run together). Split on author-name boundaries.
+  // Split before "Surname, I. Year" or "Surname, Firstname. "Title" patterns.
+  // This catches entries like: "Harding, S. 2005." or "Hoffman, Mark. \"Critical..."
+  const entryBoundary = /\s+(?=[A-Z][a-zA-ZÀ-ÿ'-]+,\s*[A-Z][a-zA-Z]*[\.\s]\s*(?:\d{4}|[A-Z\u201C"']))/g;
+  const parts = text.split(entryBoundary).map((s) => s.trim()).filter((s) => s.length > 10);
+
+  if (parts.length > 1) {
+    return parts;
+  }
+
+  // Last resort: return the whole block as one entry if nothing else worked
+  return text.length > 10 ? [text] : [];
 }
 
 type CitationStyle = "apa" | "mla" | "chicago" | "harvard" | "oxford" | "bluebook" | "oscola" | "business";

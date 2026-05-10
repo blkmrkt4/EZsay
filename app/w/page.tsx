@@ -1757,7 +1757,7 @@ export default function WorkspacePage() {
 
           {/* ── Edit Panel (collapsible) ──────────────────────────────────── */}
           {showEditPanel ? (
-          <div className={`flex ${workspaceMode === "review" ? "flex-1" : "flex-[5]"} flex-col min-w-[300px] bg-white border-r border-gray-200`}>
+          <div className="flex flex-[5] flex-col min-w-[300px] bg-white border-r border-gray-200">
             {/* Workspace mode strip replaces the title bar when in workspace with a doc */}
             {nav === "workspace" && activeDoc ? (
               <WorkspaceModeStrip mode={workspaceMode} onModeChange={(m) => { setWorkspaceMode(m); if (m === "review") { setShowDocPanel(true); trackEvent("review_tab_opened"); } }} onCollapse={() => setShowEditPanel(false)} />
