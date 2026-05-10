@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
 import AnalysisPanel from "@/components/results/AnalysisPanel";
 import { detectArtifacts, type ArtifactFinding } from "@/lib/analysis/artifact-detector";
 import { calculateWritingQuality, findComplexSentences } from "@/lib/analysis/quality-scorer";
@@ -13,6 +14,8 @@ import DiffEditPanel from "@/components/editor/DiffEditPanel";
 import DiffChoicesPanel from "@/components/editor/DiffChoicesPanel";
 import { trackEvent } from "@/lib/events/track-client";
 import { wordDiff } from "@/lib/analysis/word-diff";
+import StyleSettingsPanel from "@/components/style-settings/StyleSettingsPanel";
+import WorkspaceModeStrip from "@/components/editor/WorkspaceModeStrip";
 import Link from "next/link";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -84,7 +87,8 @@ interface FlagOption {
 }
 
 type ScanLevel = "surface" | "deep" | "plagiarism" | "citations" | "style-cleanup" | "comprehensive";
-type NavItem = "documents" | "scan" | "analysis" | "edit" | "review" | "citations" | "spelling" | "grammar" | "style-training" | "intake";
+type NavItem = "library" | "workspace" | "style-rules" | "intake";
+type WorkspaceMode = "dashboard" | "edit" | "review" | "citations" | "spelling" | "grammar";
 
 interface PlagiarismResult {
   id: string;
@@ -140,7 +144,7 @@ const SCAN_LEVELS: { value: ScanLevel; label: string; desc: string; isUltimate?:
   { value: "deep", label: "Deep Scan", desc: "Adds structural patterns and sentence analysis" },
   { value: "plagiarism", label: "Plagiarism Scan", desc: "Check for plagiarism via web search" },
   { value: "citations", label: "Citation Scan", desc: "Verify and format-check citations" },
-  { value: "style-cleanup", label: "Style Cleanup", desc: "Fix formatting artifacts from Style Training" },
+  { value: "style-cleanup", label: "Style Cleanup", desc: "Fix formatting artifacts from Style Rules" },
   { value: "comprehensive", label: "Comprehensive", desc: "Everything combined — the ultimate scan", isUltimate: true },
 ];
 
@@ -245,7 +249,12 @@ function scoreColor(score: number | null) {
 
 // ── Main workspace ─────────────────────────────────────────────────────────
 
+const VALID_NAV_ITEMS = new Set<NavItem>(["library", "workspace", "style-rules", "intake"]);
+const VALID_WORKSPACE_MODES = new Set<WorkspaceMode>(["dashboard", "edit", "review", "citations", "spelling", "grammar"]);
+
 export default function WorkspacePage() {
+  const searchParams = useSearchParams();
+
   // Document list
   const [docs, setDocs] = useState<Document[]>([]);
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
@@ -273,8 +282,17 @@ export default function WorkspacePage() {
   const [grammarChecked, setGrammarChecked] = useState<Set<string>>(new Set());
   const [grammarApplying, setGrammarApplying] = useState(false);
 
-  // Navigation and UI
-  const [nav, setNav] = useState<NavItem>("documents");
+  // Navigation and UI — initialize from URL ?nav= param if valid
+  const [nav, setNav] = useState<NavItem>(() => {
+    const urlNav = searchParams.get("nav");
+    if (urlNav && VALID_NAV_ITEMS.has(urlNav as NavItem)) return urlNav as NavItem;
+    return "library";
+  });
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(() => {
+    const urlMode = searchParams.get("mode");
+    if (urlMode && VALID_WORKSPACE_MODES.has(urlMode as WorkspaceMode)) return urlMode as WorkspaceMode;
+    return "edit";
+  });
   const [scanning, setScanning] = useState(false);
   const [hasScanned, setHasScanned] = useState(false);
   const [scanViewed, setScanViewed] = useState(false);
@@ -307,6 +325,28 @@ export default function WorkspacePage() {
     current: number;
     total: number;
   }>({ generating: false, current: 0, total: 0 });
+
+  // Library accordion state — tracks expanded docs and lazy-loaded versions
+  const [expandedDocIds, setExpandedDocIds] = useState<Set<string>>(new Set());
+  const [libraryVersions, setLibraryVersions] = useState<Record<string, { id: string; versionLabel: string; versionNumber: number; aiRiskScore: number | null; createdAt: string }[]>>({});
+
+  const toggleDocExpanded = useCallback(async (docId: string) => {
+    setExpandedDocIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(docId)) { next.delete(docId); } else { next.add(docId); }
+      return next;
+    });
+    // Lazy-load versions if not already fetched
+    if (!libraryVersions[docId]) {
+      try {
+        const res = await fetch(`/api/documents/${docId}/versions`);
+        const json = await res.json();
+        if (json.success) {
+          setLibraryVersions((prev) => ({ ...prev, [docId]: json.data }));
+        }
+      } catch {}
+    }
+  }, [libraryVersions]);
 
   // Upload state (inline in documents panel)
   const [showUpload, setShowUpload] = useState(false);
@@ -347,7 +387,7 @@ export default function WorkspacePage() {
   // in the Citations tab.
   useEffect(() => {
     if (!activeDocId) { setDocCitations([]); return; }
-    if (nav !== "edit" && nav !== "analysis") return;
+    if (nav !== "workspace" || (workspaceMode !== "edit" && workspaceMode !== "dashboard")) return;
     let cancelled = false;
     fetch(`/api/citations?documentId=${activeDocId}`)
       .then((r) => r.json())
@@ -435,7 +475,7 @@ export default function WorkspacePage() {
     // Switch from Library panel to Doc panel, and back to edit view
     setShowLibraryPanel(false);
     setShowDocPanel(true);
-    if (nav === "style-training" || nav === "documents") setNav("edit");
+    if (nav === "style-rules" || nav === "library") { setNav("workspace"); setWorkspaceMode("edit"); }
     loadDocument(docId);
   }
 
@@ -446,7 +486,7 @@ export default function WorkspacePage() {
   async function handleScan() {
     if (!activeDocId) return;
     setScanning(true);
-    setNav("analysis");
+    setNav("workspace"); setWorkspaceMode("dashboard");
     const res = await fetch("/api/scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -715,7 +755,7 @@ export default function WorkspacePage() {
     } else {
       trackEvent("intake_skipped");
     }
-    setNav("scan");
+    setNav("workspace"); setWorkspaceMode("dashboard");
   }
 
   function advanceIntake() {
@@ -830,7 +870,16 @@ export default function WorkspacePage() {
       if (key === "d" && activeDoc) { setShowDocPanel((prev) => !prev); return; }
       if (key === "e") { setShowEditPanel((prev) => !prev); return; }
       if (key === "c") { setShowChoicesPanel((prev) => !prev); return; }
-      if (nav !== "edit") return;
+      if (key === "l") { setShowLibraryPanel((prev) => !prev); return; }
+      // Cmd+1..6 — workspace mode switching
+      if ((e.metaKey || e.ctrlKey) && key >= "1" && key <= "6") {
+        e.preventDefault();
+        const modes: WorkspaceMode[] = ["dashboard", "edit", "review", "citations", "spelling", "grammar"];
+        const idx = parseInt(key) - 1;
+        if (idx < modes.length) { setNav("workspace"); setWorkspaceMode(modes[idx]); }
+        return;
+      }
+      if (nav !== "workspace" || workspaceMode !== "edit") return;
       if (key >= "1" && key <= "9") { setSelectedOptionIdx(parseInt(key) - 1); return; }
       if (key === "enter") { e.preventDefault(); if (selectedOptionIdx !== null) handleFlagResolved("accepted", currentOptions[selectedOptionIdx]?.id); return; }
       if (key === "s") { handleFlagResolved("skipped"); return; }
@@ -841,7 +890,7 @@ export default function WorkspacePage() {
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nav, selectedOptionIdx, selectedFlagIdx]);
+  }, [nav, workspaceMode, selectedOptionIdx, selectedFlagIdx]);
 
   // ── Computed values ────────────────────────────────────────────────────
 
@@ -973,7 +1022,7 @@ export default function WorkspacePage() {
   useEffect(() => {
     const docEl = diffDocRef.current;
     const editEl = diffEditRef.current;
-    if (!docEl || !editEl || nav !== "review") return;
+    if (!docEl || !editEl || workspaceMode !== "review") return;
 
     const onDocScroll = () => handleDiffScroll("doc");
     const onEditScroll = () => handleDiffScroll("edit");
@@ -983,7 +1032,7 @@ export default function WorkspacePage() {
       docEl.removeEventListener("scroll", onDocScroll);
       editEl.removeEventListener("scroll", onEditScroll);
     };
-  }, [nav, handleDiffScroll]);
+  }, [workspaceMode, handleDiffScroll]);
 
   // ── Review diff: resolved changes ──────────────────────────────────────
 
@@ -1146,7 +1195,7 @@ export default function WorkspacePage() {
       <button
         onClick={() => {
           if (hasScanned && !scanViewed) {
-            setNav("analysis");
+            setNav("workspace"); setWorkspaceMode("dashboard");
             setScanViewed(true);
           } else if (!hasScanned || versionSavedSinceScan) {
             setShowScanDialog(true);
@@ -1171,9 +1220,6 @@ export default function WorkspacePage() {
 
   return (
     <div className="flex h-screen flex-col bg-gray-100 text-sm">
-
-      {/* ═══ Floating Command Capsule — overlays the top of the workspace ═══ */}
-      <CommandCapsule scanSlot={scanButton} score={objectiveAuditorScore} />
 
       {/* ═══ Static top bar — wordmark + doc switcher ═══════════════════════ */}
       <header className="relative flex shrink-0 items-center border-b border-gray-300 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-900">
@@ -1233,10 +1279,13 @@ export default function WorkspacePage() {
             activeDoc={activeDoc}
             activeDocId={activeDocId}
             onSelect={selectDocument}
-            onNewDoc={() => { setShowUpload(true); setNav("documents"); }}
+            onNewDoc={() => { setShowUpload(true); setNav("library"); setShowLibraryPanel(true); }}
             onRename={handleRenameDoc}
           />
         </div>
+
+        {/* Scan pill + Auditor score — right-aligned in header */}
+        <CommandCapsule scanSlot={scanButton} score={objectiveAuditorScore} />
       </header>
 
       {/* Usage warning banner */}
@@ -1288,27 +1337,8 @@ export default function WorkspacePage() {
 
             <div className="my-1.5 mx-3 border-t border-gray-100" />
 
-            {/* Workspace — prominent home destination */}
-            <NavButton
-              label="Workspace"
-              prominent
-              active={false}
-              expanded={navExpanded || navPinned}
-              onClick={() => {
-                if (activeDoc && hasScanned) {
-                  setNav("edit");
-                } else {
-                  setNav("documents");
-                  setShowLibraryPanel(true);
-                }
-              }}
-              icon={<svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.75} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" /></svg>}
-            />
-
-            <div className="my-1.5 mx-3 border-t border-gray-100" />
-
             {/* Library */}
-            <NavButton label="Library" active={showLibraryPanel} expanded={navExpanded || navPinned} onClick={() => setShowLibraryPanel(!showLibraryPanel)}
+            <NavButton label="Library" active={nav === "library" || showLibraryPanel} expanded={navExpanded || navPinned} onClick={() => { setShowLibraryPanel(!showLibraryPanel); if (!showLibraryPanel) setNav("library"); }}
               icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" /></svg>}
             />
             {/* Add New Doc — indented under Library */}
@@ -1324,41 +1354,24 @@ export default function WorkspacePage() {
 
             <div className="my-1.5 mx-3 border-t border-gray-100" />
 
-            {/* Scan Results */}
-            <NavButton label="Scan Results" active={nav === "scan"} expanded={navExpanded || navPinned} onClick={() => setNav("scan")}
-              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>}
-            />
-            {/* Analysis */}
-            <NavButton label="Analysis" active={nav === "analysis"} expanded={navExpanded || navPinned} onClick={() => setNav("analysis")}
-              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" /></svg>}
-            />
-            {/* Edit */}
-            <NavButton label="Edit" active={nav === "edit"} expanded={navExpanded || navPinned} onClick={() => setNav("edit")}
-              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" /></svg>}
-            />
-            {/* Review Changes */}
-            <NavButton label="Review" active={nav === "review"} expanded={navExpanded || navPinned} onClick={() => { setNav("review"); setShowDocPanel(true); trackEvent("review_tab_opened"); }}
-              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" /></svg>}
+            {/* Workspace — prominent home destination */}
+            <NavButton
+              label="Workspace"
+              prominent
+              active={nav === "workspace"}
+              expanded={navExpanded || navPinned}
+              onClick={() => {
+                setNav("workspace");
+                if (!activeDoc) setShowLibraryPanel(true);
+              }}
+              icon={<svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.75} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" /></svg>}
             />
 
             <div className="my-1.5 mx-3 border-t border-gray-100" />
 
-            {/* Citations */}
-            <NavButton label="Citations" active={nav === "citations"} expanded={navExpanded || navPinned} onClick={() => setNav("citations")}
-              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>}
-            />
-            <NavButton label="Spelling" active={nav === "spelling"} expanded={navExpanded || navPinned} onClick={() => setNav("spelling")}
-              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456Z" /></svg>}
-            />
-            <NavButton label="Grammar" active={nav === "grammar"} expanded={navExpanded || navPinned} onClick={() => setNav("grammar")}
-              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" /></svg>}
-            />
-
-            <div className="my-1.5 mx-3 border-t border-gray-100" />
-
-            {/* Style Training */}
-            <NavButton label="Style Training" active={nav === "style-training"} expanded={navExpanded || navPinned} onClick={() => setNav("style-training")}
-              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75" /></svg>}
+            {/* Style Rules */}
+            <NavButton label="Style Rules" active={nav === "style-rules"} expanded={navExpanded || navPinned} onClick={() => setNav("style-rules")}
+              icon={<svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>}
             />
 
           </div>
@@ -1380,14 +1393,10 @@ export default function WorkspacePage() {
 
           {/* ── Library Panel (hidden once a doc is loaded) ───────────────── */}
           {showLibraryPanel && (
-          <div className="w-64 shrink-0 border-r border-gray-200 bg-white flex flex-col">
-            <div className="border-b border-gray-100 px-3 py-2 flex items-center justify-between">
+          <div className="w-72 shrink-0 border-r border-gray-200 bg-white flex flex-col">
+            <div onClick={() => setShowLibraryPanel(false)} className="border-b border-gray-100 px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-gray-50" title="Collapse library (L)">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Library</h2>
-              {activeDocId && (
-                <button onClick={() => setShowLibraryPanel(false)} className="text-gray-400 hover:text-gray-600" title="Close library">
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
-                </button>
-              )}
+              <svg className="h-3.5 w-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
             </div>
             <div className="flex-1 overflow-auto p-2">
               {/* Upload form — only shown when triggered from nav "Add New Doc" */}
@@ -1482,38 +1491,70 @@ export default function WorkspacePage() {
                 </div>
               )}
 
-              {/* Document list */}
-              {docs.map((doc) => (
-                <button key={doc.id} onClick={() => selectDocument(doc.id)} className={`mb-0.5 flex w-full items-center justify-between rounded px-2 py-1.5 text-left ${activeDocId === doc.id ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"}`}>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <p className="truncate text-xs font-medium">{doc.title}</p>
-                      {doc.extractionMeta?.sourceType === "pdf" && (doc.extractionMeta.confidence === "low" || doc.extractionMeta.likelyGraphicsHeavy) && (
-                        <span
-                          className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-700"
-                          title={doc.extractionMeta.coverageRatio != null
-                            ? `Low text coverage: ${Math.round(doc.extractionMeta.coverageRatio * 100)}% of PDF pages had extractable text. Scores are based on extracted text only.`
-                            : "Low text coverage: this PDF appears graphics-heavy or image-based. Scores are based on extracted text only."}
-                        >
-                          Low text coverage
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[10px] text-gray-400">
+              {/* Document list — accordion with version history */}
+              {docs.map((doc) => {
+                const isExpanded = expandedDocIds.has(doc.id);
+                const versions = libraryVersions[doc.id] || [];
+                return (
+                  <div key={doc.id} className="mb-0.5">
+                    <div className={`flex w-full items-center rounded px-2 py-1.5 text-left ${activeDocId === doc.id ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"}`}>
+                      {/* Expand/collapse chevron */}
                       {doc.versionCount > 0 ? (
-                        <>
-                          {formatShortDate(doc.firstVersionDate!)}
-                          {doc.firstVersionDate !== doc.lastVersionDate && <> to {formatShortDate(doc.lastVersionDate!)}</>}
-                          {" "}<span className="text-gray-500">{doc.versionCount}v</span>
-                        </>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); toggleDocExpanded(doc.id); }}
+                          className="mr-1 shrink-0 text-gray-400 hover:text-gray-600"
+                        >
+                          <svg className={`h-3 w-3 transition-transform ${isExpanded ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+                        </button>
                       ) : (
-                        formatShortDate(doc.createdAt)
+                        <span className="mr-1 w-3 shrink-0" />
                       )}
-                    </p>
+                      {/* Doc title and metadata — clickable to select */}
+                      <button onClick={() => selectDocument(doc.id)} className="min-w-0 flex-1 text-left">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <p className="truncate text-xs font-medium">{doc.title}</p>
+                          {doc.extractionMeta?.sourceType === "pdf" && doc.extractionMeta.confidence === "low" && (
+                            <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-700" title="Partial text extraction">
+                              Partial
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-gray-400">
+                          {doc.versionCount > 0 ? (
+                            <>
+                              {formatShortDate(doc.firstVersionDate!)}
+                              {doc.firstVersionDate !== doc.lastVersionDate && <> to {formatShortDate(doc.lastVersionDate!)}</>}
+                              {" "}<span className="text-gray-500">{doc.versionCount}v</span>
+                            </>
+                          ) : (
+                            formatShortDate(doc.createdAt)
+                          )}
+                        </p>
+                      </button>
+                      {doc.aiRiskScore != null && <span className={`ml-1 text-xs font-bold ${scoreColor(doc.aiRiskScore)}`}>{doc.aiRiskScore}</span>}
+                    </div>
+                    {/* Version accordion */}
+                    {isExpanded && (
+                      <div className="ml-5 border-l border-gray-200 pl-2 py-1 space-y-0.5">
+                        {versions.length === 0 && (
+                          <p className="text-[9px] text-gray-400 py-1">Loading versions...</p>
+                        )}
+                        {versions.map((v) => (
+                          <div key={v.id} className="flex items-center justify-between rounded px-1.5 py-1 text-[10px] hover:bg-gray-50">
+                            <div className="min-w-0 flex-1">
+                              <span className="font-medium text-gray-600">{v.versionLabel || `v${v.versionNumber}`}</span>
+                              <span className="ml-1.5 text-gray-400">{formatShortDate(v.createdAt)}</span>
+                            </div>
+                            {v.aiRiskScore != null && (
+                              <span className={`ml-1 text-[10px] font-bold ${scoreColor(v.aiRiskScore)}`}>{v.aiRiskScore}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  {doc.aiRiskScore != null && <span className={`ml-1 text-xs font-bold ${scoreColor(doc.aiRiskScore)}`}>{doc.aiRiskScore}</span>}
-                </button>
-              ))}
+                );
+              })}
 
               {docs.length === 0 && (
                 <p className="py-6 text-center text-xs text-gray-400">No documents in library. Use &quot;Add New Doc&quot; in the menu to get started.</p>
@@ -1526,19 +1567,13 @@ export default function WorkspacePage() {
           {activeDoc ? (
             showDocPanel ? (
               /* Expanded Doc Panel — equal size in review mode, flex-3 otherwise */
-              <div className={`${nav === "review" ? "flex-1 min-w-[250px]" : showEditPanel ? "flex-[3] min-w-[250px]" : "flex-1 min-w-[250px]"} border-r border-gray-200 bg-white flex flex-col`}>
-                <div className="border-b border-gray-100 px-3 py-2 flex items-center justify-between">
-                  <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">{nav === "review" ? "Original" : "Document"}</h2>
-                  <button
-                    onClick={() => setShowDocPanel(false)}
-                    title="Collapse document panel (D)"
-                    className="text-gray-400 hover:text-gray-600"
-                  >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-                  </button>
+              <div className={`${workspaceMode === "review" ? "flex-1 min-w-[250px]" : showEditPanel ? "flex-[3] min-w-[250px]" : "flex-1 min-w-[250px]"} border-r border-gray-200 bg-white flex flex-col`}>
+                <div onClick={() => setShowDocPanel(false)} className="border-b border-gray-100 px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-gray-50" title="Collapse document panel (D)">
+                  <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">{workspaceMode === "review" ? "Original" : "Document"}</h2>
+                  <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                 </div>
                 <div className="flex flex-1 min-h-0">
-                  {nav === "review" ? (
+                  {workspaceMode === "review" ? (
                     <DiffDocPanel
                       sections={sections}
                       changes={resolvedChanges}
@@ -1652,7 +1687,7 @@ export default function WorkspacePage() {
                   </div>
                   </div>
                   )}
-                  {nav !== "review" && (
+                  {workspaceMode !== "review" && (
                     <HeatmapScrollbar
                       scrollRef={docScrollRef}
                       ticks={heatmapTicks}
@@ -1691,11 +1726,9 @@ export default function WorkspacePage() {
             /* No doc loaded — show empty strip */
             showDocPanel ? (
               <div className={`${showEditPanel ? "flex-[3] min-w-[250px]" : "flex-1 min-w-[250px]"} border-r border-gray-200 bg-white flex flex-col`}>
-                <div className="border-b border-gray-100 px-3 py-2 flex items-center justify-between">
+                <div onClick={() => setShowDocPanel(false)} className="border-b border-gray-100 px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-gray-50" title="Collapse document panel (D)">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Document</h2>
-                  <button onClick={() => setShowDocPanel(false)} title="Collapse document panel (D)" className="text-gray-400 hover:text-gray-600">
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-                  </button>
+                  <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                 </div>
                 <EmptyPanel
                   title="Document"
@@ -1724,19 +1757,22 @@ export default function WorkspacePage() {
 
           {/* ── Edit Panel (collapsible) ──────────────────────────────────── */}
           {showEditPanel ? (
-          <div className={`flex ${nav === "review" ? "flex-1" : "flex-[5]"} flex-col min-w-[300px] bg-white border-r border-gray-200`}>
-            <div className="border-b border-gray-100 px-3 py-2 flex items-center justify-between">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-                {nav === "review" ? "Edited" : nav === "intake" ? "Context" : nav === "style-training" ? "Style Training" : nav === "citations" ? "Citations" : nav === "spelling" ? "Spelling" : nav === "grammar" ? "Grammar" : nav === "analysis" || nav === "scan" ? "Analysis" : "Edit"}
-              </h2>
-              <button onClick={() => setShowEditPanel(false)} title="Collapse edit panel (E)" className="text-gray-400 hover:text-gray-600">
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-              </button>
-            </div>
+          <div className={`flex ${workspaceMode === "review" ? "flex-1" : "flex-[5]"} flex-col min-w-[300px] bg-white border-r border-gray-200`}>
+            {/* Workspace mode strip replaces the title bar when in workspace with a doc */}
+            {nav === "workspace" && activeDoc ? (
+              <WorkspaceModeStrip mode={workspaceMode} onModeChange={(m) => { setWorkspaceMode(m); if (m === "review") { setShowDocPanel(true); trackEvent("review_tab_opened"); } }} onCollapse={() => setShowEditPanel(false)} />
+            ) : (
+              <div onClick={() => setShowEditPanel(false)} className="border-b border-gray-100 px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-gray-50" title="Collapse edit panel (E)">
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                  {nav === "intake" ? "Context" : nav === "style-rules" ? "Style Rules" : "Edit"}
+                </h2>
+                <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+              </div>
+            )}
 
             <div className="flex-1 overflow-auto">
-              {/* ── Scan results — shows the Analysis panel with spectrums ──── */}
-              {nav === "scan" && (
+              {/* ── Dashboard — scan results + analysis ──── */}
+              {nav === "workspace" && workspaceMode === "dashboard" && (
                 <AnalysisPanel
                   document={activeDoc}
                   versions={docVersions}
@@ -1750,30 +1786,30 @@ export default function WorkspacePage() {
                   toneCheckDone={activeDoc?.toneConsistencyScore != null}
                   plagiarismEnabled={scanConfig.categories.plagiarism}
                   toneEnabled={scanConfig.categories.toneConsistency}
-                  onStartEditing={() => setNav("edit")}
-                  onGoToCitations={() => setNav("citations")}
+                  onStartEditing={() => { setNav("workspace"); setWorkspaceMode("edit"); }}
+                  onGoToCitations={() => { setNav("workspace"); setWorkspaceMode("citations"); }}
                 />
               )}
 
               {/* ── Edit ────────────────────────────────────────────────────── */}
-              {nav === "edit" && !currentFlag && !activeDoc && (
+              {nav === "workspace" && workspaceMode === "edit" && !currentFlag && !activeDoc && (
                 <EmptyPanel
                   title="Editing Panel"
                   description="This is where you review and fix flagged AI patterns one by one. Your original text is shown prominently at the top. Below it, numbered replacement options show how the text could be rewritten. The choices panel on the right lets you confirm, skip, or reject."
                 />
               )}
 
-              {nav === "edit" && activeDoc && !currentQueueItem && hasScanned && (
+              {nav === "workspace" && workspaceMode === "edit" && activeDoc && !currentQueueItem && hasScanned && (
                 <EditSessionSummary
                   flags={flags}
                   onRescan={() => { handleScan(); }}
                   onSaveVersion={handleSaveVersion}
                   citationsPending={citationsNeedingReview}
-                  onGoToCitations={() => setNav("citations")}
+                  onGoToCitations={() => { setNav("workspace"); setWorkspaceMode("citations"); }}
                 />
               )}
 
-              {nav === "edit" && activeDoc && !currentQueueItem && !hasScanned && (
+              {nav === "workspace" && workspaceMode === "edit" && activeDoc && !currentQueueItem && !hasScanned && (
                 <EmptyPanel
                   title="Ready to Scan"
                   description="Click the Scan button in the toolbar to analyse your document. Choose which checks to run and how thorough to be."
@@ -1781,7 +1817,7 @@ export default function WorkspacePage() {
               )}
 
               {/* ── Shared navigation bar for all queue item types ──── */}
-              {nav === "edit" && currentQueueItem && (
+              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem && (
                 <div className="px-4 pt-4 pb-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -1833,7 +1869,7 @@ export default function WorkspacePage() {
               )}
 
               {/* ── Artifact Batch Flag ──────────────────────────────── */}
-              {nav === "edit" && currentQueueItem?.type === "artifact_batch" && (
+              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "artifact_batch" && (
                 <div className="p-4 space-y-4">
                   <div className="flex items-center gap-2">
                     <span className="rounded bg-purple-100 px-2 py-0.5 text-[10px] font-semibold text-purple-700">AI Artifacts</span>
@@ -1900,7 +1936,7 @@ export default function WorkspacePage() {
               )}
 
               {/* ── Writing Quality Advisory ─────────────────────────── */}
-              {nav === "edit" && currentQueueItem?.type === "writing_quality" && (
+              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "writing_quality" && (
                 <div className="p-4 space-y-4">
                   <div className="flex items-center gap-2">
                     <span className="rounded bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">Writing Quality</span>
@@ -1926,7 +1962,7 @@ export default function WorkspacePage() {
               )}
 
               {/* ── Plagiarism Flag ──────────────────────────────────── */}
-              {nav === "edit" && currentQueueItem?.type === "plagiarism" && (
+              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "plagiarism" && (
                 <div className="p-4 space-y-4">
                   <div className="flex items-center gap-2">
                     <span className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
@@ -1982,7 +2018,7 @@ export default function WorkspacePage() {
               )}
 
               {/* ── Citation Format Fix ──────────────────────────────── */}
-              {nav === "edit" && currentQueueItem?.type === "citation_fix" && (
+              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "citation_fix" && (
                 <div className="p-4 space-y-4">
                   <div className="flex items-center gap-2">
                     <span className="rounded bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700">Citation Format</span>
@@ -2022,7 +2058,7 @@ export default function WorkspacePage() {
                 </div>
               )}
 
-              {nav === "edit" && currentFlag && currentSection && (
+              {nav === "workspace" && workspaceMode === "edit" && currentFlag && currentSection && (
                 <div className="p-4 space-y-4">
                   {/* Category badge + description */}
                   {(() => {
@@ -2196,14 +2232,14 @@ export default function WorkspacePage() {
               )}
 
               {/* ── Citations ───────────────────────────────────────────────── */}
-              {nav === "citations" && !activeDoc && (
+              {nav === "workspace" && workspaceMode === "citations" && !activeDoc && (
                 <EmptyPanel
                   title="Citations"
                   description="This panel checks your citations for structural formatting errors. It supports APA, MLA, Chicago, Harvard, Oxford, Bluebook, OSCOLA, and business styles. Each citation gets individual flags with suggested corrections — you accept, edit, verify, or dismiss each one."
                 />
               )}
 
-              {nav === "citations" && activeDoc && (
+              {nav === "workspace" && workspaceMode === "citations" && activeDoc && (
                 <CitationsPage
                   documentId={activeDoc.id}
                   sections={sections}
@@ -2222,13 +2258,13 @@ export default function WorkspacePage() {
               )}
 
               {/* Spelling view */}
-              {nav === "spelling" && !activeDoc && (
+              {nav === "workspace" && workspaceMode === "spelling" && !activeDoc && (
                 <EmptyPanel
                   title="Spelling"
                   description="Upload a document and run a scan with spelling checks enabled to find and fix spelling errors."
                 />
               )}
-              {nav === "spelling" && activeDoc && (
+              {nav === "workspace" && workspaceMode === "spelling" && activeDoc && (
                 <SpellingView
                   findings={(activeDoc.spellingResults as import("@/lib/analysis/grammar-spelling-types").SpellingFinding[]) || []}
                   checked={spellingChecked}
@@ -2269,13 +2305,13 @@ export default function WorkspacePage() {
               )}
 
               {/* Grammar view */}
-              {nav === "grammar" && !activeDoc && (
+              {nav === "workspace" && workspaceMode === "grammar" && !activeDoc && (
                 <EmptyPanel
                   title="Grammar"
                   description="Upload a document and run a scan with grammar checks enabled to find and fix grammar errors."
                 />
               )}
-              {nav === "grammar" && activeDoc && (
+              {nav === "workspace" && workspaceMode === "grammar" && activeDoc && (
                 <GrammarView
                   findings={(activeDoc.grammarResults as import("@/lib/analysis/grammar-spelling-types").GrammarFinding[]) || []}
                   checked={grammarChecked}
@@ -2315,29 +2351,8 @@ export default function WorkspacePage() {
                 />
               )}
 
-              {/* Style Training — always available, no document needed */}
-              {/* Analysis view */}
-              {nav === "analysis" && (
-                <AnalysisPanel
-                  document={activeDoc}
-                  versions={docVersions}
-                  flags={flags}
-                  plagiarismResults={plagiarismResults}
-                  plagiarismLoading={plagiarismLoading}
-                  scanning={scanning}
-                  documentText={sections.filter((s) => !s.isLocked).map((s) => s.currentText).join("\n\n")}
-                  suggestionsGenerating={suggestProgress.generating}
-                  suggestionsProgress={suggestProgress}
-                  toneCheckDone={activeDoc?.toneConsistencyScore != null}
-                  plagiarismEnabled={scanConfig.categories.plagiarism}
-                  toneEnabled={scanConfig.categories.toneConsistency}
-                  onStartEditing={() => setNav("edit")}
-                  onGoToCitations={() => setNav("citations")}
-                />
-              )}
-
               {/* Review changes diff view */}
-              {nav === "review" && (
+              {nav === "workspace" && workspaceMode === "review" && (
                 resolvedChanges.length > 0 ? (
                   <DiffEditPanel
                     sections={sections}
@@ -2383,12 +2398,12 @@ export default function WorkspacePage() {
                 </div>
               )}
 
-              {nav === "style-training" && (
-                <StyleTrainingInline />
+              {nav === "style-rules" && (
+                <StyleSettingsPanel documentType={activeDoc?.documentType} />
               )}
 
               {/* Default empty state — no document loaded */}
-              {!activeDoc && nav !== "scan" && nav !== "edit" && nav !== "citations" && nav !== "style-training" && nav !== "analysis" && nav !== "intake" && (
+              {!activeDoc && nav === "workspace" && (
                 <EmptyPanel
                   title="Edit Panel"
                   description="Load a document from the Library, then use the Scan button in the toolbar to analyse it. Flagged AI patterns will appear here for you to review and fix one by one."
@@ -2426,11 +2441,9 @@ export default function WorkspacePage() {
           {/* ── Choices Panel (collapsible) ────────────────────────────────── */}
           {showChoicesPanel ? (
           <div className="flex-[2.5] min-w-[220px] border-l border-gray-200 bg-gray-50 flex flex-col">
-            <div className="border-b border-gray-100 px-3 py-2 flex items-center justify-between">
+            <div onClick={() => setShowChoicesPanel(false)} className="border-b border-gray-100 px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-gray-50" title="Collapse choices panel (C)">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Choices</h2>
-              <button onClick={() => setShowChoicesPanel(false)} title="Collapse choices panel (C)" className="text-gray-400 hover:text-gray-600">
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
-              </button>
+              <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
             </div>
 
             {/* Progress bar — shown during scanning and suggestion generation */}
@@ -2473,7 +2486,7 @@ export default function WorkspacePage() {
             )}
 
             <div className="flex-1 overflow-auto">
-              {nav === "edit" && currentQueueItem ? (
+              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem ? (
                 <div className="flex h-full flex-col">
                   {/* Top controls */}
                   <div className="border-b border-gray-200 px-2 py-1.5">
@@ -2663,7 +2676,7 @@ export default function WorkspacePage() {
                     )}
                   </div>
                 </div>
-              ) : nav === "review" ? (
+              ) : workspaceMode === "review" ? (
                 <DiffChoicesPanel
                   changes={resolvedChanges}
                   totalFlags={reviewStats.totalFlags}
@@ -2743,7 +2756,7 @@ export default function WorkspacePage() {
                       <div className="text-center max-w-[180px]">
                         <p className="text-xs font-semibold text-gray-400">Choices</p>
                         <p className="mt-1 text-[10px] text-gray-400">
-                          {nav === "edit" ? "No flags to review." : "Run a scan and AI suggestions will be generated automatically."}
+                          {nav === "workspace" && workspaceMode === "edit" ? "No flags to review." : "Run a scan and AI suggestions will be generated automatically."}
                         </p>
                       </div>
                     </div>
@@ -3048,7 +3061,7 @@ function ScanConfigDialog({ config, setConfig, lastScan, onCancel, onConfirm }: 
             {/* Style Training notice */}
             {categories.aiArtifacts && styleStats && styleStats.remove === 0 && styleStats.ask === styleStats.remove + styleStats.ask + styleStats.keep && (
               <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] text-amber-600">
-                All Style Training items are set to &quot;Ask Each Time&quot;. <button onClick={onCancel} className="underline font-medium">Set preferences</button> to reduce questions.
+                All AI artifact items are set to &quot;Ask Each Time&quot;. <button onClick={onCancel} className="underline font-medium">Set preferences</button> to reduce questions.
               </div>
             )}
           </div>
