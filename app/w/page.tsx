@@ -88,7 +88,7 @@ interface FlagOption {
 
 type ScanLevel = "surface" | "deep" | "plagiarism" | "citations" | "style-cleanup" | "comprehensive";
 type NavItem = "library" | "workspace" | "style-rules" | "intake";
-type WorkspaceMode = "dashboard" | "edit" | "review" | "citations" | "spelling" | "grammar";
+type WorkspaceMode = "dashboard" | "edit" | "review" | "citations";
 
 interface PlagiarismResult {
   id: string;
@@ -120,7 +120,9 @@ type EditQueueItem =
   | { type: "artifact_individual"; flag: Flag }
   | { type: "writing_quality"; advisory: WritingQualityAdvisory }
   | { type: "plagiarism"; result: PlagiarismResult }
-  | { type: "citation_fix"; citation: CitationSummary };
+  | { type: "citation_fix"; citation: CitationSummary }
+  | { type: "spelling_batch"; findings: import("@/lib/analysis/grammar-spelling-types").SpellingFinding[] }
+  | { type: "grammar_batch"; findings: import("@/lib/analysis/grammar-spelling-types").GrammarFinding[] };
 
 interface CitationStructuralFlag {
   type: string;
@@ -250,7 +252,7 @@ function scoreColor(score: number | null) {
 // ── Main workspace ─────────────────────────────────────────────────────────
 
 const VALID_NAV_ITEMS = new Set<NavItem>(["library", "workspace", "style-rules", "intake"]);
-const VALID_WORKSPACE_MODES = new Set<WorkspaceMode>(["dashboard", "edit", "review", "citations", "spelling", "grammar"]);
+const VALID_WORKSPACE_MODES = new Set<WorkspaceMode>(["dashboard", "edit", "review", "citations"]);
 
 export default function WorkspacePage() {
   const searchParams = useSearchParams();
@@ -298,8 +300,8 @@ export default function WorkspacePage() {
   const [scanViewed, setScanViewed] = useState(false);
   const [versionSavedSinceScan, setVersionSavedSinceScan] = useState(true); // true initially so first scan is allowed
   const [scanConfig, setScanConfig] = useState({
-    categories: { aiDetection: true, writingQuality: true, aiArtifacts: true, plagiarism: false, citations: false, toneConsistency: true, spelling: false, grammar: false },
-    aiDetectionDepth: "surface" as "surface" | "deep" | "comprehensive",
+    categories: { aiDetection: true, writingQuality: true, aiArtifacts: true, plagiarism: true, citations: true, toneConsistency: true, spelling: true, grammar: true },
+    aiDetectionDepth: "comprehensive" as "surface" | "deep" | "comprehensive",
   });
   const [selectedFlagIdx, setSelectedFlagIdx] = useState(0);
   const [selectedOptionIdx, setSelectedOptionIdx] = useState<number | null>(null);
@@ -834,15 +836,7 @@ export default function WorkspacePage() {
   async function handleSaveVersion() {
     if (!activeDocId) return;
 
-    // Check if there are unresolved flags — warn before saving
-    const unresolved = flags.filter((f) => f.status === "open" || f.status === "generation_failed").length;
-    if (unresolved > 0) {
-      const proceed = window.confirm(
-        `You still have ${unresolved} unresolved flag${unresolved !== 1 ? "s" : ""}. Are you sure you want to save this version before finishing your edits?`
-      );
-      if (!proceed) return;
-    }
-
+    // No confirm dialog — the EditSessionSummary already shows remaining items inline
     await fetch(`/api/documents/${activeDocId}/versions`, { method: "POST" });
     setVersionSavedSinceScan(true);
     // Reload versions for the analysis chart
@@ -872,9 +866,9 @@ export default function WorkspacePage() {
       if (key === "c") { setShowChoicesPanel((prev) => !prev); return; }
       if (key === "l") { setShowLibraryPanel((prev) => !prev); return; }
       // Cmd+1..6 — workspace mode switching
-      if ((e.metaKey || e.ctrlKey) && key >= "1" && key <= "6") {
+      if ((e.metaKey || e.ctrlKey) && key >= "1" && key <= "4") {
         e.preventDefault();
-        const modes: WorkspaceMode[] = ["dashboard", "edit", "review", "citations", "spelling", "grammar"];
+        const modes: WorkspaceMode[] = ["dashboard", "edit", "review", "citations"];
         const idx = parseInt(key) - 1;
         if (idx < modes.length) { setNav("workspace"); setWorkspaceMode(modes[idx]); }
         return;
@@ -1110,8 +1104,20 @@ export default function WorkspacePage() {
       }
     }
 
+    // 7. Spelling batch
+    const spellingFindings = (activeDoc?.spellingResults as import("@/lib/analysis/grammar-spelling-types").SpellingFinding[] | null) || [];
+    if (spellingFindings.length > 0) {
+      queue.push({ type: "spelling_batch", findings: spellingFindings });
+    }
+
+    // 8. Grammar batch
+    const grammarFindings = (activeDoc?.grammarResults as import("@/lib/analysis/grammar-spelling-types").GrammarFinding[] | null) || [];
+    if (grammarFindings.length > 0) {
+      queue.push({ type: "grammar_batch", findings: grammarFindings });
+    }
+
     return queue;
-  }, [openFlags, artifactFindings, artifactFlags, writingQualityAdvisories, openPlagiarismResults, processedArtifacts, docCitations]);
+  }, [openFlags, artifactFindings, artifactFlags, writingQualityAdvisories, openPlagiarismResults, processedArtifacts, docCitations, activeDoc?.spellingResults, activeDoc?.grammarResults]);
 
   // Current queue item
   const currentQueueItem = editQueue[selectedFlagIdx] ?? null;
@@ -1802,7 +1808,8 @@ export default function WorkspacePage() {
               {nav === "workspace" && workspaceMode === "edit" && activeDoc && !currentQueueItem && hasScanned && (
                 <EditSessionSummary
                   flags={flags}
-                  onRescan={() => { handleScan(); }}
+                  spellingRemaining={((activeDoc.spellingResults as import("@/lib/analysis/grammar-spelling-types").SpellingFinding[]) || []).length}
+                  grammarRemaining={((activeDoc.grammarResults as import("@/lib/analysis/grammar-spelling-types").GrammarFinding[]) || []).length}
                   onSaveVersion={handleSaveVersion}
                   citationsPending={citationsNeedingReview}
                   onGoToCitations={() => { setNav("workspace"); setWorkspaceMode("citations"); }}
@@ -1810,10 +1817,14 @@ export default function WorkspacePage() {
               )}
 
               {nav === "workspace" && workspaceMode === "edit" && activeDoc && !currentQueueItem && !hasScanned && (
-                <EmptyPanel
-                  title="Ready to Scan"
-                  description="Click the Scan button in the toolbar to analyse your document. Choose which checks to run and how thorough to be."
-                />
+                <div className="flex h-full items-center justify-center p-8">
+                  <div className="text-center max-w-sm">
+                    <p className="text-3xl font-bold text-gray-300">Ready to scan</p>
+                    <p className="mt-4 text-sm text-gray-500">Your document is loaded. The next step is to scan it for issues.</p>
+                    <p className="mt-6 text-base font-semibold text-blue-600 animate-[intake-pulse_0.6s_ease-in-out_3]">Click the Scan button in the top-right corner</p>
+                    <p className="mt-2 text-xs text-gray-400">You can choose which checks to run and how thorough to be.</p>
+                  </div>
+                </div>
               )}
 
               {/* ── Shared navigation bar for all queue item types ──── */}
@@ -1842,6 +1853,8 @@ export default function WorkspacePage() {
                       currentQueueItem.type === "artifact_batch" || currentQueueItem.type === "artifact_individual" ? "bg-purple-100 text-purple-700" :
                       currentQueueItem.type === "writing_quality" ? "bg-blue-100 text-blue-700" :
                       currentQueueItem.type === "citation_fix" ? "bg-orange-100 text-orange-700" :
+                      currentQueueItem.type === "spelling_batch" ? "bg-red-100 text-red-700" :
+                      currentQueueItem.type === "grammar_batch" ? "bg-yellow-100 text-yellow-800" :
                       currentQueueItem.type === "plagiarism" ? (
                         currentQueueItem.result.verdict === "plagiarism" ? "bg-red-100 text-red-700" :
                         currentQueueItem.result.verdict === "close_match" ? "bg-orange-100 text-orange-700" :
@@ -1856,6 +1869,8 @@ export default function WorkspacePage() {
                        currentQueueItem.type === "artifact_individual" ? "AI Artifact" :
                        currentQueueItem.type === "writing_quality" ? "Writing Quality (Advisory)" :
                        currentQueueItem.type === "citation_fix" ? "Citation Format" :
+                       currentQueueItem.type === "spelling_batch" ? "Spelling Errors" :
+                       currentQueueItem.type === "grammar_batch" ? "Grammar Issues" :
                        currentQueueItem.type === "plagiarism" ? (
                          currentQueueItem.result.verdict === "plagiarism" ? "Plagiarism" :
                          currentQueueItem.result.verdict === "close_match" ? "Close Match" :
@@ -2058,6 +2073,50 @@ export default function WorkspacePage() {
                 </div>
               )}
 
+              {/* ── Spelling Batch ──────────────────────────────────── */}
+              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "spelling_batch" && (
+                <SpellingView
+                  findings={currentQueueItem.findings}
+                  checked={spellingChecked}
+                  onToggle={(id) => { setSpellingChecked((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; }); }}
+                  onCheckAll={() => { setSpellingChecked(new Set(currentQueueItem.findings.map((f) => f.id))); }}
+                  onUncheckAll={() => setSpellingChecked(new Set())}
+                  applying={spellingApplying}
+                  onApply={async () => {
+                    if (!activeDocId || spellingChecked.size === 0) return;
+                    setSpellingApplying(true);
+                    try {
+                      const res = await fetch("/api/spelling/bulk-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ documentId: activeDocId, fixIds: [...spellingChecked] }) });
+                      const json = await res.json();
+                      if (json.success) { await loadDocument(activeDocId); setSpellingChecked(new Set()); setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }
+                    } catch (err) { console.error("Spelling fix failed:", err); }
+                    setSpellingApplying(false);
+                  }}
+                />
+              )}
+
+              {/* ── Grammar Batch ──────────────────────────────────── */}
+              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "grammar_batch" && (
+                <GrammarView
+                  findings={currentQueueItem.findings}
+                  checked={grammarChecked}
+                  onToggle={(id) => { setGrammarChecked((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; }); }}
+                  onCheckAll={() => { setGrammarChecked(new Set(currentQueueItem.findings.map((f) => f.id))); }}
+                  onUncheckAll={() => setGrammarChecked(new Set())}
+                  applying={grammarApplying}
+                  onApply={async () => {
+                    if (!activeDocId || grammarChecked.size === 0) return;
+                    setGrammarApplying(true);
+                    try {
+                      const res = await fetch("/api/grammar/bulk-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ documentId: activeDocId, fixIds: [...grammarChecked] }) });
+                      const json = await res.json();
+                      if (json.success) { await loadDocument(activeDocId); setGrammarChecked(new Set()); setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }
+                    } catch (err) { console.error("Grammar fix failed:", err); }
+                    setGrammarApplying(false);
+                  }}
+                />
+              )}
+
               {nav === "workspace" && workspaceMode === "edit" && currentFlag && currentSection && (
                 <div className="p-4 space-y-4">
                   {/* Category badge + description */}
@@ -2233,10 +2292,13 @@ export default function WorkspacePage() {
 
               {/* ── Citations ───────────────────────────────────────────────── */}
               {nav === "workspace" && workspaceMode === "citations" && !activeDoc && (
-                <EmptyPanel
-                  title="Citations"
-                  description="This panel checks your citations for structural formatting errors. It supports APA, MLA, Chicago, Harvard, Oxford, Bluebook, OSCOLA, and business styles. Each citation gets individual flags with suggested corrections — you accept, edit, verify, or dismiss each one."
-                />
+                <div className="flex h-full items-center justify-center p-8">
+                  <div className="text-center max-w-sm">
+                    <p className="text-3xl font-bold text-gray-300">Citations</p>
+                    <p className="mt-4 text-sm text-gray-500">This panel checks your citations for formatting errors across APA, MLA, Chicago, Harvard, and other styles.</p>
+                    <p className="mt-6 text-base font-semibold text-blue-600">Load a document from the Library to get started</p>
+                  </div>
+                </div>
               )}
 
               {nav === "workspace" && workspaceMode === "citations" && activeDoc && (
@@ -2257,100 +2319,6 @@ export default function WorkspacePage() {
                 />
               )}
 
-              {/* Spelling view */}
-              {nav === "workspace" && workspaceMode === "spelling" && !activeDoc && (
-                <EmptyPanel
-                  title="Spelling"
-                  description="Upload a document and run a scan with spelling checks enabled to find and fix spelling errors."
-                />
-              )}
-              {nav === "workspace" && workspaceMode === "spelling" && activeDoc && (
-                <SpellingView
-                  findings={(activeDoc.spellingResults as import("@/lib/analysis/grammar-spelling-types").SpellingFinding[]) || []}
-                  checked={spellingChecked}
-                  onToggle={(id) => {
-                    setSpellingChecked((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(id)) next.delete(id);
-                      else next.add(id);
-                      return next;
-                    });
-                  }}
-                  onCheckAll={() => {
-                    const all = ((activeDoc.spellingResults as import("@/lib/analysis/grammar-spelling-types").SpellingFinding[]) || []).map((f) => f.id);
-                    setSpellingChecked(new Set(all));
-                  }}
-                  onUncheckAll={() => setSpellingChecked(new Set())}
-                  applying={spellingApplying}
-                  onApply={async () => {
-                    if (!activeDocId || spellingChecked.size === 0) return;
-                    setSpellingApplying(true);
-                    try {
-                      const res = await fetch("/api/spelling/bulk-fix", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ documentId: activeDocId, fixIds: [...spellingChecked] }),
-                      });
-                      const json = await res.json();
-                      if (json.success) {
-                        await loadDocument(activeDocId);
-                        setSpellingChecked(new Set());
-                      }
-                    } catch (err) {
-                      console.error("Spelling fix failed:", err);
-                    }
-                    setSpellingApplying(false);
-                  }}
-                />
-              )}
-
-              {/* Grammar view */}
-              {nav === "workspace" && workspaceMode === "grammar" && !activeDoc && (
-                <EmptyPanel
-                  title="Grammar"
-                  description="Upload a document and run a scan with grammar checks enabled to find and fix grammar errors."
-                />
-              )}
-              {nav === "workspace" && workspaceMode === "grammar" && activeDoc && (
-                <GrammarView
-                  findings={(activeDoc.grammarResults as import("@/lib/analysis/grammar-spelling-types").GrammarFinding[]) || []}
-                  checked={grammarChecked}
-                  onToggle={(id) => {
-                    setGrammarChecked((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(id)) next.delete(id);
-                      else next.add(id);
-                      return next;
-                    });
-                  }}
-                  onCheckAll={() => {
-                    const all = ((activeDoc.grammarResults as import("@/lib/analysis/grammar-spelling-types").GrammarFinding[]) || []).map((f) => f.id);
-                    setGrammarChecked(new Set(all));
-                  }}
-                  onUncheckAll={() => setGrammarChecked(new Set())}
-                  applying={grammarApplying}
-                  onApply={async () => {
-                    if (!activeDocId || grammarChecked.size === 0) return;
-                    setGrammarApplying(true);
-                    try {
-                      const res = await fetch("/api/grammar/bulk-fix", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ documentId: activeDocId, fixIds: [...grammarChecked] }),
-                      });
-                      const json = await res.json();
-                      if (json.success) {
-                        await loadDocument(activeDocId);
-                        setGrammarChecked(new Set());
-                      }
-                    } catch (err) {
-                      console.error("Grammar fix failed:", err);
-                    }
-                    setGrammarApplying(false);
-                  }}
-                />
-              )}
-
               {/* Review changes diff view */}
               {nav === "workspace" && workspaceMode === "review" && (
                 resolvedChanges.length > 0 ? (
@@ -2364,8 +2332,12 @@ export default function WorkspacePage() {
                 ) : (
                   <div className="flex h-full items-center justify-center p-8">
                     <div className="text-center max-w-sm">
-                      <p className="text-lg font-semibold text-gray-400">No changes yet</p>
-                      <p className="mt-2 text-sm text-gray-400">Edit your document first, then come back here to review what changed.</p>
+                      <p className="text-3xl font-bold text-gray-300">No changes yet</p>
+                      <p className="mt-4 text-sm text-gray-500">This panel shows a side-by-side diff of every edit you accept.</p>
+                      <p className="mt-6 text-base font-semibold text-blue-600">Go to the Edit tab and work through your flags first</p>
+                      <button onClick={() => setWorkspaceMode("edit")} className="mt-4 rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700">
+                        Go to Edit
+                      </button>
                     </div>
                   </div>
                 )
@@ -2377,8 +2349,9 @@ export default function WorkspacePage() {
                   <div className="max-w-md w-full space-y-6">
                     <div className="text-center">
                       <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Question {intakeStep + 1} of {activeIntakeQuestions.length} — optional</p>
-                      <h2 className="text-lg font-bold text-gray-800">{currentIntakeQ.title}</h2>
+                      <h2 className="font-bold text-blue-600 animate-[intake-pulse_0.6s_ease-in-out_3]" style={{ fontSize: "50px" }}>{currentIntakeQ.title}</h2>
                       <p className="mt-2 text-sm text-gray-500">{currentIntakeQ.subtitle}</p>
+                      <style>{`@keyframes intake-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
                     </div>
                     <div className="text-center">
                       <button onClick={saveIntake} className="text-xs text-gray-400 hover:text-gray-600 underline">
@@ -2392,8 +2365,9 @@ export default function WorkspacePage() {
               {nav === "intake" && !currentIntakeQ && (
                 <div className="flex h-full items-center justify-center p-8">
                   <div className="text-center max-w-sm">
-                    <p className="text-lg font-semibold text-gray-400">All done</p>
-                    <p className="mt-2 text-sm text-gray-400">Your document is ready to scan.</p>
+                    <p className="text-3xl font-bold text-gray-300">All done</p>
+                    <p className="mt-4 text-sm text-gray-500">Your document is loaded and ready.</p>
+                    <p className="mt-6 text-base font-semibold text-blue-600 animate-[intake-pulse_0.6s_ease-in-out_3]">Now click Scan in the top-right to analyse it</p>
                   </div>
                 </div>
               )}
@@ -2404,17 +2378,16 @@ export default function WorkspacePage() {
 
               {/* Default empty state — no document loaded */}
               {!activeDoc && nav === "workspace" && (
-                <EmptyPanel
-                  title="Edit Panel"
-                  description="Load a document from the Library, then use the Scan button in the toolbar to analyse it. Flagged AI patterns will appear here for you to review and fix one by one."
-                  extra={
-                    <div className="mt-4 space-y-2 text-xs text-gray-400">
-                      <p><strong className="text-gray-500">Surface Scan</strong> — Quick first pass. Catches banned words and obvious AI phrases.</p>
-                      <p><strong className="text-gray-500">Deep Scan</strong> — Second pass. Adds structural patterns and sentence-level analysis.</p>
-                      <p><strong className="text-gray-500">Comprehensive Scan</strong> — Full analysis. Semantic patterns, density, burstiness, voice checks.</p>
-                    </div>
-                  }
-                />
+                <div className="flex h-full items-center justify-center p-8">
+                  <div className="text-center max-w-md">
+                    <p className="text-3xl font-bold text-gray-300">Welcome to your workspace</p>
+                    <p className="mt-6 text-base font-semibold text-blue-600">Open a document from the Library to begin</p>
+                    <p className="mt-2 text-sm text-gray-500">or use <strong>Add New Doc</strong> in the left menu to upload one.</p>
+                    <button onClick={() => { setShowLibraryPanel(true); setNav("library"); }} className="mt-6 rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700">
+                      Open Library
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
           </div>
@@ -2671,6 +2644,38 @@ export default function WorkspacePage() {
                         >
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">{currentQueueItem.citation.correctedText ? "3" : "2"}</span>
                           <span>Dismiss</span>
+                        </button>
+                      </>
+                    )}
+
+                    {/* ── Spelling batch choices ───────────────────────── */}
+                    {currentQueueItem.type === "spelling_batch" && (
+                      <>
+                        <p className="px-1 py-1 text-[10px] text-gray-500">
+                          {spellingChecked.size > 0 ? `${spellingChecked.size} of ${currentQueueItem.findings.length} selected` : "Check items in the panel to fix them"}
+                        </p>
+                        <button
+                          onClick={() => { setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }}
+                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100"
+                        >
+                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">1</span>
+                          <span>Skip for Now</span>
+                        </button>
+                      </>
+                    )}
+
+                    {/* ── Grammar batch choices ────────────────────────── */}
+                    {currentQueueItem.type === "grammar_batch" && (
+                      <>
+                        <p className="px-1 py-1 text-[10px] text-gray-500">
+                          {grammarChecked.size > 0 ? `${grammarChecked.size} of ${currentQueueItem.findings.length} selected` : "Check items in the panel to fix them"}
+                        </p>
+                        <button
+                          onClick={() => { setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }}
+                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100"
+                        >
+                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">1</span>
+                          <span>Skip for Now</span>
                         </button>
                       </>
                     )}
@@ -3349,9 +3354,10 @@ function EmptyPanel({ title, description, extra }: { title: string; description:
 
 // ── Edit session summary (shown when all flags are resolved) ─────────────
 
-function EditSessionSummary({ flags, onRescan, onSaveVersion, citationsPending, onGoToCitations }: {
+function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, onSaveVersion, citationsPending, onGoToCitations }: {
   flags: { id: string; patternType: string; status: string }[];
-  onRescan: () => void;
+  spellingRemaining: number;
+  grammarRemaining: number;
   onSaveVersion: () => void;
   citationsPending: number;
   onGoToCitations: () => void;
@@ -3359,8 +3365,10 @@ function EditSessionSummary({ flags, onRescan, onSaveVersion, citationsPending, 
   const accepted = flags.filter((f) => f.status === "accepted");
   const skipped = flags.filter((f) => f.status === "skipped");
   const rejected = flags.filter((f) => f.status === "rejected");
+  const unresolvedFlags = flags.filter((f) => f.status === "open" || f.status === "generation_failed").length;
   const total = accepted.length + skipped.length + rejected.length;
   const hasPendingCitations = citationsPending > 0;
+  const hasRemainingWork = unresolvedFlags > 0 || spellingRemaining > 0 || grammarRemaining > 0 || hasPendingCitations;
 
   // Group accepted by category
   const categoryLabels: Record<string, string> = {
@@ -3383,28 +3391,37 @@ function EditSessionSummary({ flags, onRescan, onSaveVersion, citationsPending, 
       <div className="max-w-sm text-center space-y-5">
         <div>
           <div className={`inline-flex h-12 w-12 items-center justify-center rounded-full mb-3 ${
-            hasPendingCitations ? "bg-amber-100 text-amber-600" : "bg-green-100 text-green-600"
+            hasRemainingWork ? "bg-amber-100 text-amber-600" : "bg-green-100 text-green-600"
           }`}>
-            {hasPendingCitations ? (
+            {hasRemainingWork ? (
               <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
             ) : (
               <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
             )}
           </div>
           <h3 className="text-lg font-bold text-gray-800">
-            {hasPendingCitations ? "Flags Complete — Citations Still Need Review" : "Editing Complete"}
+            {hasRemainingWork ? "Items Still Need Attention" : "Editing Complete"}
           </h3>
-          <p className="mt-1 text-sm text-gray-500">
-            You reviewed all {total} flag{total !== 1 ? "s" : ""} in this document.
-            {hasPendingCitations && (
-              <>
-                {" "}<span className="text-amber-700 font-medium">
-                  {citationsPending} citation{citationsPending !== 1 ? "s" : ""} still need{citationsPending === 1 ? "s" : ""} review
-                </span>
-                {" "}— that&apos;s 15% of your Auditor Score.
-              </>
-            )}
-          </p>
+          {hasRemainingWork ? (
+            <div className="mt-2 space-y-1 text-sm">
+              {unresolvedFlags > 0 && (
+                <p className="text-amber-700 font-medium">{unresolvedFlags} unresolved flag{unresolvedFlags !== 1 ? "s" : ""}</p>
+              )}
+              {spellingRemaining > 0 && (
+                <p className="text-red-600 font-medium">{spellingRemaining} spelling error{spellingRemaining !== 1 ? "s" : ""}</p>
+              )}
+              {grammarRemaining > 0 && (
+                <p className="text-yellow-700 font-medium">{grammarRemaining} grammar issue{grammarRemaining !== 1 ? "s" : ""}</p>
+              )}
+              {hasPendingCitations && (
+                <p className="text-amber-700 font-medium">{citationsPending} citation{citationsPending !== 1 ? "s" : ""} to review</p>
+              )}
+            </div>
+          ) : (
+            <p className="mt-1 text-sm text-gray-500">
+              You reviewed all {total} flag{total !== 1 ? "s" : ""} in this document.
+            </p>
+          )}
         </div>
 
         {/* Stats */}
@@ -3451,18 +3468,12 @@ function EditSessionSummary({ flags, onRescan, onSaveVersion, citationsPending, 
           <button
             onClick={onSaveVersion}
             className={`w-full rounded-lg py-2 text-sm font-medium ${
-              hasPendingCitations
+              hasRemainingWork
                 ? "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
                 : "bg-blue-600 text-white hover:bg-blue-700"
             }`}
           >
             Save Version
-          </button>
-          <button
-            onClick={onRescan}
-            className="w-full rounded-lg border border-gray-300 py-2 text-sm text-gray-600 hover:bg-gray-50"
-          >
-            Re-scan Document
           </button>
         </div>
       </div>

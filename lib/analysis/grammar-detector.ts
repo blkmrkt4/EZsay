@@ -7,14 +7,23 @@ interface SectionInput {
   isLocked: boolean;
 }
 
+interface GrammarContext {
+  documentType: string;
+  audience?: string;
+}
+
 /**
  * Detects grammar errors in document sections using LLM.
+ * Strictness adapts to document type and audience.
  * Validates all character positions against actual text.
  */
 export async function detectGrammarErrors(
-  sections: SectionInput[]
+  sections: SectionInput[],
+  context?: GrammarContext,
 ): Promise<GrammarFinding[]> {
   const findings: GrammarFinding[] = [];
+  const docType = context?.documentType || "professional";
+  const audience = context?.audience || "";
 
   for (const section of sections) {
     if (section.isLocked) continue;
@@ -23,6 +32,8 @@ export async function detectGrammarErrors(
     try {
       const result = await executeActivity("detect-grammar", {
         SECTION_TEXT: section.currentText,
+        DOCUMENT_TYPE: docType,
+        AUDIENCE: audience,
       });
 
       const parsed = parseJsonResponse(result.content);

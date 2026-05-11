@@ -1,6 +1,6 @@
 "use client";
 
-type WorkspaceMode = "dashboard" | "edit" | "review" | "citations" | "spelling" | "grammar";
+type WorkspaceMode = "dashboard" | "edit" | "review" | "citations";
 
 interface WorkspaceModeStripProps {
   mode: WorkspaceMode;
@@ -11,13 +11,11 @@ interface WorkspaceModeStripProps {
 const VIEW_MODES: { key: WorkspaceMode; label: string; shortcut: string }[] = [
   { key: "dashboard", label: "Analysis", shortcut: "\u2318 1" },
   { key: "edit", label: "Edit", shortcut: "\u2318 2" },
-  { key: "review", label: "Review", shortcut: "\u2318 3" },
+  { key: "review", label: "Review Edit Choices", shortcut: "\u2318 3" },
 ];
 
 const CHECK_MODES: { key: WorkspaceMode; label: string; shortcut: string }[] = [
   { key: "citations", label: "Citations", shortcut: "\u2318 4" },
-  { key: "spelling", label: "Spelling", shortcut: "\u2318 5" },
-  { key: "grammar", label: "Grammar", shortcut: "\u2318 6" },
 ];
 
 export default function WorkspaceModeStrip({ mode, onModeChange, onCollapse }: WorkspaceModeStripProps) {

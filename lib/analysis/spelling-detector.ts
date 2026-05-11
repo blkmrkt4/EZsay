@@ -7,14 +7,20 @@ interface SectionInput {
   isLocked: boolean;
 }
 
+interface SpellingContext {
+  documentType: string;
+}
+
 /**
  * Detects spelling errors in document sections using LLM.
  * Validates all character positions against actual text.
  */
 export async function detectSpellingErrors(
-  sections: SectionInput[]
+  sections: SectionInput[],
+  context?: SpellingContext,
 ): Promise<SpellingFinding[]> {
   const findings: SpellingFinding[] = [];
+  const docType = context?.documentType || "professional";
 
   for (const section of sections) {
     if (section.isLocked) continue;
@@ -23,6 +29,7 @@ export async function detectSpellingErrors(
     try {
       const result = await executeActivity("detect-spelling", {
         SECTION_TEXT: section.currentText,
+        DOCUMENT_TYPE: docType,
       });
 
       const parsed = parseJsonResponse(result.content);

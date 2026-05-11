@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
-import { documents, sections, flags, flagOptions, styleTraining } from "@/db/schema";
-import { eq, and, inArray } from "drizzle-orm";
+import { documents, sections, flags, flagOptions, styleTraining, userArtifactOverrides, userStylePreferences } from "@/db/schema";
+import { eq, and, inArray, isNull } from "drizzle-orm";
 import { loadEntriesByType } from "@/lib/library/loader";
 import { findExactMatches } from "@/lib/analysis/exact-matcher";
 import { findRegexMatches } from "@/lib/analysis/regex-matcher";
@@ -153,9 +153,32 @@ export async function POST(request: NextRequest) {
     await db.delete(flags).where(inArray(flags.sectionId, sectionIds));
   }
 
-  // Load library entries with sensitivity filter
+  // Load user style preferences to determine which patterns to exclude
+  const [universalPrefs] = await db.select().from(userStylePreferences)
+    .where(and(eq(userStylePreferences.userId, user.id), isNull(userStylePreferences.documentType)))
+    .limit(1);
+  const [typePrefs] = doc.documentType
+    ? await db.select().from(userStylePreferences)
+        .where(and(
+          eq(userStylePreferences.userId, user.id),
+          eq(userStylePreferences.documentType, doc.documentType),
+        ))
+        .limit(1)
+    : [undefined];
+  const userPrefs = {
+    ...((universalPrefs?.preferences as Record<string, unknown>) ?? {}),
+    ...((typePrefs?.preferences as Record<string, unknown>) ?? {}),
+  };
+
+  // Build exclude list based on preferences
+  const excludePatterns: string[] = [];
+  if (userPrefs.contractions_allowed === true) {
+    excludePatterns.push("missing_contractions");
+  }
+
+  // Load library entries with sensitivity filter and preference-based exclusions
   const { exactPhrases, regexPatterns, semanticPatterns } =
-    await loadEntriesByType(doc.documentType, sensitivity);
+    await loadEntriesByType(doc.documentType, sensitivity, excludePatterns.length > 0 ? excludePatterns : undefined);
 
   // All three detection methods always run — depth only controls sensitivity (which entries load)
   const runAI = categories.aiDetection !== false;
@@ -274,21 +297,34 @@ export async function POST(request: NextRequest) {
 
   const fullText = unlockedSections.map((s) => s.currentText).join("\n\n");
 
-  // Load style training "always_keep" preferences to exclude from artifact detection
-  const keepPrefs = await db.select().from(styleTraining).where(eq(styleTraining.preference, "always_keep"));
-  const skipArtifactItems = new Set(keepPrefs.map((p) => p.item));
+  // Load style training preferences — merge global defaults with per-user overrides
+  const globalPrefs = await db.select().from(styleTraining);
+  const userOverrides = await db.select().from(userArtifactOverrides)
+    .where(eq(userArtifactOverrides.userId, user.id));
+  const overrideMap = new Map(userOverrides.map((o) => [o.styleTrainingId, o.preference]));
+  const mergedArtifactPrefs = globalPrefs.map((g) => ({
+    ...g,
+    preference: overrideMap.get(g.id) ?? g.preference,
+  }));
+  const skipArtifactItems = new Set(
+    mergedArtifactPrefs.filter((p) => p.preference === "always_keep").map((p) => p.item),
+  );
 
   const { qualityScore: writingQualityScore, aiArtifactScore } = calculateWritingQuality(fullText, skipArtifactItems);
 
   // Spelling and grammar checks (opt-in)
-  let spellingResults = null;
-  let spellingScore = null;
-  let grammarResults = null;
-  let grammarScore = null;
+  // When a category is off or fails, explicitly null out its score so stale
+  // values from a prior scan never give a false "100 — Clean" signal.
+  let spellingResults: unknown = null;
+  let spellingScore: number | null = null;
+  let grammarResults: unknown = null;
+  let grammarScore: number | null = null;
+
+  const intake = (doc.intake as { audience?: string; purpose?: string } | null) ?? {};
 
   if (categories.spelling) {
     try {
-      const findings = await detectSpellingErrors(docSections);
+      const findings = await detectSpellingErrors(docSections, { documentType: doc.documentType });
       spellingResults = findings;
       spellingScore = Math.max(0, 100 - findings.length * 5);
       if (findings.length === 0) {
@@ -301,12 +337,13 @@ export async function POST(request: NextRequest) {
       }
     } catch (err) {
       console.error("Spelling check failed during scan:", err);
+      // Score stays null — AnalysisPanel will show "Not checked"
     }
   }
 
   if (categories.grammar) {
     try {
-      const findings = await detectGrammarErrors(docSections);
+      const findings = await detectGrammarErrors(docSections, { documentType: doc.documentType, audience: intake.audience });
       grammarResults = findings;
       grammarScore = Math.max(0, 100 - findings.length * 3);
       if (findings.length === 0) {
@@ -319,6 +356,7 @@ export async function POST(request: NextRequest) {
       }
     } catch (err) {
       console.error("Grammar check failed during scan:", err);
+      // Score stays null — AnalysisPanel will show "Not checked"
     }
   }
 
@@ -330,8 +368,10 @@ export async function POST(request: NextRequest) {
       aiRiskScore,
       writingQualityScore,
       aiArtifactScore,
-      ...(spellingResults !== null && { spellingResults, spellingScore }),
-      ...(grammarResults !== null && { grammarResults, grammarScore }),
+      spellingResults,
+      spellingScore,
+      grammarResults,
+      grammarScore,
       lastRescoreAt: new Date(),
       lastScanLevel: aiDetectionDepth,
       lastScanSensitivity: sensitivity,
