@@ -206,6 +206,8 @@ All finding types flow into one sequential queue:
 
 Shared navigation bar across all types. Advisory items don't count toward flag total. Artifact batch persists with processed history until all artifacts resolved.
 
+**Option regeneration.** On any AI Detection flag the user can regenerate an individual numbered option (`FlagOption` → `/api/suggest/regenerate`). Regeneration takes an optional direction — `more_casual`, `more_formal`, `closer_to_original`, or `simpler` — and passes the previously rejected option texts as negative examples so the new suggestion doesn't repeat them. The regenerated option replaces the old one in place. The call honours the user's style preferences and the document's intake tokens. Paywalled (subscription-gated) like the rest of suggest.
+
 ### 9.1 Citations bridge
 
 Citations live in a separate tab (section 10) but a user who finishes the edit queue without seeing them would sit at 15% of their Auditor Score untouched. Two visible bridges close that gap:
@@ -230,6 +232,23 @@ Collapsible style conversion section with 8 expandable style cards (full name, u
 ## 11. Style Training
 
 44 formatting artifacts, 7 categories, 3 preferences (Always Remove, Always Keep, Ask Me Each Time). Expandable rows showing what "Remove" does. Integrated with scan: kept items excluded from detection, removed items auto-processed, ask items appear in batch review.
+
+These artifacts are **global** defaults (`style_training` table). A user can override any individual artifact for their own account via `user_artifact_overrides` (per-user `preference` keyed to a `styleTrainingId`, unique per user+artifact, cascade-deleted with the artifact).
+
+### 11.1 Style Preferences (per-user)
+
+A separate, broader preference system that lets each user set explicit style rules that steer both scanning and rewrite generation. Defined in `lib/style-settings/definitions.ts` (single source of truth for UI, defaults, and scan effects); stored in `user_style_preferences` (one row per user per `documentType`; `documentType = null` means universal). Surfaced through `components/style-settings/` and `/api/style-preferences`.
+
+- **Categories:** universal, academic, legal/professional, fiction, marketing, business, punctuation & typography, numbers & dates, capitalisation & lists, page formatting, strictness & voice. Each definition declares which `documentTypes` it applies to, an input type (select/boolean/number/text), a default, and an optional `advanced` flag.
+- **Settings panel** (`StyleSettingsPanel`) — searchable, grouped by category, filtered to the active document type. Saves are debounced per preference.
+- **Setup wizard** (`StyleWizard`) — guided multi-step first-run flow that walks the highest-priority preferences (`wizardStep` / `wizardPriority`); completion stamped in `wizardCompletedAt`.
+- **Style guide upload** (`StyleGuideUpload` → `/api/style-preferences/parse-guide`) — user uploads their own style guide; it is parsed into preference values. URL + parse time stored in `styleGuideFileUrl` / `styleGuideParsedAt`.
+- **Artifact overrides UI** (`ArtifactOverrides` → `/api/style-preferences/artifact-overrides`) — per-user keep/remove/ask overrides of the global artifacts described above.
+- **Scan & rewrite effect:** each preference declares a `scanEffect` of `prompt_token` (injects a `[BRACKET]` token into prompts), `library_toggle`, or `threshold`. Preferences feed prompt interpolation alongside the document's intake answers (see below).
+
+### 11.2 Document intake
+
+Uploaded documents carry an optional `intake` questionnaire (`documents.intake` jsonb: audience, purpose, AI usage, discipline). `lib/prompts/intake-tokens.ts` (`buildIntakeTokens`) turns these answers — with sensible per-field defaults — into prompt tokens used by suggest / evaluate / regenerate calls so rewrites match the document's stated audience and purpose.
 
 ---
 
@@ -276,6 +295,9 @@ Validates text after replacements. Catches LLM response markers (CHANGED:, OPTIO
 | Corruption checker | Done |
 | Six clickable score spectrums with detail panels | Done |
 | Style Training (44 items, 3 preferences) | Done |
+| Style Preferences (per-user wizard, settings panel, style-guide upload, artifact overrides) | Done |
+| Document intake questionnaire → prompt tokens | Done |
+| Option-level regeneration (direction + negative examples) | Done |
 | Big Test (5-model debug) | Done |
 | Phrase library (250 entries) | Done |
 | Admin: Activity Binds, Libraries, Settings, Log | Done |
@@ -292,7 +314,7 @@ Validates text after replacements. Catches LLM response markers (CHANGED:, OPTIO
 | Citations bridge from edit queue | Done | Footer count shows pending citations; end-of-queue summary retitles and surfaces "Go to Citations" primary action when citations remain. Spec in section 9.1 — implemented 2026-04-24 (pending user verification in dev server). |
 | Free-scan funnel (anonymous → email gate → claimed reveal) | Done | `/scan` lets anonymous visitors scan via Supabase anonymous sign-in. Scores show immediately; sample flagged sentences gated behind email verification (`updateUser({ email })` magic link). New `free` plan tier in `lib/stripe/plan-limits.ts` caps unsubscribed users at 1 scan / 5,000-word doc / 1 doc storage. Spec in §22 — implemented 2026-04-25. **Requires:** Anonymous Sign-Ins enabled in Supabase Authentication → Providers. |
 | Full Stripe integration | Done | Checkout, subscription sync, access gating live as of 2026-05-09. Live webhook at `https://ezsay.byzyb.ai/api/webhooks/stripe`. |
-| Enable Supabase Row-Level Security | High — pre-launch blocker | Tables currently unprotected at the DB level — all access control runs through API route guards. Before opening signup to the public, enable RLS on `documents`, `sections`, `flags`, `flag_options`, `citations`, `style_profiles`, `profiles`, and any user-scoped table, with policies that restrict reads/writes to `auth.uid() = user_id`. |
+| Enable Supabase Row-Level Security | High — pre-launch blocker | Tables currently unprotected at the DB level — all access control runs through API route guards. Before opening signup to the public, enable RLS on `documents`, `sections`, `flags`, `flag_options`, `citations`, `style_profiles`, `profiles`, `user_style_preferences`, `user_artifact_overrides`, `usage_tracking`, `events`, and any user-scoped table, with policies that restrict reads/writes to `auth.uid() = user_id`. |
 | Disable `DEV_BYPASS_AUTH` and remove dev-only UI | High — pre-launch blocker | `DEV_BYPASS_AUTH` is currently `true` locally and not yet flipped to `false` in Vercel production. Dev-only buttons / debug controls are still rendered in some screens. Both must be cleaned up before public launch. References: `lib/supabase/middleware.ts`, `lib/supabase/dev-auth.ts`. |
 | PDF export | Rejected | Considered but server-side PDF generation produces poor output (broken Unicode, no font embedding, manual layout). Students can export .docx and use Word/Google Docs "Save as PDF" for better results. |
 | Mobile responsive | Medium | Desktop-first |
