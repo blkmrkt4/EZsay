@@ -5,17 +5,28 @@ import { documents, sections, flags, llmCallLog } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { callOpenRouter } from "@/lib/routing/openrouter";
 
-const SYSTEM_PROMPT = `You are a writing consistency analyser. Examine the document for:
+const SYSTEM_PROMPT = `You are a writing consistency analyser. You check for tone and voice consistency ONLY — not grammar, spelling, or sentence correctness.
 
-1. **Tone shifts** — places where the formality level changes (formal → casual, academic → conversational, or vice versa). Flag where the shift happens and what changed.
+CRITICAL RULE: Do NOT flag grammar errors, spelling mistakes, missing articles, subject-verb disagreement, or any other language correctness issue. Those are handled by a separate grammar checker. Your job is ONLY about consistency of tone, voice, and register across the document. If the entire document is written in the same (even if poor) style, that is CONSISTENT and should NOT be flagged.
+
+Examine the document for:
+
+1. **Tone shifts** — places where the formality level CHANGES within the document (formal → casual, academic → conversational, or vice versa). The key word is CHANGES — if the whole document is informal, that is consistent, not a tone shift. Only flag when one part differs from the rest.
 
 2. **Voice inconsistencies** — switches between first person ("I argue"), third person ("the author argues"), and passive voice ("it is argued") within the same section. Some mixing is natural, but abrupt switches are a problem.
 
-3. **Register changes** — academic jargon in one paragraph, then plain language in the next. Or British spelling ("colour") mixed with American ("color").
+3. **Register changes** — academic jargon in one paragraph, then plain language in the next. Or British spelling ("colour") mixed with American ("color"). Again, only flag CHANGES, not a consistently informal register.
 
 4. **Contradictions** — where the document makes a claim in one place that conflicts with another claim elsewhere.
 
 5. **Repetition** — where the same idea is restated in a different section without adding new insight.
+
+Things that are NOT tone inconsistency (do NOT flag these):
+- Grammar errors ("it make you feel" — that's grammar, not tone)
+- Spelling mistakes ("importent" — that's spelling, not tone)
+- Missing articles ("exercise is must" — that's grammar, not tone)
+- Poor writing quality throughout — if it's consistently poor, it's consistent
+- Simple or informal language — if the whole document is casual, that's fine
 
 For each issue found, respond with a JSON array entry:
 

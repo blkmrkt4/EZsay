@@ -30,6 +30,8 @@ interface EditPanelProps {
   isManualEditing: boolean;
   manualText: string;
   onManualTextChange: (text: string) => void;
+  onRegenerate?: (optionIndex: number, direction: string) => void;
+  regeneratingOptionId?: string | null;
 }
 
 /**
@@ -50,6 +52,8 @@ export default function EditPanel({
   isManualEditing,
   manualText,
   onManualTextChange,
+  onRegenerate,
+  regeneratingOptionId,
 }: EditPanelProps) {
   if (!flag) {
     return (
@@ -118,6 +122,16 @@ export default function EditPanel({
               isSelected={selectedIndex === opt.number - 1}
               isEditMyself={opt.isEditMyself}
               onSelect={() => onSelect(opt.number - 1)}
+              onRegenerate={
+                !opt.isEditMyself && onRegenerate
+                  ? (direction) => onRegenerate(opt.number - 1, direction)
+                  : undefined
+              }
+              isRegenerating={
+                !opt.isEditMyself &&
+                !!regeneratingOptionId &&
+                options[opt.number - 1]?.id === regeneratingOptionId
+              }
             />
           ))}
         </div>

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
-import { flags, sections, documents, flagOptions, llmCallLog } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { flags, sections, documents, flagOptions, llmCallLog, userStylePreferences } from "@/db/schema";
+import { eq, and, isNull } from "drizzle-orm";
 import { executeActivity } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { buildIntakeTokens } from "@/lib/prompts/intake-tokens";
@@ -69,7 +69,25 @@ export async function POST(request: NextRequest) {
 
   const docType = doc.documentType || "professional";
   const slug = docType === "academic" ? "suggest-academic" : "suggest-rewrite";
-  const intakeTokens = buildIntakeTokens(docType, doc.intake as Record<string, string> | null);
+
+  // Load user style preferences (universal + type-specific merged)
+  const [universalPrefs] = await db.select().from(userStylePreferences)
+    .where(and(eq(userStylePreferences.userId, user.id), isNull(userStylePreferences.documentType)))
+    .limit(1);
+  const [typePrefs] = docType
+    ? await db.select().from(userStylePreferences)
+        .where(and(
+          eq(userStylePreferences.userId, user.id),
+          eq(userStylePreferences.documentType, docType as "academic" | "professional" | "casual" | "legal"),
+        ))
+        .limit(1)
+    : [undefined];
+  const stylePrefs = {
+    ...((universalPrefs?.preferences as Record<string, unknown>) ?? {}),
+    ...((typePrefs?.preferences as Record<string, unknown>) ?? {}),
+  };
+
+  const intakeTokens = buildIntakeTokens(docType, doc.intake as Record<string, string> | null, stylePrefs);
 
   try {
     // Call OpenRouter via Activity Binds

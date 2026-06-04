@@ -41,6 +41,7 @@ interface EditingShellProps {
   flagOptions: FlagOption[];
   onFlagResolved: (flagId: string, action: "accepted" | "rejected" | "skipped", optionId?: string, manualText?: string) => Promise<boolean>;
   onRescore: () => void;
+  onOptionRegenerated?: (oldOptionId: string, newOption: FlagOption) => void;
 }
 
 export default function EditingShell({
@@ -50,6 +51,7 @@ export default function EditingShell({
   flagOptions,
   onFlagResolved,
   onRescore,
+  onOptionRegenerated,
 }: EditingShellProps) {
   const isMobile = useMediaQuery("(max-width: 768px)");
   const [docPanelOpen, setDocPanelOpen] = useState(false);
@@ -58,6 +60,7 @@ export default function EditingShell({
   const [isManualEditing, setIsManualEditing] = useState(false);
   const [manualText, setManualText] = useState("");
   const [resolveError, setResolveError] = useState<string | null>(null);
+  const [regeneratingOptionId, setRegeneratingOptionId] = useState<string | null>(null);
 
   // Section lookup map — O(1) instead of O(n) per .find() call
   const sectionMap = useMemo(() => {
@@ -196,6 +199,42 @@ export default function EditingShell({
     if (flagIdx !== -1) {
       setCurrentFlagIdx(flagIdx);
       setSelectedOptionIndex(null);
+    }
+  }
+
+  async function handleRegenerate(optionIndex: number, direction: string) {
+    if (!currentFlag || regeneratingOptionId) return;
+    const option = currentOptions[optionIndex];
+    if (!option) return;
+
+    setRegeneratingOptionId(option.id);
+    setResolveError(null);
+
+    try {
+      const res = await fetch("/api/suggest/regenerate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          flagId: currentFlag.id,
+          optionId: option.id,
+          direction,
+          rejectTexts: [option.text],
+        }),
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        onOptionRegenerated?.(option.id, json.data);
+        // Clear selection if the regenerated option was selected
+        if (selectedOptionIndex === optionIndex) {
+          setSelectedOptionIndex(null);
+        }
+      } else {
+        setResolveError(json.error || "Failed to regenerate. Please try again.");
+      }
+    } catch {
+      setResolveError("Could not connect to the server. Please try again.");
+    } finally {
+      setRegeneratingOptionId(null);
     }
   }
 
@@ -345,6 +384,8 @@ export default function EditingShell({
           isManualEditing={isManualEditing}
           manualText={manualText}
           onManualTextChange={setManualText}
+          onRegenerate={handleRegenerate}
+          regeneratingOptionId={regeneratingOptionId}
         />
       </main>
 

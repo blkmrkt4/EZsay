@@ -62,13 +62,15 @@ export async function parsePdfWithMeta(buffer: ArrayBuffer): Promise<PdfParseRes
   const extractedWordCount = joined.length > 0 ? joined.split(/\s+/).length : 0;
   const averageWordsPerPage = pageCount > 0 ? extractedWordCount / pageCount : extractedWordCount;
 
-  // Confidence based on words-per-page — reliable regardless of page break encoding.
-  // A typical text page has 250-350 words. Cover pages, bibliography, etc. lower the average.
-  const likelyGraphicsHeavy = pageCount >= 2 && averageWordsPerPage < 30;
+  // Confidence based on total extracted words and words-per-page.
+  // A typical text page has 250-350 words. Cover pages, bibliography, form pages,
+  // and reference lists lower the average — that's normal, not a sign of failure.
+  // Only flag genuinely image-based PDFs where extraction truly failed.
+  const likelyGraphicsHeavy = pageCount >= 3 && averageWordsPerPage < 15;
   const confidence: "high" | "medium" | "low" =
-    extractedWordCount < 120 || averageWordsPerPage < 30
+    extractedWordCount < 80 || (pageCount >= 3 && averageWordsPerPage < 15)
       ? "low"
-      : averageWordsPerPage < 100
+      : extractedWordCount < 200 || averageWordsPerPage < 50
         ? "medium"
         : "high";
 

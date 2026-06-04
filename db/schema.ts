@@ -403,6 +403,38 @@ export const styleTraining = pgTable("style_training", {
   sortOrder: integer("sort_order").notNull().default(0),
 });
 
+// ── User Style Preferences ────────────────────────────────────────────────
+// Explicit style rules a user sets (citation format, indentation, etc.)
+// One row per user per document type. documentType = null means universal.
+
+export const userStylePreferences = pgTable("user_style_preferences", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull(),
+  documentType: documentTypeEnum("document_type"),
+  preferences: jsonb("preferences").notNull().default({}),
+  wizardCompletedAt: timestamp("wizard_completed_at", { withTimezone: true }),
+  styleGuideFileUrl: text("style_guide_file_url"),
+  styleGuideParsedAt: timestamp("style_guide_parsed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex("user_style_prefs_user_doctype_idx").on(t.userId, t.documentType),
+]);
+
+// ── User Artifact Overrides ───────────────────────────────────────────────
+// Per-user overrides of global styleTraining preferences.
+
+export const userArtifactOverrides = pgTable("user_artifact_overrides", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull(),
+  styleTrainingId: uuid("style_training_id").notNull()
+    .references(() => styleTraining.id, { onDelete: "cascade" }),
+  preference: styleTrainingPreferenceEnum("preference").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex("user_artifact_override_idx").on(t.userId, t.styleTrainingId),
+]);
+
 // ── Admin: Activity Binds ──────────────────────────────────────────────────
 // A bind ties a slug to selections from the three libraries above.
 // System slugs are auto-populated and cannot be deleted.

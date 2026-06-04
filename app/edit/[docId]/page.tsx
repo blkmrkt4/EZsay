@@ -141,6 +141,15 @@ export default function EditPage() {
     }
   }
 
+  function handleOptionRegenerated(
+    oldOptionId: string,
+    newOption: FlagOption,
+  ) {
+    setFlagOptions((prev) =>
+      prev.map((o) => (o.id === oldOptionId ? newOption : o)),
+    );
+  }
+
   async function handleRescore() {
     try {
       const res = await fetch("/api/rescore", {
@@ -252,6 +261,7 @@ export default function EditPage() {
       flagOptions={flagOptions}
       onFlagResolved={handleFlagResolved}
       onRescore={handleRescore}
+      onOptionRegenerated={handleOptionRegenerated}
     />
         )}
       </div>

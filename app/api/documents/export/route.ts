@@ -99,38 +99,58 @@ async function loadMergedPreferences(userId: string, documentType: string): Prom
 // ── Preference → DOCX value mappings ─────────────────────────────────────────
 
 function resolveFont(prefs: Preferences): string {
+  // Exact font name takes priority over the basic preference
+  const exact = prefs.font_name as string | undefined;
+  if (exact && exact.trim()) return exact.trim();
   const pref = prefs.font_preference as string | undefined;
   if (pref === "serif") return "Times New Roman";
   if (pref === "sans_serif") return "Calibri";
-  return "Times New Roman"; // default
+  return "Times New Roman";
 }
 
 function resolveFontSize(prefs: Preferences): number {
   // DOCX sizes are in half-points (24 = 12pt)
+  // Exact size takes priority
+  const exact = prefs.font_size_exact;
+  if (exact && Number(exact) > 0) return Number(exact) * 2;
   const pref = prefs.font_size as string | undefined;
   if (pref === "10") return 20;
   if (pref === "11") return 22;
   if (pref === "12") return 24;
-  return 24; // default 12pt
+  return 24;
 }
 
 function resolveLineSpacing(prefs: Preferences): number {
-  // DOCX line spacing in 240ths of a line
   const pref = prefs.line_spacing as string | undefined;
   if (pref === "single") return 240;
   if (pref === "1.5") return 360;
   if (pref === "double") return 480;
-  return 360; // default 1.5
+  return 360;
 }
 
 function resolveMargins(prefs: Preferences): { top: number; right: number; bottom: number; left: number } {
+  // Exact per-side margins take priority over the basic preset
+  const topExact = parseFloat(prefs.margin_top_inches as string);
+  const bottomExact = parseFloat(prefs.margin_bottom_inches as string);
+  const leftExact = parseFloat(prefs.margin_left_inches as string);
+  const rightExact = parseFloat(prefs.margin_right_inches as string);
+  const hasExact = [topExact, bottomExact, leftExact, rightExact].some((v) => v > 0);
+
+  if (hasExact) {
+    return {
+      top: convertInchesToTwip(topExact > 0 ? topExact : 1),
+      bottom: convertInchesToTwip(bottomExact > 0 ? bottomExact : 1),
+      left: convertInchesToTwip(leftExact > 0 ? leftExact : 1),
+      right: convertInchesToTwip(rightExact > 0 ? rightExact : 1),
+    };
+  }
+
   const pref = prefs.margin_size as string | undefined;
   if (pref === "1.25_inch") return { top: convertInchesToTwip(1.25), right: convertInchesToTwip(1.25), bottom: convertInchesToTwip(1.25), left: convertInchesToTwip(1.25) };
   if (pref === "2.5_cm") {
-    const twip = Math.round(2.5 / 2.54 * 1440); // cm to inches to twip
+    const twip = Math.round(2.5 / 2.54 * 1440);
     return { top: twip, right: twip, bottom: twip, left: twip };
   }
-  // Default: 1 inch
   return { top: 1440, right: 1440, bottom: 1440, left: 1440 };
 }
 
@@ -142,8 +162,11 @@ function resolveAlignment(prefs: Preferences): typeof AlignmentType[keyof typeof
 
 function resolveIndent(prefs: Preferences): number | undefined {
   const pref = prefs.paragraph_indent;
-  if (pref === true || pref === "first_line") return 720; // 0.5 inch in twip
-  return undefined;
+  if (pref !== true && pref !== "first_line") return undefined;
+  // Custom indent size takes priority
+  const exact = parseFloat(prefs.indent_size_inches as string);
+  if (exact > 0) return convertInchesToTwip(exact);
+  return 720; // default 0.5 inch
 }
 
 // ── DOCX generation ──────────────────────────────────────────────────────────
@@ -240,12 +263,27 @@ async function generateDocx(
     );
   }
 
+  // Running header
+  const headerText = prefs.header_text as string | undefined;
+  const headerChildren: Paragraph[] = [];
+  if (headerText && headerText.trim()) {
+    headerChildren.push(
+      new Paragraph({
+        children: [new TextRun({ text: headerText.trim(), size: fontSize - 4, font, color: "666666" })],
+        alignment: AlignmentType.RIGHT,
+      })
+    );
+  }
+
   const docxDoc = new Document({
     sections: [
       {
         properties: {
           page: { margin: margins },
         },
+        ...(headerChildren.length > 0 ? {
+          headers: { default: new Header({ children: headerChildren }) },
+        } : {}),
         ...(footerChildren.length > 0 ? {
           footers: { default: new Footer({ children: footerChildren }) },
         } : {}),

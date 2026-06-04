@@ -127,11 +127,20 @@ export function parseAndSplit(rawText: string): ParsedDocument {
     const trimmed = para.trim();
     if (trimmed.length === 0) continue;
 
+    // Normalize internal whitespace artifacts from PDF extraction:
+    // 1. Unwrap soft line breaks (single \n not preceded by sentence-ending punctuation)
+    //    into spaces — these are PDF line-wrap artifacts, not real paragraph breaks.
+    // 2. Collapse multiple spaces into one — artifacts from justified text layout.
+    // 3. Preserve leading indentation per line (re-applied after normalization).
+    const normalized = trimmed
+      .replace(/([^\n])\n(?!\n)/g, "$1 ")  // unwrap soft line breaks
+      .replace(/[ \t]{2,}/g, " ");          // collapse multiple spaces/tabs
+
     // Check if this paragraph is just a citation reference
-    const isCitation = REFERENCE_HEADERS.includes(trimmed.toLowerCase());
+    const isCitation = REFERENCE_HEADERS.includes(normalized.toLowerCase());
 
     sections.push({
-      text: trimmed,
+      text: normalized,
       isLocked: isCitation,
     });
   }

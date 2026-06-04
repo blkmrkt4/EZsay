@@ -42,16 +42,22 @@ export async function loadActiveEntries(
 
 /**
  * Returns entries grouped by type for the three detection code paths.
+ * Optional excludePatterns filters out semantic patterns by their value identifier
+ * (e.g. "missing_contractions") — used when user style preferences make a pattern irrelevant.
  */
 export async function loadEntriesByType(
   documentType: string,
-  sensitivity: Sensitivity = "medium"
+  sensitivity: Sensitivity = "medium",
+  excludePatterns?: string[],
 ) {
   const entries = await loadActiveEntries(documentType, sensitivity);
+  const excludeSet = excludePatterns ? new Set(excludePatterns) : null;
 
   return {
     exactPhrases: entries.filter((e) => e.entryType === "exact_phrase"),
     regexPatterns: entries.filter((e) => e.entryType === "regex_pattern"),
-    semanticPatterns: entries.filter((e) => e.entryType === "semantic_pattern"),
+    semanticPatterns: entries.filter(
+      (e) => e.entryType === "semantic_pattern" && (!excludeSet || !excludeSet.has(e.value)),
+    ),
   };
 }
