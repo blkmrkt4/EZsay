@@ -372,12 +372,30 @@ export default function Home() {
             <span className="text-xs text-gray-500">
               EZsay. Your voice, louder.
             </span>
-            <div className="flex gap-5">
+            <div className="flex flex-wrap justify-center gap-5">
               <Link
                 href="/pricing"
                 className="text-xs text-gray-500 hover:text-gray-300"
               >
                 Pricing
+              </Link>
+              <Link
+                href="/terms"
+                className="text-xs text-gray-500 hover:text-gray-300"
+              >
+                Terms
+              </Link>
+              <Link
+                href="/privacy"
+                className="text-xs text-gray-500 hover:text-gray-300"
+              >
+                Privacy
+              </Link>
+              <Link
+                href="/refund"
+                className="text-xs text-gray-500 hover:text-gray-300"
+              >
+                Refunds
               </Link>
               <Link
                 href="/login"

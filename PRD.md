@@ -2,7 +2,7 @@
 
 **Product name:** EzSay
 **Version:** 1.0
-**Status:** Pre-launch — feature-complete, deployed to production at `ezsay.byzyb.ai`. Outstanding before public launch: enable Supabase RLS, disable `DEV_BYPASS_AUTH`, remove dev-only UI buttons.
+**Status:** Pre-launch — feature-complete, deployed to production at `ezsay.byzyb.ai`. Live Stripe payment flow verified, legal pages and security headers added (2026-06-04). Outstanding before public launch: enable Supabase RLS, configure custom email SMTP, add anonymous-scan cost-abuse controls (OpenRouter spend cap + CAPTCHA), fill real legal details in `lib/legal/meta.ts`, disable `DEV_BYPASS_AUTH` in Vercel. See §19 checklist.
 **Owner:** Robin Hutchinson
 **Last updated:** May 9, 2026
 
@@ -406,12 +406,23 @@ DEV_BYPASS_AUTH=false
 
 Sign-in with Google is mediated by Supabase. Google's OAuth client is configured with Supabase's `*.supabase.co/auth/v1/callback` as the only redirect URI — Google never sees the app's domain — so adding `ezsay.byzyb.ai` to Google Cloud Console is **not required** when changing the app domain. Updating Supabase Redirect URLs is sufficient.
 
-### Pre-public-launch checklist (outstanding)
+### Pre-public-launch checklist
 
-- [ ] **Enable Row-Level Security** on all user-scoped tables in Supabase. Tables today are unprotected at the DB level — access control runs through API route guards only. RLS is the second line of defence and is required before opening signup to the public.
-- [ ] **Disable `DEV_BYPASS_AUTH`** in Vercel production environment (set to `false` or unset).
-- [ ] **Remove dev-only UI buttons** still rendered in some screens. References: `lib/supabase/middleware.ts`, `lib/supabase/dev-auth.ts`, plus any in-page dev shortcuts wired via these.
-- [ ] **End-to-end smoke test** in production: signup → upload → scan → paywall → real Stripe checkout → webhook delivery (200) → workspace access → refund flow.
+**Done**
+
+- [x] **End-to-end production payment test** — full signup → upload → scan → paywall → real Stripe card checkout verified working (2026-06-04).
+- [x] **Legal pages** — `/terms`, `/privacy`, `/refund` added as static routes (`app/terms`, `app/privacy`, `app/refund`), built on `components/legal/LegalShell.tsx`. Company/contact/jurisdiction details are centralised in `lib/legal/meta.ts` and **still carry scaffold placeholders** (`companyName`, `jurisdiction`, `contactEmail`) that must be filled with real values. Footer links to all three added on the landing and pricing pages. Content is a starting-point scaffold — review (ideally with counsel) before relying on it.
+- [x] **Baseline security headers** — `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Permissions-Policy` added via `next.config.ts` `headers()`. (Full CSP deferred — needs per-route nonces.)
+- [x] **Dev-only UI confirmed prod-safe** — `components/dev/DevTools.tsx` returns `null` and tree-shakes out of prod bundles via the `NODE_ENV` check; `DEV_BYPASS_AUTH` is gated behind `NODE_ENV === "development"` everywhere it is read, so it is inert in Vercel production regardless of the env value. `/api/dev/reset` returns 403 outside development (verified live).
+- [x] **API-layer access control audited** — all 43 API routes authenticate and scope every user-data query by `userId` (or join child→parent and check ownership). No IDOR gaps found. Webhook verifies Stripe signatures.
+
+**Outstanding**
+
+- [ ] **Enable Row-Level Security** on all user-scoped tables in Supabase (`documents`, `sections`, `flags`, `flag_options`, `citations`, `plagiarism_results`, `style_profiles`, `usage_tracking`, `profiles`) with `auth.uid() = user_id` policies. App-layer guards are correct and complete today, so this is defence-in-depth — but required before opening public signup.
+- [ ] **Disable `DEV_BYPASS_AUTH`** in Vercel production (set to `false` or unset) — hygiene; already inert via the `NODE_ENV` gate.
+- [ ] **Fill real legal details** in `lib/legal/meta.ts` (operating entity, jurisdiction/governing law, monitored contact inbox) and review the Terms/Privacy/Refund copy.
+- [ ] **Email deliverability** — confirm Supabase Auth uses a custom SMTP provider (Resend/Postmark/SES). The built-in shared SMTP is rate-limited to a few sends/hour and spam-prone, which will silently break signup confirmations and the free-scan magic-link email gate at any real volume.
+- [ ] **Cost-abuse controls on paid-API endpoints** — the free `/api/scan` is deterministic (no LLM spend), but `/scan` mints anonymous Supabase sessions with no friction. As of 2026-06-04 the two paid-API endpoints that previously only checked auth — `/api/plagiarism` (OpenRouter + Tavily) and `/api/tone-consistency` (OpenRouter) — are now behind `requireSubscription` (matching suggest/evaluate/citations/rescore), and tone-consistency now has a 5/min rate limit. **Remaining (dashboard):** set a hard OpenRouter monthly spend cap and enable Supabase CAPTCHA / abuse protection for anonymous sign-ins as defence-in-depth. The in-memory per-`userId` rate limiter (`lib/rate-limit.ts`) is per-instance best-effort; consider Redis/Upstash + IP-based limiting later.
 
 ---
 

@@ -4,6 +4,8 @@ import { db } from "@/db";
 import { documents, sections, flags, llmCallLog } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { callOpenRouter } from "@/lib/routing/openrouter";
+import { requireSubscription } from "@/lib/stripe/require-subscription";
+import { rateLimit } from "@/lib/rate-limit";
 
 const SYSTEM_PROMPT = `You are a writing consistency analyser. You check for tone and voice consistency ONLY — not grammar, spelling, or sentence correctness.
 
@@ -93,6 +95,18 @@ export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Paywall: tone analysis spends OpenRouter credits, so it is a paid feature.
+  // Gate it like suggest/evaluate/citations so anonymous and free-tier sessions
+  // can't trigger paid API calls.
+  const gateResponse = await requireSubscription(user.id);
+  if (gateResponse) return gateResponse;
+
+  // Rate limit: 5 tone checks per minute per user
+  const rl = rateLimit(`tone-consistency:${user.id}`, 5, 60_000);
+  if (rl.limited) {
+    return NextResponse.json({ success: false, error: "Too many tone checks. Please wait a moment." }, { status: 429 });
   }
 
   const { documentId } = await request.json();

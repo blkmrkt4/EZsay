@@ -6,6 +6,7 @@ import { eq, and } from "drizzle-orm";
 import { callOpenRouter } from "@/lib/routing/openrouter";
 import { webSearch } from "@/lib/search/tavily";
 import { rateLimit } from "@/lib/rate-limit";
+import { requireSubscription } from "@/lib/stripe/require-subscription";
 
 const QUERY_SYSTEM = `You generate web search queries for plagiarism checking.
 
@@ -96,6 +97,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
   }
 
+  // Paywall: plagiarism checking spends OpenRouter + web-search credits, so it
+  // is a paid feature. Gate it like suggest/evaluate/citations so anonymous and
+  // free-tier sessions can't trigger paid API calls.
+  const gateResponse = await requireSubscription(user.id);
+  if (gateResponse) return gateResponse;
+
   // Rate limit: 5 plagiarism checks per minute per user
   const rl = rateLimit(`plagiarism:${user.id}`, 5, 60_000);
   if (rl.limited) {
@@ -169,7 +176,7 @@ export async function POST(request: NextRequest) {
     .map((p, i) => `[${i + 1}] ${p.text}`)
     .join("\n\n");
 
-  let queryMap: Map<number, string> = new Map();
+  const queryMap: Map<number, string> = new Map();
 
   try {
     const queryResult = await callOpenRouter(
