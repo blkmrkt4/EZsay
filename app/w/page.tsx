@@ -13,7 +13,7 @@ import DiffDocPanel from "@/components/editor/DiffDocPanel";
 import DiffEditPanel from "@/components/editor/DiffEditPanel";
 import DiffChoicesPanel from "@/components/editor/DiffChoicesPanel";
 import { trackEvent } from "@/lib/events/track-client";
-import { wordDiff } from "@/lib/analysis/word-diff";
+import { wordDiff, alignOptions, type AlignBlock } from "@/lib/analysis/word-diff";
 import StyleSettingsPanel from "@/components/style-settings/StyleSettingsPanel";
 import WorkspaceModeStrip from "@/components/editor/WorkspaceModeStrip";
 import Link from "next/link";
@@ -306,6 +306,10 @@ export default function WorkspacePage() {
   const [selectedFlagIdx, setSelectedFlagIdx] = useState(0);
   const [selectedOptionIdx, setSelectedOptionIdx] = useState<number | null>(null);
   const [manualEditText, setManualEditText] = useState("");
+  // Change walkthrough (Direction C): cursor over the divergent blocks + autoplay.
+  const [activeChangeIdx, setActiveChangeIdx] = useState<number | null>(null);
+  const [isPlayingChanges, setIsPlayingChanges] = useState(false);
+  const changeRefs = useRef<Map<number, HTMLElement>>(new Map());
 
   // Panel visibility — four panels: Library, Doc, Edit, Choices
   // Library shows when no doc loaded; Doc replaces it once a doc is selected
@@ -1126,6 +1130,71 @@ export default function WorkspacePage() {
     : null;
   const currentSection = currentFlag ? sectionMap.get(currentFlag.sectionId) ?? null : null;
   const currentOptions = currentFlag ? flagOptions.filter((o) => o.flagId === currentFlag.id) : [];
+
+  // Alignment across the current options: what they all share vs. where they
+  // diverge. Powers the only-show-the-difference option cards and morph stage.
+  // Artifact flags are tiny punctuation swaps — alignment adds nothing there.
+  const optionAlignKey =
+    currentFlag?.patternType === "ai_artifact"
+      ? "artifact"
+      : currentOptions.map((o) => o.id).join("|") + "#" + currentOptions.reduce((n, o) => n + o.text.length, 0);
+  const optionAlignment = useMemo(
+    () =>
+      currentFlag?.patternType === "ai_artifact" || currentOptions.length < 2
+        ? null
+        : alignOptions(currentOptions.map((o) => o.text)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [optionAlignKey]
+  );
+  // Just the divergent blocks, in order — the "changes" the play walkthrough steps through.
+  const divergentBlocks = useMemo(
+    () => (optionAlignment ?? []).filter((b): b is Extract<AlignBlock, { kind: "divergent" }> => b.kind === "divergent"),
+    [optionAlignment]
+  );
+
+  // Walkthrough cursor: step manually or let it autoplay through the changes.
+  const stepChange = useCallback((dir: number) => {
+    setIsPlayingChanges(false);
+    setActiveChangeIdx((prev) => {
+      const n = divergentBlocks.length;
+      if (n === 0) return null;
+      const next = prev === null ? (dir > 0 ? 0 : n - 1) : prev + dir;
+      return next < 0 || next >= n ? prev : next;
+    });
+  }, [divergentBlocks.length]);
+
+  // Autoplay tick.
+  useEffect(() => {
+    if (!isPlayingChanges) return;
+    const n = divergentBlocks.length;
+    if (n === 0) { setIsPlayingChanges(false); return; }
+    setActiveChangeIdx((prev) => (prev === null ? 0 : prev));
+    const id = setInterval(() => {
+      setActiveChangeIdx((prev) => {
+        const cur = prev === null ? 0 : prev;
+        if (cur >= n - 1) { setIsPlayingChanges(false); return cur; }
+        return cur + 1;
+      });
+    }, 1500);
+    return () => clearInterval(id);
+  }, [isPlayingChanges, divergentBlocks.length]);
+
+  // Scroll the active change into view and keep the document panel in step.
+  useEffect(() => {
+    if (activeChangeIdx === null) return;
+    changeRefs.current.get(activeChangeIdx)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (currentFlag) {
+      document
+        .querySelector(`[data-section-id="${currentFlag.sectionId}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [activeChangeIdx, currentFlag]);
+
+  // Reset the walkthrough whenever the active flag changes.
+  useEffect(() => {
+    setActiveChangeIdx(null);
+    setIsPlayingChanges(false);
+  }, [selectedFlagIdx]);
 
   // Flag count excludes advisory items
   const actionableFlagCount = editQueue.filter((item) => item.type !== "writing_quality").length;
@@ -2174,6 +2243,59 @@ export default function WorkspacePage() {
                     })()}
                   </div>
 
+                  {/* Morph stage (A) — the passage shown once; only the diverging
+                      spans swap to the selected option, animating in place. */}
+                  {optionAlignment && currentOptions.length > 0 && (() => {
+                    const stageIdx = selectedOptionIdx != null && selectedOptionIdx < currentOptions.length ? selectedOptionIdx : 0;
+                    const nChanges = divergentBlocks.length;
+                    return (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-4">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                            Preview — Option {stageIdx + 1} in context
+                          </span>
+                          {nChanges >= 1 && (
+                            <div className="flex items-center gap-1">
+                              {activeChangeIdx !== null && (
+                                <span className="mr-1 text-[10px] tabular-nums text-gray-400">
+                                  change {activeChangeIdx + 1} of {nChanges}
+                                </span>
+                              )}
+                              <button
+                                onClick={() => stepChange(-1)}
+                                className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                                title="Previous change (←)"
+                                aria-label="Previous change"
+                              >‹</button>
+                              <button
+                                onClick={() => setIsPlayingChanges((p) => !p)}
+                                className="rounded px-2 py-0.5 text-[11px] font-medium text-blue-600 hover:bg-blue-50"
+                                title="Play through the changes"
+                              >
+                                {isPlayingChanges ? "❚❚ Pause" : "▶ Tour changes"}
+                              </button>
+                              <button
+                                onClick={() => stepChange(1)}
+                                className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                                title="Next change (→)"
+                                aria-label="Next change"
+                              >›</button>
+                            </div>
+                          )}
+                        </div>
+                        <MorphStage
+                          blocks={optionAlignment}
+                          optionIndex={stageIdx}
+                          activeChangeIdx={activeChangeIdx}
+                          registerRef={(idx, el) => {
+                            if (el) changeRefs.current.set(idx, el);
+                            else changeRefs.current.delete(idx);
+                          }}
+                        />
+                      </div>
+                    );
+                  })()}
+
                   {/* Per-flag explanation — educational and detailed */}
                   <div className="space-y-1.5">
                     <p className="text-xs text-gray-600 italic">{currentFlag.explanation}</p>
@@ -2233,8 +2355,9 @@ export default function WorkspacePage() {
                         return (
                         <div
                           key={opt.id}
-                          className={`rounded-lg border p-3 transition-colors ${
-                            selectedOptionIdx === i ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-gray-200"
+                          onClick={() => setSelectedOptionIdx(i)}
+                          className={`cursor-pointer rounded-lg border p-3 transition-colors ${
+                            selectedOptionIdx === i ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-gray-200 hover:border-gray-300"
                           }`}
                         >
                           <div className="flex items-center gap-2 mb-1.5">
@@ -2245,7 +2368,12 @@ export default function WorkspacePage() {
                           </div>
                           {replacementDesc ? (
                             <p className="text-sm text-purple-600 italic">{replacementDesc}</p>
+                          ) : optionAlignment ? (
+                            // Show only where this option differs from the others;
+                            // the text they all share is dimmed and condensed.
+                            <AlignedOptionText blocks={optionAlignment} optionIndex={i} />
                           ) : (() => {
+                            // Single option (or artifact): fall back to a plain vs-original diff.
                             const originalText = currentSection?.currentText?.slice(currentFlag.phraseStart, currentFlag.phraseEnd) || currentFlag.flaggedPhrase;
                             const segments = wordDiff(originalText, opt.text);
                             const hasChanges = segments.some(s => s.type === "changed");
@@ -2253,8 +2381,8 @@ export default function WorkspacePage() {
                               <p className="text-sm text-gray-700 leading-relaxed">
                                 {hasChanges ? segments.map((seg, si) => (
                                   seg.type === "changed"
-                                    ? <span key={si} className="bg-green-100 text-green-800 font-medium">{seg.text}</span>
-                                    : <span key={si}>{seg.text}</span>
+                                    ? <span key={si} className="bg-amber-100 text-gray-900 font-medium">{seg.text}</span>
+                                    : <span key={si} className="text-gray-400">{seg.text}</span>
                                 )) : opt.text}
                               </p>
                             );
@@ -3747,6 +3875,98 @@ function GrammarView({ findings, checked, onToggle, onCheckAll, onUncheckAll, ap
         ))}
       </div>
     </div>
+  );
+}
+
+// ── Option comparison rendering (shared by the option cards & morph stage) ───
+
+/**
+ * Shorten a run of text the options all share, preserving leading/trailing
+ * whitespace so it still butts cleanly against neighbouring divergent text.
+ */
+function condenseSharedText(text: string, headWords = 6, tailWords = 6, threshold = 16): string {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= threshold) return text;
+  const lead = text.match(/^\s*/)?.[0] ?? "";
+  const trail = text.match(/\s*$/)?.[0] ?? "";
+  return `${lead}${words.slice(0, headWords).join(" ")} … ${words.slice(-tailWords).join(" ")}${trail}`;
+}
+
+/**
+ * One option's text rendered against the alignment: the parts every option
+ * shares are dimmed and condensed; the part unique to THIS option is
+ * highlighted. Reduces three near-identical paragraphs to "here's the bit that
+ * differs" three times.
+ */
+function AlignedOptionText({ blocks, optionIndex }: { blocks: AlignBlock[]; optionIndex: number }) {
+  return (
+    <p className="text-sm leading-relaxed">
+      {blocks.map((b, i) => {
+        if (b.kind === "shared") {
+          return (
+            <span key={i} className="text-gray-400">
+              {condenseSharedText(b.text)}
+            </span>
+          );
+        }
+        const v = b.variants[optionIndex] ?? "";
+        if (!v.trim()) {
+          return (
+            <span key={i} className="px-1 text-gray-300" title="this option leaves this out">
+              ⌀
+            </span>
+          );
+        }
+        return (
+          <span key={i} className="rounded bg-amber-100 font-semibold text-gray-900">
+            {v}
+          </span>
+        );
+      })}
+    </p>
+  );
+}
+
+/**
+ * Morph stage (Direction A): the passage is shown ONCE — the text every option
+ * shares stays put as plain prose, and only the diverging spans swap to the
+ * selected option's wording, animating in place. Switching options keeps the
+ * shared skeleton stable so the eye tracks just what changes. `activeChangeIdx`
+ * (the walkthrough cursor) pulses one divergence and is the scroll target.
+ */
+function MorphStage({
+  blocks,
+  optionIndex,
+  activeChangeIdx,
+  registerRef,
+}: {
+  blocks: AlignBlock[];
+  optionIndex: number;
+  activeChangeIdx: number | null;
+  registerRef: (changeIdx: number, el: HTMLElement | null) => void;
+}) {
+  let dCount = -1;
+  return (
+    <p className="text-base leading-relaxed text-gray-800">
+      {blocks.map((b, i) => {
+        if (b.kind === "shared") {
+          return <span key={i}>{b.text}</span>;
+        }
+        dCount++;
+        const dIdx = dCount;
+        const v = b.variants[optionIndex] ?? "";
+        const isActive = dIdx === activeChangeIdx;
+        return (
+          <span
+            key={`${i}-${optionIndex}`}
+            ref={(el) => registerRef(dIdx, el)}
+            className={`ez-morph rounded px-0.5 font-semibold text-gray-900 ${isActive ? "ez-pulse" : "bg-amber-100"}`}
+          >
+            {v.trim() ? v : "⌀"}
+          </span>
+        );
+      })}
+    </p>
   );
 }
 
