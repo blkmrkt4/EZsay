@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
+import { condensedDiff } from "@/lib/analysis/word-diff";
 
 interface FlagOptionProps {
   number: number;
@@ -8,6 +9,9 @@ interface FlagOptionProps {
   note: string;
   isSelected: boolean;
   isEditMyself?: boolean;
+  /** The original paragraph text. When provided, the option is shown as a
+   *  condensed diff (only what changed, with context) instead of full text. */
+  originalText?: string;
   onSelect: () => void;
   onRegenerate?: (direction: string) => void;
   isRegenerating?: boolean;
@@ -30,12 +34,20 @@ export default function FlagOption({
   note,
   isSelected,
   isEditMyself,
+  originalText,
   onSelect,
   onRegenerate,
   isRegenerating,
 }: FlagOptionProps) {
   const [showNudges, setShowNudges] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Render only what changed relative to the original, with light context.
+  const diffSegments = useMemo(
+    () =>
+      isEditMyself || !originalText ? null : condensedDiff(originalText, text),
+    [isEditMyself, originalText, text]
+  );
 
   // Close popover on outside click
   useEffect(() => {
@@ -79,7 +91,36 @@ export default function FlagOption({
               </p>
             ) : (
               <>
-                <p className="text-sm text-gray-700 leading-relaxed">{text}</p>
+                {diffSegments ? (
+                  <p className="text-sm leading-relaxed">
+                    {diffSegments.map((seg, i) => {
+                      if (seg.type === "ellipsis") {
+                        return (
+                          <span key={i} className="text-gray-300">
+                            {seg.text}
+                          </span>
+                        );
+                      }
+                      if (seg.type === "changed") {
+                        return (
+                          <span
+                            key={i}
+                            className="rounded bg-amber-100 font-semibold text-gray-900"
+                          >
+                            {seg.text}
+                          </span>
+                        );
+                      }
+                      return (
+                        <span key={i} className="text-gray-400">
+                          {seg.text}
+                        </span>
+                      );
+                    })}
+                  </p>
+                ) : (
+                  <p className="text-sm text-gray-700 leading-relaxed">{text}</p>
+                )}
                 {isRegenerating ? (
                   <p className="mt-1 text-xs text-blue-500">Regenerating...</p>
                 ) : (

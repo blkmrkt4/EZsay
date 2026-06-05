@@ -119,6 +119,7 @@ export default function EditPanel({
               number={opt.number}
               text={opt.text}
               note={opt.note}
+              originalText={sectionText}
               isSelected={selectedIndex === opt.number - 1}
               isEditMyself={opt.isEditMyself}
               onSelect={() => onSelect(opt.number - 1)}

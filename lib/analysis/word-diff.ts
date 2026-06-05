@@ -8,6 +8,11 @@ interface DiffSegment {
   type: "same" | "changed";
 }
 
+export interface CondensedSegment {
+  text: string;
+  type: "same" | "changed" | "ellipsis";
+}
+
 export function wordDiff(original: string, replacement: string): DiffSegment[] {
   const origWords = original.split(/(\s+)/);
   const replWords = replacement.split(/(\s+)/);
@@ -63,6 +68,62 @@ export function wordDiff(original: string, replacement: string): DiffSegment[] {
   if (current) segments.push(current);
 
   return segments;
+}
+
+/**
+ * Word diff that collapses long unchanged runs down to a small amount of
+ * surrounding context plus an ellipsis. Lets an option card surface only what
+ * actually changed relative to the original, instead of the whole paragraph.
+ *
+ * `contextWords` is the number of unchanged words kept on each side of a change.
+ */
+export function condensedDiff(
+  original: string,
+  replacement: string,
+  contextWords = 4
+): CondensedSegment[] {
+  const segments = wordDiff(original, replacement);
+  const out: CondensedSegment[] = [];
+  // Tokens alternate word/whitespace, so ~2 tokens per word.
+  const keep = contextWords * 2;
+
+  for (let idx = 0; idx < segments.length; idx++) {
+    const seg = segments[idx];
+
+    if (seg.type === "changed") {
+      out.push({ text: seg.text, type: "changed" });
+      continue;
+    }
+
+    // wordDiff merges consecutive same-type segments, so a "same" segment at
+    // idx > 0 always follows a change, and one before the end precedes a change.
+    const hasPrevChange = idx > 0;
+    const hasNextChange = idx < segments.length - 1;
+    const tokens = seg.text.split(/(\s+)/);
+
+    // Short enough to show in full.
+    if (tokens.length <= keep * 2 + 1) {
+      out.push({ text: seg.text, type: "same" });
+      continue;
+    }
+
+    if (!hasPrevChange) {
+      // Leading run before the first change — keep only the trailing context.
+      out.push({ text: "… ", type: "ellipsis" });
+      out.push({ text: tokens.slice(-keep).join(""), type: "same" });
+    } else if (!hasNextChange) {
+      // Trailing run after the last change — keep only the leading context.
+      out.push({ text: tokens.slice(0, keep).join(""), type: "same" });
+      out.push({ text: " …", type: "ellipsis" });
+    } else {
+      // Run between two changes — keep context on both sides.
+      out.push({ text: tokens.slice(0, keep).join(""), type: "same" });
+      out.push({ text: " … ", type: "ellipsis" });
+      out.push({ text: tokens.slice(-keep).join(""), type: "same" });
+    }
+  }
+
+  return out;
 }
 
 function greedyDiff(origWords: string[], replWords: string[]): DiffSegment[] {

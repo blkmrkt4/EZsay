@@ -508,7 +508,7 @@ The editing panel is the core product UI. It has exactly three panels. Build it 
 - **Immediately below the original text:** one-line flag explanation in muted small text — why this was flagged (copied from `library_entries.explanation`).
 - **Below that — numbered replacement options.** Each option shows:
   - The option number (1, 2, 3...)
-  - The **full replacement text** — not a summary, the complete sentence or paragraph as it would appear
+  - A **condensed word-level diff of the replacement against the original**, computed via `condensedDiff()` in `lib/analysis/word-diff.ts`. Only the changed words are shown prominently (amber highlight, bold); unchanged words are faded, and long unchanged runs are collapsed to `…` with a few words of context on each side. This keeps the reader focused on what actually differs between options rather than re-reading the whole paragraph each time. The full replacement text is still stored in `flag_options.text` and applied verbatim on accept — only the *rendering* is condensed. (Rationale, 2026-06-05: full-paragraph rewrites made adjacent options visually near-identical and impossible to compare.)
   - A one-line note in muted text explaining what changed
 - **Options are always numbered. Never labelled A/B/C.**
 - **The last option is always** "Edit this paragraph myself in the document" — selecting it opens the Doc Panel automatically.
