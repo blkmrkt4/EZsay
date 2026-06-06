@@ -2243,18 +2243,24 @@ export default function WorkspacePage() {
                     })()}
                   </div>
 
-                  {/* Morph stage (A) — the passage shown once; only the diverging
-                      spans swap to the selected option, animating in place. */}
-                  {optionAlignment && currentOptions.length > 0 && (() => {
+                  {/* Comparison stage (A + C) — the passage shown once with all
+                      option variants stacked inline at each divergence. */}
+                  {optionAlignment && currentOptions.length > 0 && divergentBlocks.length > 0 && (() => {
                     const stageIdx = selectedOptionIdx != null && selectedOptionIdx < currentOptions.length ? selectedOptionIdx : 0;
                     const nChanges = divergentBlocks.length;
+                    const others = currentOptions.map((_, k) => k + 1).filter((n) => n !== stageIdx + 1);
                     return (
                       <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-4">
                         <div className="mb-2 flex items-center justify-between gap-2">
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                            Preview — Option {stageIdx + 1} in context
+                          <span className="text-[11px] font-medium text-gray-500">
+                            <span className="font-semibold text-gray-700">Compare in context</span>
+                            {" · Option "}{stageIdx + 1}{" selected — click "}
+                            {others.join(" or ")}{" at any "}
+                            <span className="rounded bg-amber-200 px-1 font-semibold text-gray-800">highlight</span>
+                            {" to compare"}
                           </span>
-                          {nChanges >= 1 && (
+                          {/* Tour controls — only when there's more than one place to walk through. */}
+                          {nChanges > 1 && (
                             <div className="flex items-center gap-1">
                               {activeChangeIdx !== null && (
                                 <span className="mr-1 text-[10px] tabular-nums text-gray-400">
@@ -2264,20 +2270,20 @@ export default function WorkspacePage() {
                               <button
                                 onClick={() => stepChange(-1)}
                                 className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
-                                title="Previous change (←)"
+                                title="Previous change"
                                 aria-label="Previous change"
                               >‹</button>
                               <button
                                 onClick={() => setIsPlayingChanges((p) => !p)}
                                 className="rounded px-2 py-0.5 text-[11px] font-medium text-blue-600 hover:bg-blue-50"
-                                title="Play through the changes"
+                                title="Step through each difference"
                               >
                                 {isPlayingChanges ? "❚❚ Pause" : "▶ Tour changes"}
                               </button>
                               <button
                                 onClick={() => stepChange(1)}
                                 className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
-                                title="Next change (→)"
+                                title="Next change"
                                 aria-label="Next change"
                               >›</button>
                             </div>
@@ -2285,8 +2291,9 @@ export default function WorkspacePage() {
                         </div>
                         <MorphStage
                           blocks={optionAlignment}
-                          optionIndex={stageIdx}
+                          selectedIndex={stageIdx}
                           activeChangeIdx={activeChangeIdx}
+                          onPick={(oi) => setSelectedOptionIdx(oi)}
                           registerRef={(idx, el) => {
                             if (el) changeRefs.current.set(idx, el);
                             else changeRefs.current.delete(idx);
@@ -3934,15 +3941,25 @@ function AlignedOptionText({ blocks, optionIndex }: { blocks: AlignBlock[]; opti
  * shared skeleton stable so the eye tracks just what changes. `activeChangeIdx`
  * (the walkthrough cursor) pulses one divergence and is the scroll target.
  */
+/**
+ * Comparison stage (Directions A + C, "show all three inline"): the passage is
+ * shown once as flowing prose; at every spot where the options diverge, all
+ * variants are stacked inline and numbered so you can compare them in context
+ * without clicking back and forth. The currently selected option's row is
+ * highlighted throughout and flashes bright when you switch to it; the active
+ * tour stop gets a pulsing ring. Clicking any row selects that option.
+ */
 function MorphStage({
   blocks,
-  optionIndex,
+  selectedIndex,
   activeChangeIdx,
+  onPick,
   registerRef,
 }: {
   blocks: AlignBlock[];
-  optionIndex: number;
+  selectedIndex: number;
   activeChangeIdx: number | null;
+  onPick: (optionIndex: number) => void;
   registerRef: (changeIdx: number, el: HTMLElement | null) => void;
 }) {
   let dCount = -1;
@@ -3954,15 +3971,38 @@ function MorphStage({
         }
         dCount++;
         const dIdx = dCount;
-        const v = b.variants[optionIndex] ?? "";
         const isActive = dIdx === activeChangeIdx;
         return (
+          // Keyed by selectedIndex so the chosen row re-mounts and flashes on switch.
           <span
-            key={`${i}-${optionIndex}`}
+            key={`${i}-${selectedIndex}`}
             ref={(el) => registerRef(dIdx, el)}
-            className={`ez-morph rounded px-0.5 font-semibold text-gray-900 ${isActive ? "ez-pulse" : "bg-amber-100"}`}
+            className={`mx-1 inline-flex flex-col gap-0.5 rounded-md border border-amber-200 bg-amber-50/50 p-1 align-text-bottom ${isActive ? "ez-ring" : ""}`}
           >
-            {v.trim() ? v : "⌀"}
+            {b.variants.map((v, oi) => {
+              const isSel = oi === selectedIndex;
+              return (
+                <button
+                  key={oi}
+                  onClick={() => onPick(oi)}
+                  className={`flex items-start gap-1.5 rounded px-1 py-0.5 text-left text-sm transition-colors ${
+                    isSel
+                      ? `ez-flash bg-amber-200 font-semibold text-gray-900`
+                      : "text-gray-500 hover:bg-amber-100 hover:text-gray-700"
+                  }`}
+                  title={`Use Option ${oi + 1} here`}
+                >
+                  <span
+                    className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${
+                      isSel ? "bg-amber-500 text-white" : "bg-gray-200 text-gray-500"
+                    }`}
+                  >
+                    {oi + 1}
+                  </span>
+                  <span>{v.trim() ? v : <span className="italic text-gray-400">(leaves this out)</span>}</span>
+                </button>
+              );
+            })}
           </span>
         );
       })}
