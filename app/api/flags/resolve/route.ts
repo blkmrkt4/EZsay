@@ -102,6 +102,29 @@ export async function POST(request: NextRequest) {
         .where(eq(sections.id, flagRow.sectionId));
     }
 
+    // ── Update section text for a manual / custom-mix replacement ─────
+    // Mirrors the optionId branch: splices the supplied text into the flagged
+    // span. Covers "Edit myself" and the per-box custom mix (no optionId).
+    if (action === "accepted" && manualText && !optionId) {
+      const newText =
+        flagRow.sectionCurrentText.slice(0, updatedFlag.phraseStart) +
+        manualText +
+        flagRow.sectionCurrentText.slice(updatedFlag.phraseEnd);
+
+      const corruption = validateReplacement(flagRow.sectionCurrentText, newText);
+      if (corruption) {
+        console.warn(`[flags/resolve] Corruption detected in manual replacement: ${corruption}`);
+      }
+
+      await db
+        .update(sections)
+        .set({
+          currentText: newText,
+          flagsResolved: flagRow.sectionFlagsResolved + 1,
+        })
+        .where(eq(sections.id, flagRow.sectionId));
+    }
+
     // ── Increment resolved count for skip/reject ─────────────────────
     if (action === "skipped" || action === "rejected") {
       await db
