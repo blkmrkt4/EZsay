@@ -1622,7 +1622,7 @@ export default function WorkspacePage() {
                       if (section.isLocked) {
                         sectionColor = "text-gray-400 bg-gray-50 cursor-default";
                       } else if (isActive) {
-                        sectionColor = "text-gray-900 border-l-2 border-amber-400";
+                        sectionColor = "text-gray-900 border-l-2 border-violet-400";
                       } else if (allResolved) {
                         sectionColor = "bg-green-50 text-gray-600";
                       } else if (hasOpenFlags) {
@@ -1673,23 +1673,24 @@ export default function WorkspacePage() {
                           const phraseIsSentence = sentStart === pStart && sentEnd === pEnd;
 
                           if (phraseIsSentence) {
-                            // Entire sentence is the flag — just amber
+                            // Entire sentence is the flag — the "being edited" passage, in violet
                             return (
                               <>
                                 {text.slice(0, sentStart)}
-                                <mark className="rounded bg-amber-200 px-0.5 text-gray-900 font-medium ring-1 ring-amber-400">{text.slice(pStart, pEnd)}</mark>
+                                <mark className="rounded bg-violet-200 px-0.5 text-gray-900 font-medium ring-1 ring-violet-400">{text.slice(pStart, pEnd)}</mark>
                                 {text.slice(sentEnd)}
                               </>
                             );
                           }
 
-                          // Three layers: normal → yellow sentence → amber phrase → yellow sentence → normal
+                          // Three layers: normal → violet sentence → violet phrase → violet sentence → normal.
+                          // Violet marks "the passage being edited", distinct from the centre's amber options.
                           return (
                             <>
                               {text.slice(0, sentStart)}
-                              <span className="bg-yellow-100 rounded-sm">{text.slice(sentStart, pStart)}</span>
-                              <mark className="rounded bg-amber-200 px-0.5 text-gray-900 font-medium ring-1 ring-amber-400">{text.slice(pStart, pEnd)}</mark>
-                              <span className="bg-yellow-100 rounded-sm">{text.slice(pEnd, sentEnd)}</span>
+                              <span className="bg-violet-100 rounded-sm">{text.slice(sentStart, pStart)}</span>
+                              <mark className="rounded bg-violet-200 px-0.5 text-gray-900 font-medium ring-1 ring-violet-400">{text.slice(pStart, pEnd)}</mark>
+                              <span className="bg-violet-100 rounded-sm">{text.slice(pEnd, sentEnd)}</span>
                               {text.slice(sentEnd)}
                             </>
                           );
@@ -2153,7 +2154,10 @@ export default function WorkspacePage() {
                     ) : null;
                   })()}
 
-                  {/* Original text — the most prominent element */}
+                  {/* Original text. Redundant with the Document panel's own
+                      highlight, so only shown when that panel is collapsed —
+                      otherwise it just repeats the left side and wastes space. */}
+                  {!showDocPanel && (
                   <div className="rounded-lg border-2 border-gray-300 bg-white p-4">
                     {(() => {
                       const text = currentSection.currentText;
@@ -2194,15 +2198,18 @@ export default function WorkspacePage() {
                       );
                     })()}
                   </div>
+                  )}
 
                   {/* Comparison stage — the passage shown once with all option
                       variants stacked inline at each spot they differ. Read-only:
                       you compare here, then choose one on the right to apply. */}
                   {optionAlignment && currentOptions.length > 0 && divergentBlocks.length > 0 && (
-                    <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-4">
+                    <div className="rounded-lg border border-gray-200 border-l-2 border-l-violet-400 bg-gray-50/60 p-4">
                       <p className="mb-2 text-[11px] text-gray-500">
                         <span className="font-semibold text-gray-700">Compare the options in context.</span>
-                        {" Where the options differ, all "}{currentOptions.length}{" are shown stacked and numbered. Pick the one you want on the right to apply it and move on."}
+                        {" This rewrites the "}
+                        <span className="rounded bg-violet-100 px-1 text-violet-900">passage highlighted in your document</span>
+                        {". Where the options differ, all "}{currentOptions.length}{" are shown stacked and numbered — pick one on the right to apply it and move on."}
                       </p>
                       <MorphStage blocks={optionAlignment} optionCount={currentOptions.length} />
                     </div>

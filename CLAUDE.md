@@ -504,7 +504,7 @@ The editing panel is the core product UI. It has exactly three panels. Build it 
 
 - **Always visible.** Takes the majority of horizontal space. This is the primary panel.
 - **Header:** current flag position (e.g. "Flag 3 of 14") and the "Show/Hide document" toggle button.
-- **Top of content — the user's original text block.** This is the most important element on the screen. Style it prominently in a clearly bordered box. The flagged word or phrase is highlighted in amber with an underline. This text is the user's own writing — it must be **visually dominant** over everything else on the page.
+- **Top of content — the user's original text block.** (Legacy `EditingShell` only.) In the live `/w` workspace this bordered original-text box is **redundant with the Document panel**, which already highlights the flagged passage in full context, so it is shown **only when the Document panel is collapsed** (`!showDocPanel`) — otherwise it repeats the left side and wastes space. The Document panel marks the passage being edited in **violet** (`bg-violet-200`/`ring-violet-400` phrase, `bg-violet-100` sentence, `border-l-violet-400` section) — deliberately distinct from the centre's amber option highlights and the blue citation highlight — and the comparison stage's caption points back to "the passage highlighted in your document".
 - **Immediately below the original text:** one-line flag explanation in muted small text — why this was flagged (copied from `library_entries.explanation`).
 - **Below that — numbered replacement options.** Each option shows:
   - The option number (1, 2, 3...)
