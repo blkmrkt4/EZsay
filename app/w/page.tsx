@@ -306,11 +306,6 @@ export default function WorkspacePage() {
   const [selectedFlagIdx, setSelectedFlagIdx] = useState(0);
   const [selectedOptionIdx, setSelectedOptionIdx] = useState<number | null>(null);
   const [manualEditText, setManualEditText] = useState("");
-  // Per-box (hybrid) choices: which option each divergence uses, which box is
-  // active in the step-through, and whether the user has built a custom mix.
-  const [boxChoices, setBoxChoices] = useState<number[]>([]);
-  const [activeBoxIdx, setActiveBoxIdx] = useState(0);
-  const [hasCustomMix, setHasCustomMix] = useState(false);
 
   // Panel visibility — four panels: Library, Doc, Edit, Choices
   // Library shows when no doc loaded; Doc replaces it once a doc is selected
@@ -1153,64 +1148,6 @@ export default function WorkspacePage() {
     [optionAlignment]
   );
 
-  // Reset the per-box state when the set of divergences changes (new flag, or
-  // options regenerated). Default every box to Option 1 — a coherent base the
-  // user can override box-by-box.
-  useEffect(() => {
-    setBoxChoices(new Array(divergentBlocks.length).fill(0));
-    setActiveBoxIdx(0);
-    setHasCustomMix(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFlag?.id, divergentBlocks.length]);
-
-  // The slice of the ORIGINAL paragraph that the active box replaces, found by
-  // locating the shared text on either side of the box (fuzzy — falls back to
-  // the whole flagged span). Drives the strong violet highlight on the left.
-  const activeSourceSpan = useMemo(() => {
-    if (!currentFlag || !currentSection || !optionAlignment || divergentBlocks.length === 0) return null;
-    return computeActiveSourceSpan(
-      optionAlignment,
-      activeBoxIdx,
-      currentSection.currentText,
-      currentFlag.phraseStart,
-      currentFlag.phraseEnd
-    );
-  }, [currentFlag, currentSection, optionAlignment, divergentBlocks.length, activeBoxIdx]);
-
-  // Pick a variant for one box: record it, mark the mix custom, advance the
-  // active box to the next undecided spot.
-  const pickBox = useCallback((boxIdx: number, optionIdx: number) => {
-    setBoxChoices((prev) => {
-      const next = prev.length === divergentBlocks.length ? [...prev] : new Array(divergentBlocks.length).fill(0);
-      next[boxIdx] = optionIdx;
-      return next;
-    });
-    setHasCustomMix(true);
-    setActiveBoxIdx((prev) => (boxIdx >= prev && boxIdx + 1 < divergentBlocks.length ? boxIdx + 1 : prev));
-  }, [divergentBlocks.length]);
-
-  // Rebuild the full passage from the current per-box choices.
-  const reconstructMix = useCallback(() => {
-    if (!optionAlignment) return "";
-    let d = 0;
-    return optionAlignment
-      .map((b) => (b.kind === "shared" ? b.text : (b.variants[boxChoices[d++] ?? 0] ?? "")))
-      .join("");
-  }, [optionAlignment, boxChoices]);
-
-  // Commit the custom mix. If every box landed on the same option it's really a
-  // whole-option pick — accept via that option's id so it logs as "option
-  // selected"; otherwise submit the stitched text as a manual replacement.
-  function applyMix() {
-    if (!currentFlag || boxChoices.length === 0) return;
-    const allSame = boxChoices.every((c) => c === boxChoices[0]);
-    if (allSame && currentOptions[boxChoices[0]]) {
-      handleFlagResolved("accepted", currentOptions[boxChoices[0]].id);
-    } else {
-      handleFlagResolved("accepted", undefined, reconstructMix());
-    }
-  }
-
   // Flag count excludes advisory items
   const actionableFlagCount = editQueue.filter((item) => item.type !== "writing_quality").length;
 
@@ -1706,24 +1643,6 @@ export default function WorkspacePage() {
                               {section.currentText.slice(0, cidx)}
                               <mark data-citation-highlight className="rounded bg-blue-200 px-0.5 text-gray-900 font-medium ring-2 ring-blue-400">{highlightedCitationText}</mark>
                               {section.currentText.slice(cidx + highlightedCitationText.length)}
-                            </>
-                          );
-                        }
-                        // Per-box step-through: whole flagged passage faint violet,
-                        // the slice the active box replaces in strong violet.
-                        if (isActive && activeSourceSpan && currentFlag) {
-                          const text = section.currentText;
-                          const fStart = Math.min(currentFlag.phraseStart, text.length);
-                          const fEnd = Math.min(currentFlag.phraseEnd, text.length);
-                          const aStart = Math.max(fStart, Math.min(activeSourceSpan.start, text.length));
-                          const aEnd = Math.max(aStart, Math.min(activeSourceSpan.end, text.length));
-                          return (
-                            <>
-                              {text.slice(0, fStart)}
-                              <span className="bg-violet-100 rounded-sm">{text.slice(fStart, aStart)}</span>
-                              <mark className="rounded bg-violet-300 px-0.5 text-gray-900 font-medium ring-1 ring-violet-500">{text.slice(aStart, aEnd)}</mark>
-                              <span className="bg-violet-100 rounded-sm">{text.slice(aEnd, fEnd)}</span>
-                              {text.slice(fEnd)}
                             </>
                           );
                         }
@@ -2282,50 +2201,17 @@ export default function WorkspacePage() {
                   )}
 
                   {/* Comparison stage — the passage shown once with all option
-                      variants stacked inline at each spot they differ. Hybrid:
-                      whole-option on the right, or fine-tune each box here. */}
+                      variants stacked inline at each spot they differ. Read-only:
+                      you compare here, then choose one on the right to apply. */}
                   {optionAlignment && currentOptions.length > 0 && divergentBlocks.length > 0 && (
                     <div className="rounded-lg border border-gray-200 border-l-2 border-l-violet-400 bg-gray-50/60 p-4">
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <p className="text-[11px] text-gray-500">
-                          <span className="font-semibold text-gray-700">
-                            {divergentBlocks.length} edit{divergentBlocks.length === 1 ? "" : "s"} to make here
-                          </span>
-                          {" · editing the "}
-                          <span className="rounded bg-violet-100 px-1 text-violet-900">violet passage</span>
-                          {" on the left. Pick a whole option on the right, or click any numbered part below to fine-tune it."}
-                        </p>
-                        {hasCustomMix && (
-                          <span className="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700">
-                            on part {Math.min(activeBoxIdx + 1, divergentBlocks.length)} of {divergentBlocks.length}
-                          </span>
-                        )}
-                      </div>
-                      <MorphStage
-                        blocks={optionAlignment}
-                        optionCount={currentOptions.length}
-                        boxChoices={boxChoices}
-                        activeBoxIdx={activeBoxIdx}
-                        onPickBox={pickBox}
-                        onActivateBox={setActiveBoxIdx}
-                      />
-                      {hasCustomMix && (
-                        <div className="mt-3 flex items-center gap-2 border-t border-gray-200 pt-3">
-                          <button
-                            onClick={applyMix}
-                            className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-700"
-                          >
-                            Apply my mix & continue →
-                          </button>
-                          <button
-                            onClick={() => { setBoxChoices(new Array(divergentBlocks.length).fill(0)); setHasCustomMix(false); setActiveBoxIdx(0); }}
-                            className="rounded-md px-2 py-1.5 text-xs text-gray-500 hover:bg-gray-100"
-                          >
-                            Reset
-                          </button>
-                          <span className="text-[10px] text-gray-400">Mixing parts from different options — read it through; “Edit myself” can fix any seam.</span>
-                        </div>
-                      )}
+                      <p className="mb-2 text-[11px] text-gray-500">
+                        <span className="font-semibold text-gray-700">Compare the options in context.</span>
+                        {" This rewrites the "}
+                        <span className="rounded bg-violet-100 px-1 text-violet-900">passage highlighted in your document</span>
+                        {". Where the options differ, all "}{currentOptions.length}{" are shown stacked and numbered — pick one on the right to apply it and move on."}
+                      </p>
+                      <MorphStage blocks={optionAlignment} optionCount={currentOptions.length} />
                     </div>
                   )}
 
@@ -3965,113 +3851,33 @@ function AlignedOptionText({ blocks, optionIndex }: { blocks: AlignBlock[]; opti
 }
 
 /**
- * The original-paragraph span that the active box replaces. Located by fuzzily
- * matching the shared text on each side of the box inside the original section
- * text; falls back to the whole flagged span when an anchor can't be found.
+ * Comparison stage: the passage is shown once as flowing prose; at every spot
+ * where the options diverge, all variants are stacked inline and numbered so
+ * they can be compared in context without flipping between them. Read-only —
+ * the actual choice is committed in the Choices panel on the right. The numbers
+ * match the option numbers there.
  */
-function computeActiveSourceSpan(
-  blocks: AlignBlock[],
-  activeBoxIdx: number,
-  originalText: string,
-  flagStart: number,
-  flagEnd: number
-): { start: number; end: number } {
-  // Find the divergent block that is the activeBoxIdx-th, with its neighbours.
-  let d = -1;
-  let prevShared = "";
-  let nextShared = "";
-  let found = false;
-  for (let i = 0; i < blocks.length; i++) {
-    if (blocks[i].kind !== "divergent") continue;
-    d++;
-    if (d === activeBoxIdx) {
-      for (let j = i - 1; j >= 0; j--) if (blocks[j].kind === "shared") { prevShared = (blocks[j] as { text: string }).text; break; }
-      for (let j = i + 1; j < blocks.length; j++) if (blocks[j].kind === "shared") { nextShared = (blocks[j] as { text: string }).text; break; }
-      found = true;
-      break;
-    }
-  }
-  if (!found) return { start: flagStart, end: flagEnd };
-
-  const region = originalText.slice(flagStart, flagEnd);
-  const lastWords = (s: string, n: number) => s.trim().split(/\s+/).slice(-n).join(" ");
-  const firstWords = (s: string, n: number) => s.trim().split(/\s+/).slice(0, n).join(" ");
-
-  let start = flagStart;
-  let end = flagEnd;
-  if (prevShared) {
-    const anchor = lastWords(prevShared, 5);
-    const idx = anchor ? region.indexOf(anchor) : -1;
-    if (idx >= 0) start = flagStart + idx + anchor.length;
-  }
-  if (nextShared) {
-    const anchor = firstWords(nextShared, 5);
-    const idx = anchor ? region.indexOf(anchor, Math.max(0, start - flagStart)) : -1;
-    if (idx >= 0) end = flagStart + idx;
-  }
-  if (end <= start) return { start: flagStart, end: flagEnd };
-  return { start, end };
-}
-
-/**
- * Comparison stage (hybrid per-box): the passage is shown once; at every spot
- * the options diverge, all variants are stacked inline and numbered. The chosen
- * variant per box is highlighted; the active box (the one you're deciding) gets
- * a strong ring. Clicking a variant chooses it for that box and advances.
- */
-function MorphStage({
-  blocks,
-  optionCount,
-  boxChoices,
-  activeBoxIdx,
-  onPickBox,
-  onActivateBox,
-}: {
-  blocks: AlignBlock[];
-  optionCount: number;
-  boxChoices: number[];
-  activeBoxIdx: number;
-  onPickBox: (boxIdx: number, optionIdx: number) => void;
-  onActivateBox: (boxIdx: number) => void;
-}) {
-  let dCount = -1;
+function MorphStage({ blocks, optionCount }: { blocks: AlignBlock[]; optionCount: number }) {
   return (
     <p className="text-base leading-relaxed text-gray-800">
       {blocks.map((b, i) => {
         if (b.kind === "shared") {
           return <span key={i}>{b.text}</span>;
         }
-        dCount++;
-        const boxIdx = dCount;
-        const chosen = boxChoices[boxIdx] ?? 0;
-        const isActive = boxIdx === activeBoxIdx;
         return (
           <span
             key={i}
-            onClick={() => onActivateBox(boxIdx)}
-            className={`mx-1 inline-flex flex-col gap-0.5 rounded-md border bg-white/70 p-1 align-text-bottom ${
-              isActive ? "border-violet-400 ring-2 ring-violet-300" : "border-gray-200"
-            }`}
+            className="mx-1 inline-flex flex-col gap-0.5 rounded-md border border-amber-200 bg-amber-50/50 p-1 align-text-bottom"
           >
             {Array.from({ length: optionCount }).map((_, oi) => {
               const v = b.variants[oi] ?? "";
-              const isChosen = oi === chosen;
               return (
-                <button
-                  key={oi}
-                  onClick={(e) => { e.stopPropagation(); onPickBox(boxIdx, oi); }}
-                  className={`flex items-start gap-1.5 rounded px-1 py-0.5 text-left text-sm transition-colors ${
-                    isChosen ? "bg-amber-200 font-medium text-gray-900" : "text-gray-500 hover:bg-amber-50"
-                  }`}
-                  title={`Use Option ${oi + 1} for this part`}
-                >
-                  <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${
-                    isChosen ? "bg-amber-500 text-white" : "bg-gray-200 text-gray-500"
-                  }`}>
+                <span key={oi} className="flex items-start gap-1.5 px-1 text-sm text-gray-700">
+                  <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-500">
                     {oi + 1}
                   </span>
                   <span>{v.trim() ? v : <span className="italic text-gray-400">(leaves this out)</span>}</span>
-                </button>
+                </span>
               );
             })}
           </span>
