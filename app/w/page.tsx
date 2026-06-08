@@ -306,10 +306,6 @@ export default function WorkspacePage() {
   const [selectedFlagIdx, setSelectedFlagIdx] = useState(0);
   const [selectedOptionIdx, setSelectedOptionIdx] = useState<number | null>(null);
   const [manualEditText, setManualEditText] = useState("");
-  // Change walkthrough (Direction C): cursor over the divergent blocks + autoplay.
-  const [activeChangeIdx, setActiveChangeIdx] = useState<number | null>(null);
-  const [isPlayingChanges, setIsPlayingChanges] = useState(false);
-  const changeRefs = useRef<Map<number, HTMLElement>>(new Map());
 
   // Panel visibility — four panels: Library, Doc, Edit, Choices
   // Library shows when no doc loaded; Doc replaces it once a doc is selected
@@ -1151,50 +1147,6 @@ export default function WorkspacePage() {
     () => (optionAlignment ?? []).filter((b): b is Extract<AlignBlock, { kind: "divergent" }> => b.kind === "divergent"),
     [optionAlignment]
   );
-
-  // Walkthrough cursor: step manually or let it autoplay through the changes.
-  const stepChange = useCallback((dir: number) => {
-    setIsPlayingChanges(false);
-    setActiveChangeIdx((prev) => {
-      const n = divergentBlocks.length;
-      if (n === 0) return null;
-      const next = prev === null ? (dir > 0 ? 0 : n - 1) : prev + dir;
-      return next < 0 || next >= n ? prev : next;
-    });
-  }, [divergentBlocks.length]);
-
-  // Autoplay tick.
-  useEffect(() => {
-    if (!isPlayingChanges) return;
-    const n = divergentBlocks.length;
-    if (n === 0) { setIsPlayingChanges(false); return; }
-    setActiveChangeIdx((prev) => (prev === null ? 0 : prev));
-    const id = setInterval(() => {
-      setActiveChangeIdx((prev) => {
-        const cur = prev === null ? 0 : prev;
-        if (cur >= n - 1) { setIsPlayingChanges(false); return cur; }
-        return cur + 1;
-      });
-    }, 1500);
-    return () => clearInterval(id);
-  }, [isPlayingChanges, divergentBlocks.length]);
-
-  // Scroll the active change into view and keep the document panel in step.
-  useEffect(() => {
-    if (activeChangeIdx === null) return;
-    changeRefs.current.get(activeChangeIdx)?.scrollIntoView({ behavior: "smooth", block: "center" });
-    if (currentFlag) {
-      document
-        .querySelector(`[data-section-id="${currentFlag.sectionId}"]`)
-        ?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [activeChangeIdx, currentFlag]);
-
-  // Reset the walkthrough whenever the active flag changes.
-  useEffect(() => {
-    setActiveChangeIdx(null);
-    setIsPlayingChanges(false);
-  }, [selectedFlagIdx]);
 
   // Flag count excludes advisory items
   const actionableFlagCount = editQueue.filter((item) => item.type !== "writing_quality").length;
@@ -2243,65 +2195,18 @@ export default function WorkspacePage() {
                     })()}
                   </div>
 
-                  {/* Comparison stage (A + C) — the passage shown once with all
-                      option variants stacked inline at each divergence. */}
-                  {optionAlignment && currentOptions.length > 0 && divergentBlocks.length > 0 && (() => {
-                    const stageIdx = selectedOptionIdx != null && selectedOptionIdx < currentOptions.length ? selectedOptionIdx : 0;
-                    const nChanges = divergentBlocks.length;
-                    const others = currentOptions.map((_, k) => k + 1).filter((n) => n !== stageIdx + 1);
-                    return (
-                      <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-4">
-                        <div className="mb-2 flex items-center justify-between gap-2">
-                          <span className="text-[11px] font-medium text-gray-500">
-                            <span className="font-semibold text-gray-700">Compare in context</span>
-                            {" · Option "}{stageIdx + 1}{" selected — click "}
-                            {others.join(" or ")}{" at any "}
-                            <span className="rounded bg-amber-200 px-1 font-semibold text-gray-800">highlight</span>
-                            {" to compare"}
-                          </span>
-                          {/* Tour controls — only when there's more than one place to walk through. */}
-                          {nChanges > 1 && (
-                            <div className="flex items-center gap-1">
-                              {activeChangeIdx !== null && (
-                                <span className="mr-1 text-[10px] tabular-nums text-gray-400">
-                                  change {activeChangeIdx + 1} of {nChanges}
-                                </span>
-                              )}
-                              <button
-                                onClick={() => stepChange(-1)}
-                                className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
-                                title="Previous change"
-                                aria-label="Previous change"
-                              >‹</button>
-                              <button
-                                onClick={() => setIsPlayingChanges((p) => !p)}
-                                className="rounded px-2 py-0.5 text-[11px] font-medium text-blue-600 hover:bg-blue-50"
-                                title="Step through each difference"
-                              >
-                                {isPlayingChanges ? "❚❚ Pause" : "▶ Tour changes"}
-                              </button>
-                              <button
-                                onClick={() => stepChange(1)}
-                                className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
-                                title="Next change"
-                                aria-label="Next change"
-                              >›</button>
-                            </div>
-                          )}
-                        </div>
-                        <MorphStage
-                          blocks={optionAlignment}
-                          selectedIndex={stageIdx}
-                          activeChangeIdx={activeChangeIdx}
-                          onPick={(oi) => setSelectedOptionIdx(oi)}
-                          registerRef={(idx, el) => {
-                            if (el) changeRefs.current.set(idx, el);
-                            else changeRefs.current.delete(idx);
-                          }}
-                        />
-                      </div>
-                    );
-                  })()}
+                  {/* Comparison stage — the passage shown once with all option
+                      variants stacked inline at each spot they differ. Read-only:
+                      you compare here, then choose one on the right to apply. */}
+                  {optionAlignment && currentOptions.length > 0 && divergentBlocks.length > 0 && (
+                    <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-4">
+                      <p className="mb-2 text-[11px] text-gray-500">
+                        <span className="font-semibold text-gray-700">Compare the options in context.</span>
+                        {" Where the options differ, all "}{currentOptions.length}{" are shown stacked and numbered. Pick the one you want on the right to apply it and move on."}
+                      </p>
+                      <MorphStage blocks={optionAlignment} optionCount={currentOptions.length} />
+                    </div>
+                  )}
 
                   {/* Per-flag explanation — educational and detailed */}
                   <div className="space-y-1.5">
@@ -2345,8 +2250,12 @@ export default function WorkspacePage() {
                     </div>
                   )}
 
-                  {/* Full option display — user reads these here, chooses in Choices panel */}
-                  {currentOptions.length > 0 && (
+                  {/* Option cards — fallback only. When the comparison stage is
+                      shown (2+ options that differ) it covers this, so these would
+                      be redundant; here they handle artifacts, a lone option, or
+                      options with no differences. The choice is always made in the
+                      Choices panel on the right. */}
+                  {currentOptions.length > 0 && !(optionAlignment && divergentBlocks.length > 0) && (
                     <div className="space-y-3">
                       <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Suggested replacements</p>
                       {currentOptions.map((opt, i) => {
@@ -3935,72 +3844,33 @@ function AlignedOptionText({ blocks, optionIndex }: { blocks: AlignBlock[]; opti
 }
 
 /**
- * Morph stage (Direction A): the passage is shown ONCE — the text every option
- * shares stays put as plain prose, and only the diverging spans swap to the
- * selected option's wording, animating in place. Switching options keeps the
- * shared skeleton stable so the eye tracks just what changes. `activeChangeIdx`
- * (the walkthrough cursor) pulses one divergence and is the scroll target.
+ * Comparison stage: the passage is shown once as flowing prose; at every spot
+ * where the options diverge, all variants are stacked inline and numbered so
+ * they can be compared in context without flipping between them. Read-only —
+ * the actual choice is committed in the Choices panel on the right. The numbers
+ * match the option numbers there.
  */
-/**
- * Comparison stage (Directions A + C, "show all three inline"): the passage is
- * shown once as flowing prose; at every spot where the options diverge, all
- * variants are stacked inline and numbered so you can compare them in context
- * without clicking back and forth. The currently selected option's row is
- * highlighted throughout and flashes bright when you switch to it; the active
- * tour stop gets a pulsing ring. Clicking any row selects that option.
- */
-function MorphStage({
-  blocks,
-  selectedIndex,
-  activeChangeIdx,
-  onPick,
-  registerRef,
-}: {
-  blocks: AlignBlock[];
-  selectedIndex: number;
-  activeChangeIdx: number | null;
-  onPick: (optionIndex: number) => void;
-  registerRef: (changeIdx: number, el: HTMLElement | null) => void;
-}) {
-  let dCount = -1;
+function MorphStage({ blocks, optionCount }: { blocks: AlignBlock[]; optionCount: number }) {
   return (
     <p className="text-base leading-relaxed text-gray-800">
       {blocks.map((b, i) => {
         if (b.kind === "shared") {
           return <span key={i}>{b.text}</span>;
         }
-        dCount++;
-        const dIdx = dCount;
-        const isActive = dIdx === activeChangeIdx;
         return (
-          // Keyed by selectedIndex so the chosen row re-mounts and flashes on switch.
           <span
-            key={`${i}-${selectedIndex}`}
-            ref={(el) => registerRef(dIdx, el)}
-            className={`mx-1 inline-flex flex-col gap-0.5 rounded-md border border-amber-200 bg-amber-50/50 p-1 align-text-bottom ${isActive ? "ez-ring" : ""}`}
+            key={i}
+            className="mx-1 inline-flex flex-col gap-0.5 rounded-md border border-amber-200 bg-amber-50/50 p-1 align-text-bottom"
           >
-            {b.variants.map((v, oi) => {
-              const isSel = oi === selectedIndex;
+            {Array.from({ length: optionCount }).map((_, oi) => {
+              const v = b.variants[oi] ?? "";
               return (
-                <button
-                  key={oi}
-                  onClick={() => onPick(oi)}
-                  className={`flex items-start gap-1.5 rounded px-1 py-0.5 text-left text-sm transition-colors ${
-                    isSel
-                      ? `ez-flash bg-amber-200 font-semibold text-gray-900`
-                      : "text-gray-500 hover:bg-amber-100 hover:text-gray-700"
-                  }`}
-                  title={`Use Option ${oi + 1} here`}
-                >
-                  <span
-                    className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${
-                      isSel ? "bg-amber-500 text-white" : "bg-gray-200 text-gray-500"
-                    }`}
-                  >
+                <span key={oi} className="flex items-start gap-1.5 px-1 text-sm text-gray-700">
+                  <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-500">
                     {oi + 1}
                   </span>
                   <span>{v.trim() ? v : <span className="italic text-gray-400">(leaves this out)</span>}</span>
-                </button>
+                </span>
               );
             })}
           </span>
