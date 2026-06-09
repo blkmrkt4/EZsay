@@ -7,12 +7,20 @@ import { executeActivity } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { buildIntakeTokens } from "@/lib/prompts/intake-tokens";
 
+// A single LLM generation can take up to ~60s (OpenRouter cap) plus 429 backoff.
+// Give the function headroom so Vercel doesn't kill it mid-call.
+export const maxDuration = 120;
+
 /**
  * Generates replacement options for a flag by calling OpenRouter
  * via the Activity Binds system.
  *
  * Uses the slug "suggest-rewrite" for general docs,
  * "suggest-academic" for academic docs.
+ *
+ * Used as the per-flag path: the on-land fallback (user opens a flag that has no
+ * options yet) and the Retry action on a failed flag. Idempotent — if options
+ * already exist it returns them rather than generating (and billing) again.
  */
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
@@ -67,6 +75,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
   }
 
+  // Idempotent guard: if this flag already has options, return them instead of
+  // regenerating. The background loop and the on-land fallback can both target
+  // the same flag; without this they would double-bill an LLM call.
+  const existingOptions = await db
+    .select()
+    .from(flagOptions)
+    .where(eq(flagOptions.flagId, flag.id));
+  if (existingOptions.length > 0) {
+    return NextResponse.json({
+      success: true,
+      data: {
+        explanation: "",
+        principle: "",
+        options: existingOptions.map((o) => ({ id: o.id, flagId: o.flagId, text: o.text, isBlend: o.isBlend })),
+      },
+    });
+  }
+
   const docType = doc.documentType || "professional";
   const slug = docType === "academic" ? "suggest-academic" : "suggest-rewrite";
 
@@ -115,6 +141,11 @@ export async function POST(request: NextRequest) {
       )
       .returning();
 
+    // Clear any prior failed state (e.g. this is a Retry) now that options exist.
+    if (flag.status === "generation_failed") {
+      await db.update(flags).set({ status: "open" }).where(eq(flags.id, flag.id));
+    }
+
     // Log the LLM call
     await db.insert(llmCallLog).values({
       activityType: slug,
@@ -142,7 +173,10 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error("Suggest failed:", err);
 
-    // Keep flag as "open" so it still appears for manual editing
+    // Mark the flag failed so the UI can show a Retry action instead of a
+    // perpetual spinner. The flag still appears in the queue (openFlags includes
+    // generation_failed) and stays editable manually.
+    await db.update(flags).set({ status: "generation_failed" }).where(eq(flags.id, flag.id));
 
     const message = err instanceof Error ? err.message : "Generation failed";
     const isRateLimit = message.includes("Rate limited") || message.includes("429");

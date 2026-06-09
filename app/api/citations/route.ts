@@ -226,9 +226,14 @@ function extractCitationStrings(text: string): string[] {
   );
   if (apaMatches) results.push(...apaMatches);
 
-  // Reference list entries — find the reference section by header
+  // Reference list entries — find the reference section by header.
+  //
+  // The header must appear as a STANDALONE heading: at the start of a line and
+  // immediately followed by a colon, a newline, or end-of-text. This prevents a
+  // passing mention of the word ("…indicated in the bibliography at the end…" in
+  // a coursework declaration) from matching and swallowing the entire document.
   const refSectionMatch = text.match(
-    /(?:References|Bibliography|Works Cited|Reference List)\s*\n?([\s\S]*?)(?:\n\n\n|$)/i
+    /(?:^|\n)[^\S\n]*(?:References|Bibliography|Works Cited|Reference List)[^\S\n]*(?::|(?=\n)|$)([\s\S]*?)(?:\n\n\n|$)/i
   );
   if (refSectionMatch) {
     const refText = refSectionMatch[1].trim();
@@ -236,7 +241,21 @@ function extractCitationStrings(text: string): string[] {
     results.push(...entries);
   }
 
-  return results;
+  // Dedupe — the inline and reference passes can surface the same string.
+  return [...new Set(results)];
+}
+
+/**
+ * Whether a line plausibly is a bibliography entry rather than ordinary prose.
+ * A real reference entry contains a publication year AND an author-shaped token
+ * ("Surname, I." or "… et al"). Body-text fragments — which the old splitter
+ * happily returned as "citations" — have neither and are rejected here.
+ */
+function looksLikeReferenceEntry(line: string): boolean {
+  // Must contain a plausible publication year (1500–2099).
+  if (!/\b(?:1[5-9]\d{2}|20\d{2})\b/.test(line)) return false;
+  // Must look authored: "Surname, I", "Surname, Firstname", or "et al".
+  return /\b[A-Z][a-zA-ZÀ-ÿ'-]+,\s*[A-Z]/.test(line) || /\bet\s+al\b/i.test(line);
 }
 
 /**
@@ -250,12 +269,15 @@ function extractCitationStrings(text: string): string[] {
  * (e.g. "Surname, I." or "Surname, Initial" after a sentence-ending period/number).
  */
 function splitReferenceEntries(text: string): string[] {
-  // Try newline split first
-  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 10);
+  // Try newline split first, then keep only lines that actually look like
+  // bibliography entries. Without this filter a captured block of body prose
+  // returns every wrapped line as a bogus "citation".
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 10 && looksLikeReferenceEntry(l));
 
-  // Heuristic: if we got a reasonable number of entries from newlines, use them
-  // "Reasonable" = at least 1 entry per ~200 chars of text
-  if (lines.length >= Math.max(2, Math.floor(text.length / 300))) {
+  if (lines.length >= 2) {
     return lines;
   }
 
@@ -263,14 +285,17 @@ function splitReferenceEntries(text: string): string[] {
   // Split before "Surname, I. Year" or "Surname, Firstname. "Title" patterns.
   // This catches entries like: "Harding, S. 2005." or "Hoffman, Mark. \"Critical..."
   const entryBoundary = /\s+(?=[A-Z][a-zA-ZÀ-ÿ'-]+,\s*[A-Z][a-zA-Z]*[\.\s]\s*(?:\d{4}|[A-Z\u201C"']))/g;
-  const parts = text.split(entryBoundary).map((s) => s.trim()).filter((s) => s.length > 10);
+  const parts = text
+    .split(entryBoundary)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 10 && looksLikeReferenceEntry(s));
 
   if (parts.length > 1) {
     return parts;
   }
 
-  // Last resort: return the whole block as one entry if nothing else worked
-  return text.length > 10 ? [text] : [];
+  // Last resort: keep the whole block only if it itself reads like a citation.
+  return text.length > 10 && looksLikeReferenceEntry(text) ? [text] : [];
 }
 
 type CitationStyle = "apa" | "mla" | "chicago" | "harvard" | "oxford" | "bluebook" | "oscola" | "business";

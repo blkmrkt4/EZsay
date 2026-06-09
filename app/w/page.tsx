@@ -120,7 +120,6 @@ type EditQueueItem =
   | { type: "artifact_individual"; flag: Flag }
   | { type: "writing_quality"; advisory: WritingQualityAdvisory }
   | { type: "plagiarism"; result: PlagiarismResult }
-  | { type: "citation_fix"; citation: CitationSummary }
   | { type: "spelling_batch"; findings: import("@/lib/analysis/grammar-spelling-types").SpellingFinding[] }
   | { type: "grammar_batch"; findings: import("@/lib/analysis/grammar-spelling-types").GrammarFinding[] };
 
@@ -254,6 +253,34 @@ function scoreColor(score: number | null) {
 const VALID_NAV_ITEMS = new Set<NavItem>(["library", "workspace", "style-rules", "intake"]);
 const VALID_WORKSPACE_MODES = new Set<WorkspaceMode>(["dashboard", "edit", "review", "citations"]);
 
+// Order + labels for the scan-phase checklist in the Choices-panel status area.
+const SCAN_PHASE_ORDER: { key: string; label: string }[] = [
+  { key: "aiDetection", label: "AI patterns" },
+  { key: "aiArtifacts", label: "AI artifacts" },
+  { key: "spelling", label: "Spelling" },
+  { key: "grammar", label: "Grammar" },
+  { key: "plagiarism", label: "Plagiarism" },
+  { key: "tone", label: "Tone consistency" },
+  { key: "citations", label: "Citations" },
+];
+
+// Small "random letters flying through 2 slots" activity indicator for the
+// generation status line. Falls back to dots when reduced motion is requested.
+function ScrambleTicker() {
+  const [chars, setChars] = useState("··");
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    const pool = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const id = setInterval(() => {
+      setChars(pool[Math.floor(Math.random() * pool.length)] + pool[Math.floor(Math.random() * pool.length)]);
+    }, 80);
+    return () => clearInterval(id);
+  }, []);
+  return <span className="inline-block w-[1.4em] text-center font-mono font-bold tabular-nums text-amber-600">{chars}</span>;
+}
+
 export default function WorkspacePage() {
   const searchParams = useSearchParams();
 
@@ -317,6 +344,11 @@ export default function WorkspacePage() {
   const diffDocRef = useRef<HTMLDivElement>(null);
   const diffEditRef = useRef<HTMLDivElement>(null);
   const diffSyncingRef = useRef(false);
+  // Mirrors of state the async generation loop reads (closures would go stale).
+  const flagsRef = useRef<Flag[]>([]);
+  const flagOptionsRef = useRef<FlagOption[]>([]);
+  const sectionsRef = useRef<Section[]>([]);
+  const activeDocIdRef = useRef<string | null>(null);
   const [showEditPanel, setShowEditPanel] = useState(true);
   const [showChoicesPanel, setShowChoicesPanel] = useState(true);
   const [navExpanded, setNavExpanded] = useState(false);
@@ -327,6 +359,13 @@ export default function WorkspacePage() {
     current: number;
     total: number;
   }>({ generating: false, current: 0, total: 0 });
+  // Flags whose options are being generated right now (drives the truthful
+  // per-flag "generating…" indicator, separate from the lying "no options" check).
+  const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
+  // Scan-phase checklist shown in the Choices-panel status area.
+  const [scanPhases, setScanPhases] = useState<Record<string, "pending" | "running" | "done">>({});
+  // Guards the background generation loop so only one runs per tab.
+  const genLoopRef = useRef(false);
 
   // Library accordion state — tracks expanded docs and lazy-loaded versions
   const [expandedDocIds, setExpandedDocIds] = useState<Set<string>>(new Set());
@@ -474,6 +513,9 @@ export default function WorkspacePage() {
     setVersionSavedSinceScan(true);
     setProcessedArtifacts({});
     setArtifactBatchChoices({});
+    setGeneratingIds(new Set());
+    setScanPhases({});
+    setSuggestProgress({ generating: false, current: 0, total: 0 });
     // Switch from Library panel to Doc panel, and back to edit view
     setShowLibraryPanel(false);
     setShowDocPanel(true);
@@ -489,6 +531,20 @@ export default function WorkspacePage() {
     if (!activeDocId) return;
     setScanning(true);
     setNav("workspace"); setWorkspaceMode("dashboard");
+
+    // Seed the scan-phase checklist. AI detection / artifacts / spelling / grammar
+    // resolve with the /api/scan call; plagiarism / tone / citations run after.
+    const cats = scanConfig.categories;
+    const seededPhases: Record<string, "pending" | "running" | "done"> = {};
+    if (cats.aiDetection) seededPhases.aiDetection = "running";
+    if (cats.aiArtifacts) seededPhases.aiArtifacts = "running";
+    if (cats.spelling) seededPhases.spelling = "running";
+    if (cats.grammar) seededPhases.grammar = "running";
+    if (cats.plagiarism) seededPhases.plagiarism = "pending";
+    if (cats.toneConsistency) seededPhases.tone = "pending";
+    if (cats.citations) seededPhases.citations = "pending";
+    setScanPhases(seededPhases);
+
     const res = await fetch("/api/scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -503,25 +559,31 @@ export default function WorkspacePage() {
       await loadDocument(activeDocId);
       await loadDocs();
 
-      // Immediately generate suggestions for all flags
-      setSuggestProgress({ generating: true, current: 0, total: json.data.totalFlags });
-      generateAllSuggestions(activeDocId);
+      // AI detection / artifacts / spelling / grammar all complete with the scan
+      // call. The background generation loop starts automatically (see the
+      // auto-resume effect) now that flags are loaded.
+      setScanPhases((prev) => {
+        const next = { ...prev };
+        for (const k of ["aiDetection", "aiArtifacts", "spelling", "grammar"]) if (next[k]) next[k] = "done";
+        for (const k of ["plagiarism", "tone", "citations"]) if (next[k]) next[k] = "running";
+        return next;
+      });
 
       // Run plagiarism check in parallel if enabled
       if (scanConfig.categories.plagiarism) {
-        runPlagiarismCheck(activeDocId);
+        runPlagiarismCheck(activeDocId).finally(() => setScanPhases((p) => (p.plagiarism ? { ...p, plagiarism: "done" } : p)));
         trackEvent("feature_used", { feature: "plagiarism" });
       }
 
       // Run tone consistency check in parallel if enabled
       if (scanConfig.categories.toneConsistency) {
-        runToneConsistencyCheck(activeDocId);
+        runToneConsistencyCheck(activeDocId).finally(() => setScanPhases((p) => (p.tone ? { ...p, tone: "done" } : p)));
         trackEvent("feature_used", { feature: "tone_consistency" });
       }
 
       // Run citation extraction and structural check if enabled
       if (scanConfig.categories.citations) {
-        runCitationCheck(activeDocId);
+        runCitationCheck(activeDocId).finally(() => setScanPhases((p) => (p.citations ? { ...p, citations: "done" } : p)));
         trackEvent("feature_used", { feature: "citations" });
       }
     }
@@ -680,29 +742,6 @@ export default function WorkspacePage() {
 
   // ── Citation fix resolution ──────────────────────────────────────────
 
-  async function handleCitationFixResolve(
-    citationId: string,
-    userAction: "accepted" | "edited" | "dismissed",
-    correctedText?: string
-  ) {
-    await fetch("/api/citations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "resolve", citationId, userAction, correctedText }),
-    });
-
-    setDocCitations((prev) =>
-      prev.map((c) => c.id === citationId
-        ? { ...c, status: userAction === "dismissed" ? "dismissed" : "resolved", userAction, correctedText: correctedText ?? c.correctedText }
-        : c
-      )
-    );
-    if (activeDocId) await loadDocument(activeDocId);
-    setSelectedFlagIdx((prev) => prev + 1);
-    setSelectedOptionIdx(null);
-    setManualEditText("");
-  }
-
   // ── Upload ─────────────────────────────────────────────────────────────
 
   async function handleUpload() {
@@ -804,31 +843,157 @@ export default function WorkspacePage() {
 
   // ── Generate all suggestions after scan ──────────────────────────────────
 
-  async function generateAllSuggestions(docId: string) {
-    try {
-      const res = await fetch("/api/suggest-all", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentId: docId }),
+  // Keep refs in sync so the async generation loop reads current state.
+  useEffect(() => { flagsRef.current = flags; }, [flags]);
+  useEffect(() => { flagOptionsRef.current = flagOptions; }, [flagOptions]);
+  useEffect(() => { sectionsRef.current = sections; }, [sections]);
+  useEffect(() => { activeDocIdRef.current = activeDocId; }, [activeDocId]);
+
+  // Flags that need generated options, in document order. Mirrors the openFlags
+  // filter (artifacts/writing-quality/plagiarism are handled by other flows).
+  function orderedGeneratableFlags(): Flag[] {
+    const secIdx = new Map(sectionsRef.current.map((s) => [s.id, s.index]));
+    return flagsRef.current
+      .filter((f) =>
+        (f.status === "open" || f.status === "generation_failed") &&
+        f.patternType !== "ai_artifact" &&
+        f.patternType !== "writing_quality" &&
+        f.patternType !== "plagiarism_match")
+      .sort((a, b) => {
+        const ai = secIdx.get(a.sectionId) ?? 0;
+        const bi = secIdx.get(b.sectionId) ?? 0;
+        return ai !== bi ? ai - bi : a.phraseStart - b.phraseStart;
       });
-      const json = await res.json();
-      if (json.success) {
-        setSuggestProgress({
-          generating: false,
-          current: json.data.total,
-          total: json.data.total,
-        });
-        // Reload document to pick up new flag options
-        await loadDocument(docId);
-      } else {
-        console.error("suggest-all failed:", json.error);
-        setSuggestProgress((prev) => ({ ...prev, generating: false }));
+  }
+
+  function mergeOptions(opts: FlagOption[]) {
+    if (opts.length === 0) return;
+    setFlagOptions((prev) => {
+      const seen = new Set(prev.map((o) => o.id));
+      return [...prev, ...opts.filter((o) => !seen.has(o.id))];
+    });
+  }
+
+  function markFlagsFailed(ids: string[]) {
+    if (ids.length === 0) return;
+    setFlags((prev) => prev.map((f) => (ids.includes(f.id) ? { ...f, status: "generation_failed" } : f)));
+  }
+
+  /**
+   * Background generation loop. Runs in the browser tab while the UI stays
+   * interactive: generates options for every open flag in document order — flag 1
+   * first and alone so the user can start immediately, then the rest in slices of
+   * 2 via /api/suggest-all (each request short enough to survive Vercel limits).
+   * Idempotent and resumable: only generates flags that still lack options, and a
+   * re-entry guard keeps a single loop running. Failed flags are left for Retry.
+   */
+  const runGenerationLoop = useCallback(async (docId: string) => {
+    if (genLoopRef.current) return;
+    genLoopRef.current = true;
+    try {
+      const work = orderedGeneratableFlags();
+      const total = work.length;
+      const have = new Set(flagOptionsRef.current.map((o) => o.flagId));
+      const pending = work.filter((f) => !have.has(f.id));
+      setSuggestProgress({ generating: pending.length > 0, current: have.size, total });
+      if (pending.length === 0) return;
+
+      let idx = 0;
+      let first = true;
+      while (idx < pending.length) {
+        // Stop if the user switched away to another document mid-run, so we don't
+        // merge this doc's options into a different doc's state.
+        if (activeDocIdRef.current !== docId) return;
+        const size = first ? 1 : 2;
+        first = false;
+        const slice = pending.slice(idx, idx + size);
+        idx += slice.length;
+        const sliceIds = slice.map((f) => f.id);
+        setGeneratingIds((prev) => new Set([...prev, ...sliceIds]));
+        try {
+          const res = await fetch("/api/suggest-all", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ documentId: docId, flagIds: sliceIds }),
+          });
+          const json = await res.json();
+          if (json.success && Array.isArray(json.data?.results)) {
+            const results = json.data.results as { flagId: string; status: string; options?: FlagOption[] }[];
+            const newOptions: FlagOption[] = [];
+            const failedIds: string[] = [];
+            for (const r of results) {
+              if (r.status === "success" && r.options?.length) {
+                newOptions.push(...r.options);
+                have.add(r.flagId);
+              } else {
+                failedIds.push(r.flagId);
+              }
+            }
+            mergeOptions(newOptions);
+            markFlagsFailed(failedIds);
+          } else {
+            // Request-level failure — mark this slice failed (Retry available).
+            markFlagsFailed(sliceIds);
+          }
+        } catch {
+          markFlagsFailed(sliceIds);
+        } finally {
+          setGeneratingIds((prev) => {
+            const next = new Set(prev);
+            sliceIds.forEach((id) => next.delete(id));
+            return next;
+          });
+        }
+        setSuggestProgress({ generating: idx < pending.length, current: have.size, total });
       }
-    } catch (err) {
-      console.error("suggest-all fetch error:", err);
+    } finally {
+      genLoopRef.current = false;
       setSuggestProgress((prev) => ({ ...prev, generating: false }));
     }
-  }
+  }, []);
+
+  // On-demand single-flag generation: the never-stuck fallback (user lands on a
+  // flag the loop hasn't reached) and the Retry action on a failed flag.
+  const generateOneFlag = useCallback(async (flagId: string) => {
+    setGeneratingIds((prev) => new Set([...prev, flagId]));
+    try {
+      const res = await fetch("/api/suggest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flagId }),
+      });
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data?.options) && json.data.options.length > 0) {
+        mergeOptions(json.data.options);
+        setFlags((prev) => prev.map((f) => (f.id === flagId && f.status === "generation_failed" ? { ...f, status: "open" } : f)));
+      } else {
+        markFlagsFailed([flagId]);
+      }
+    } catch {
+      markFlagsFailed([flagId]);
+    } finally {
+      setGeneratingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(flagId);
+        return next;
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const retryFlag = useCallback(async (flagId: string) => {
+    setFlags((prev) => prev.map((f) => (f.id === flagId ? { ...f, status: "open" } : f)));
+    await generateOneFlag(flagId);
+  }, [generateOneFlag]);
+
+  // Per-flag generation state — the truthful replacement for "no options ⇒ spinner".
+  const flagGenState = useCallback((flag: Flag | null | undefined): "ready" | "generating" | "failed" | "pending" => {
+    if (!flag) return "pending";
+    if (flagOptions.some((o) => o.flagId === flag.id)) return "ready";
+    if (flag.status === "generation_failed") return "failed";
+    if (generatingIds.has(flag.id)) return "generating";
+    return "pending";
+  }, [flagOptions, generatingIds]);
 
 
   // ── Save version ────────────────────────────────────────────────────────
@@ -961,13 +1126,16 @@ export default function WorkspacePage() {
     [plagiarismResults]
   );
 
-  // Citations needing review in the Citations tab — only verification issues,
-  // since structural issues now enter the edit queue as citation_fix items.
+  // Citations needing review — surfaced as the final, separate step on the
+  // Citations tab (never in the edit queue). Counts any open citation, whether
+  // it has a structural issue or a failed verification.
   const citationsNeedingReview = useMemo(() => {
     return docCitations.filter((c) => {
+      if (c.status !== "open") return false;
+      const hasStructuralIssue = (c.structuralFlags ?? []).length > 0;
       const verdict = c.verificationFlags?.verdict;
       const hasVerifyIssue = verdict === "unverified" || verdict === "wrong_details";
-      return hasVerifyIssue;
+      return hasStructuralIssue || hasVerifyIssue;
     }).length;
   }, [docCitations]);
 
@@ -1096,28 +1264,25 @@ export default function WorkspacePage() {
       queue.push({ type: "plagiarism", result });
     }
 
-    // 6. Citation structural fixes
-    for (const cit of docCitations) {
-      const flags = cit.structuralFlags ?? [];
-      if (flags.length > 0 && cit.status === "open") {
-        queue.push({ type: "citation_fix", citation: cit });
-      }
-    }
+    // Citations are intentionally NOT part of the edit queue. They are reviewed
+    // only on the Citations tab, as the final step once all edits are complete —
+    // fixing citations mid-edit is wasted effort because rewrites can move,
+    // merge, or remove the surrounding text. See section 10 of the PRD.
 
-    // 7. Spelling batch
+    // 6. Spelling batch
     const spellingFindings = (activeDoc?.spellingResults as import("@/lib/analysis/grammar-spelling-types").SpellingFinding[] | null) || [];
     if (spellingFindings.length > 0) {
       queue.push({ type: "spelling_batch", findings: spellingFindings });
     }
 
-    // 8. Grammar batch
+    // 7. Grammar batch
     const grammarFindings = (activeDoc?.grammarResults as import("@/lib/analysis/grammar-spelling-types").GrammarFinding[] | null) || [];
     if (grammarFindings.length > 0) {
       queue.push({ type: "grammar_batch", findings: grammarFindings });
     }
 
     return queue;
-  }, [openFlags, artifactFindings, artifactFlags, writingQualityAdvisories, openPlagiarismResults, processedArtifacts, docCitations, activeDoc?.spellingResults, activeDoc?.grammarResults]);
+  }, [openFlags, artifactFindings, artifactFlags, writingQualityAdvisories, openPlagiarismResults, processedArtifacts, activeDoc?.spellingResults, activeDoc?.grammarResults]);
 
   // Current queue item
   const currentQueueItem = editQueue[selectedFlagIdx] ?? null;
@@ -1212,6 +1377,33 @@ export default function WorkspacePage() {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [currentFlag]);
+
+  // ── Background suggestion generation: auto-start / auto-resume ───────────
+  // Whenever a scanned doc has open flags still missing options and no loop is
+  // running, (re)start the loop. Covers both "right after scan" and "reopened a
+  // half-generated doc". The genLoopRef guard makes re-runs cheap no-ops.
+  useEffect(() => {
+    if (!activeDocId || scanning || genLoopRef.current) return;
+    const missing = flags.some((f) =>
+      f.status === "open" &&
+      f.patternType !== "ai_artifact" &&
+      f.patternType !== "writing_quality" &&
+      f.patternType !== "plagiarism_match" &&
+      !flagOptions.some((o) => o.flagId === f.id));
+    if (missing) void runGenerationLoop(activeDocId);
+    // generatingIds is a dep so that when a previous loop releases (e.g. after a
+    // document switch) this re-evaluates and restarts for any remaining work.
+  }, [activeDocId, scanning, flags, flagOptions, generatingIds, runGenerationLoop]);
+
+  // ── Never-stuck fallback ────────────────────────────────────────────────
+  // If the user lands on a flag with no options and the loop isn't running (so it
+  // won't reach it on its own), generate that one flag on demand.
+  useEffect(() => {
+    if (!currentFlag || genLoopRef.current) return;
+    if (currentFlag.patternType === "ai_artifact") return;
+    if (flagGenState(currentFlag) !== "pending") return;
+    void generateOneFlag(currentFlag.id);
+  }, [currentFlag, flagGenState, generateOneFlag]);
 
   // ── JSX ────────────────────────────────────────────────────────────────
 
@@ -1874,7 +2066,6 @@ export default function WorkspacePage() {
                       currentQueueItem.type === "ai_detection" ? (PATTERN_TYPE_LABELS[currentQueueItem.flag.patternType]?.color?.split(" ").filter(c => c.startsWith("bg-") || c.startsWith("text-")).join(" ") || "bg-amber-100 text-amber-700") :
                       currentQueueItem.type === "artifact_batch" || currentQueueItem.type === "artifact_individual" ? "bg-purple-100 text-purple-700" :
                       currentQueueItem.type === "writing_quality" ? "bg-blue-100 text-blue-700" :
-                      currentQueueItem.type === "citation_fix" ? "bg-orange-100 text-orange-700" :
                       currentQueueItem.type === "spelling_batch" ? "bg-red-100 text-red-700" :
                       currentQueueItem.type === "grammar_batch" ? "bg-yellow-100 text-yellow-800" :
                       currentQueueItem.type === "plagiarism" ? (
@@ -1890,7 +2081,6 @@ export default function WorkspacePage() {
                        currentQueueItem.type === "artifact_batch" ? "AI Artifacts" :
                        currentQueueItem.type === "artifact_individual" ? "AI Artifact" :
                        currentQueueItem.type === "writing_quality" ? "Writing Quality (Advisory)" :
-                       currentQueueItem.type === "citation_fix" ? "Citation Format" :
                        currentQueueItem.type === "spelling_batch" ? "Spelling Errors" :
                        currentQueueItem.type === "grammar_batch" ? "Grammar Issues" :
                        currentQueueItem.type === "plagiarism" ? (
@@ -2054,47 +2244,6 @@ export default function WorkspacePage() {
                 </div>
               )}
 
-              {/* ── Citation Format Fix ──────────────────────────────── */}
-              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "citation_fix" && (
-                <div className="p-4 space-y-4">
-                  <div className="flex items-center gap-2">
-                    <span className="rounded bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700">Citation Format</span>
-                    <span className="text-[10px] text-gray-400">{(currentQueueItem.citation.structuralFlags ?? []).length} issue{(currentQueueItem.citation.structuralFlags ?? []).length !== 1 ? "s" : ""}</span>
-                  </div>
-                  {/* Original citation */}
-                  <div className="rounded-lg border-2 border-gray-300 bg-white p-4">
-                    <p className="text-[10px] font-medium text-gray-500 mb-1">Original citation:</p>
-                    <p className="text-sm text-gray-800 leading-relaxed">{currentQueueItem.citation.rawText}</p>
-                  </div>
-                  {/* Structural flags */}
-                  <div className="space-y-1.5">
-                    {(currentQueueItem.citation.structuralFlags ?? []).map((f, i) => (
-                      <div key={i} className={`flex items-start gap-2 rounded px-2.5 py-1.5 text-[10px] ${f.severity === "error" ? "bg-red-50 text-red-700" : "bg-orange-50 text-orange-700"}`}>
-                        <span className="shrink-0 mt-0.5">{f.severity === "error" ? "\u2717" : "\u26A0"}</span>
-                        <span>{f.message}</span>
-                      </div>
-                    ))}
-                  </div>
-                  {/* Suggested fix */}
-                  {currentQueueItem.citation.correctedText && (
-                    <div className="rounded-lg border border-green-200 bg-green-50 p-4">
-                      <p className="text-[10px] font-medium text-green-700 mb-1">Suggested fix:</p>
-                      <p className="text-sm text-green-900 leading-relaxed">{currentQueueItem.citation.correctedText}</p>
-                    </div>
-                  )}
-                  {/* Manual edit textarea — always available */}
-                  <div className="rounded-lg border border-gray-300 bg-white p-3">
-                    <label className="text-[10px] font-medium text-gray-600 mb-1 block">Or edit manually:</label>
-                    <textarea
-                      value={manualEditText || currentQueueItem.citation.correctedText || currentQueueItem.citation.rawText}
-                      onChange={(e) => setManualEditText(e.target.value)}
-                      rows={3}
-                      className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-gray-700 focus:border-blue-400 focus:outline-none"
-                    />
-                  </div>
-                </div>
-              )}
-
               {/* ── Spelling Batch ──────────────────────────────────── */}
               {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "spelling_batch" && (
                 <SpellingView
@@ -2249,13 +2398,41 @@ export default function WorkspacePage() {
                     </details>
                   </div>
 
-                  {/* Loading indicator for options */}
-                  {currentOptions.length === 0 && (
-                    <div className="flex items-center gap-2 rounded border border-blue-100 bg-blue-50 px-3 py-2">
-                      <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600 shrink-0" />
-                      <p className="text-xs text-blue-600">Generating replacement suggestions...</p>
-                    </div>
-                  )}
+                  {/* Per-flag generation state — honest about whether work is
+                      actually happening (no more perpetual spinner). */}
+                  {currentOptions.length === 0 && currentFlag && (() => {
+                    const state = flagGenState(currentFlag);
+                    if (state === "generating") {
+                      return (
+                        <div className="flex items-center gap-2 rounded border border-blue-100 bg-blue-50 px-3 py-2">
+                          <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600 shrink-0" />
+                          <p className="text-xs text-blue-600">Generating this suggestion…</p>
+                        </div>
+                      );
+                    }
+                    if (state === "pending") {
+                      return (
+                        <div className="flex items-center gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2">
+                          <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-400 shrink-0" />
+                          <p className="text-xs text-gray-500">Queued — generating shortly{suggestProgress.total > 0 ? ` (${suggestProgress.current} of ${suggestProgress.total} done)` : ""}</p>
+                        </div>
+                      );
+                    }
+                    if (state === "failed") {
+                      return (
+                        <div className="flex items-center justify-between gap-2 rounded border border-red-200 bg-red-50 px-3 py-2">
+                          <p className="text-xs text-red-700">Couldn&apos;t generate suggestions for this edit.</p>
+                          <button
+                            onClick={() => retryFlag(currentFlag.id)}
+                            className="shrink-0 rounded bg-red-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-red-700"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
 
                   {/* Option cards — fallback only. When the comparison stage is
                       shown (2+ options that differ) it covers this, so these would
@@ -2353,6 +2530,18 @@ export default function WorkspacePage() {
               )}
 
               {nav === "workspace" && workspaceMode === "citations" && activeDoc && (
+                <>
+                {actionableFlagCount > 0 && (
+                  <div className="mx-4 mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                    <svg className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" /></svg>
+                    <div className="text-[11px] leading-relaxed">
+                      <p className="font-semibold text-amber-800">Citations are best left for last.</p>
+                      <p className="text-amber-700">You still have {actionableFlagCount} edit{actionableFlagCount !== 1 ? "s" : ""} to review. Finish your edits first — rewrites can move or remove text around a citation, so fixing them now may be wasted work.{" "}
+                        <button onClick={() => setWorkspaceMode("edit")} className="font-medium underline hover:text-amber-900">Back to editing</button>
+                      </p>
+                    </div>
+                  </div>
+                )}
                 <CitationsPage
                   documentId={activeDoc.id}
                   sections={sections}
@@ -2368,6 +2557,7 @@ export default function WorkspacePage() {
                     }
                   }}
                 />
+                </>
               )}
 
               {/* Review changes diff view */}
@@ -2470,44 +2660,9 @@ export default function WorkspacePage() {
               <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
             </div>
 
-            {/* Progress bar — shown during scanning and suggestion generation */}
-            {(scanning || suggestProgress.generating || plagiarismLoading) && (
-              <div className="border-b border-gray-200 px-3 py-2 space-y-1.5">
-                {scanning && (
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] font-medium text-blue-700">Scanning</span>
-                      <div className="h-3 w-3 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
-                    </div>
-                    <div className="h-1.5 rounded-full bg-blue-100 overflow-hidden">
-                      <div className="h-full rounded-full bg-blue-500 animate-pulse" style={{ width: "60%" }} />
-                    </div>
-                  </div>
-                )}
-                {suggestProgress.generating && (
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] font-medium text-amber-700">Suggestions</span>
-                      <span className="text-[10px] text-amber-600">{suggestProgress.current}/{suggestProgress.total}</span>
-                    </div>
-                    <div className="h-1.5 rounded-full bg-amber-100 overflow-hidden">
-                      <div className="h-full rounded-full bg-amber-500 transition-all duration-500" style={{ width: `${suggestProgress.total > 0 ? (suggestProgress.current / suggestProgress.total) * 100 : 0}%` }} />
-                    </div>
-                  </div>
-                )}
-                {plagiarismLoading && (
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] font-medium text-purple-700">Plagiarism check</span>
-                      <div className="h-3 w-3 animate-spin rounded-full border-2 border-purple-200 border-t-purple-600" />
-                    </div>
-                    <div className="h-1.5 rounded-full bg-purple-100 overflow-hidden">
-                      <div className="h-full rounded-full bg-purple-500 animate-pulse" style={{ width: "40%" }} />
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+            {/* Scan + generation status now lives in the persistent status panel
+                pinned to the bottom of this column (see ChoicesStatusPanel-style
+                block below). */}
 
             <div className="flex-1 overflow-auto">
               {nav === "workspace" && workspaceMode === "edit" && currentQueueItem ? (
@@ -2664,41 +2819,6 @@ export default function WorkspacePage() {
                       </>
                     )}
 
-                    {/* ── Citation fix choices ─────────────────────────── */}
-                    {currentQueueItem.type === "citation_fix" && (
-                      <>
-                        {currentQueueItem.citation.correctedText && (
-                          <button
-                            onClick={() => handleCitationFixResolve(currentQueueItem.citation.id, "accepted", currentQueueItem.citation.correctedText!)}
-                            className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-white bg-green-600 hover:bg-green-700"
-                          >
-                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white text-[9px] font-bold text-green-600">1</span>
-                            <span>Apply Fix</span>
-                          </button>
-                        )}
-                        <button
-                          onClick={() => {
-                            const edited = manualEditText;
-                            if (edited && edited !== currentQueueItem.citation.rawText) {
-                              handleCitationFixResolve(currentQueueItem.citation.id, "edited", edited);
-                            }
-                          }}
-                          disabled={!manualEditText || manualEditText === currentQueueItem.citation.rawText}
-                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-40"
-                        >
-                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">{currentQueueItem.citation.correctedText ? "2" : "1"}</span>
-                          <span>Save Manual Edit</span>
-                        </button>
-                        <button
-                          onClick={() => handleCitationFixResolve(currentQueueItem.citation.id, "dismissed")}
-                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-500 hover:bg-gray-100"
-                        >
-                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">{currentQueueItem.citation.correctedText ? "3" : "2"}</span>
-                          <span>Dismiss</span>
-                        </button>
-                      </>
-                    )}
-
                     {/* ── Spelling batch choices ───────────────────────── */}
                     {currentQueueItem.type === "spelling_batch" && (
                       <>
@@ -2796,30 +2916,70 @@ export default function WorkspacePage() {
               ) : (
                 /* Empty state */
                 <div className="flex-1 overflow-auto p-3">
-                  {/* Suggestion generation progress */}
-                  {suggestProgress.generating && (
-                    <div className="mb-3 rounded border border-blue-200 bg-blue-50 p-2 space-y-1.5">
-                      <div className="flex items-center gap-2">
-                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600 shrink-0" />
-                        <p className="text-[10px] font-medium text-blue-700">Generating suggestions...</p>
-                      </div>
-                      <p className="text-[10px] text-blue-600">{suggestProgress.current} of {suggestProgress.total} flags</p>
+                  <div className="flex h-full items-center justify-center">
+                    <div className="text-center max-w-[180px]">
+                      <p className="text-xs font-semibold text-gray-400">Choices</p>
+                      <p className="mt-1 text-[10px] text-gray-400">
+                        {nav === "workspace" && workspaceMode === "edit" ? "No flags to review." : "Run a scan and AI suggestions will be generated automatically."}
+                      </p>
                     </div>
-                  )}
-
-                  {!suggestProgress.generating && (
-                    <div className="flex h-full items-center justify-center">
-                      <div className="text-center max-w-[180px]">
-                        <p className="text-xs font-semibold text-gray-400">Choices</p>
-                        <p className="mt-1 text-[10px] text-gray-400">
-                          {nav === "workspace" && workspaceMode === "edit" ? "No flags to review." : "Run a scan and AI suggestions will be generated automatically."}
-                        </p>
-                      </div>
-                    </div>
-                  )}
+                  </div>
                 </div>
               )}
             </div>
+
+            {/* ── Status panel (pinned bottom) ─────────────────────────────
+                Persistent scan + generation status. Checklist of what was
+                scanned, then the live "Creating options for N edits (X of N)"
+                line, then a ready-to-start confirmation once flag 1 is done. */}
+            {activeDoc && (Object.keys(scanPhases).length > 0 || suggestProgress.total > 0) && (
+              <div className="mt-auto max-h-[30%] overflow-y-auto border-t border-gray-200 bg-white px-3 py-2.5 text-[10px]">
+                {/* Scan checklist */}
+                <div className="space-y-1">
+                  {SCAN_PHASE_ORDER.filter((p) => scanPhases[p.key]).map((p) => {
+                    const st = scanPhases[p.key];
+                    return (
+                      <div key={p.key} className="flex items-center gap-1.5">
+                        {st === "done" ? (
+                          <svg className="h-3 w-3 shrink-0 text-green-600" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
+                        ) : st === "running" ? (
+                          <span className="h-2.5 w-2.5 shrink-0 animate-spin rounded-full border border-gray-300 border-t-gray-500" />
+                        ) : (
+                          <span className="h-2.5 w-2.5 shrink-0 rounded-full border border-gray-200" />
+                        )}
+                        <span className={st === "done" ? "text-gray-500" : st === "running" ? "text-gray-600" : "text-gray-400"}>
+                          {st === "done" ? "Scanned for " : st === "running" ? "Scanning for " : "Waiting to scan "}{p.label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Generation line */}
+                {suggestProgress.total > 0 && (
+                  <div className="mt-2 border-t border-gray-100 pt-2">
+                    {suggestProgress.generating ? (
+                      <div className="flex items-center gap-1.5">
+                        <ScrambleTicker />
+                        <span className="font-medium text-amber-700">
+                          Creating options for {suggestProgress.total} edit{suggestProgress.total !== 1 ? "s" : ""} ({suggestProgress.current} of {suggestProgress.total})
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <svg className="h-3 w-3 shrink-0 text-green-600" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
+                        <span className="text-gray-500">All {suggestProgress.total} edit{suggestProgress.total !== 1 ? "s" : ""} prepared</span>
+                      </div>
+                    )}
+                    {suggestProgress.current >= 1 && (
+                      <p className="mt-1 font-medium text-green-700">
+                        ✓ Ready — you can start editing{suggestProgress.generating ? " (the rest load as you go)" : ""}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
           </div>
           ) : (
@@ -3419,7 +3579,10 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, onSave
   const unresolvedFlags = flags.filter((f) => f.status === "open" || f.status === "generation_failed").length;
   const total = accepted.length + skipped.length + rejected.length;
   const hasPendingCitations = citationsPending > 0;
-  const hasRemainingWork = unresolvedFlags > 0 || spellingRemaining > 0 || grammarRemaining > 0 || hasPendingCitations;
+  // Citations are a deliberate FINAL step (own tab), reached only once the edit
+  // pass is done — so they are NOT counted as "remaining work" that blocks
+  // completion. Edits first, citations last.
+  const hasRemainingEdits = unresolvedFlags > 0 || spellingRemaining > 0 || grammarRemaining > 0;
 
   // Group accepted by category
   const categoryLabels: Record<string, string> = {
@@ -3442,18 +3605,18 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, onSave
       <div className="max-w-sm text-center space-y-5">
         <div>
           <div className={`inline-flex h-12 w-12 items-center justify-center rounded-full mb-3 ${
-            hasRemainingWork ? "bg-amber-100 text-amber-600" : "bg-green-100 text-green-600"
+            hasRemainingEdits ? "bg-amber-100 text-amber-600" : "bg-green-100 text-green-600"
           }`}>
-            {hasRemainingWork ? (
+            {hasRemainingEdits ? (
               <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
             ) : (
               <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
             )}
           </div>
           <h3 className="text-lg font-bold text-gray-800">
-            {hasRemainingWork ? "Items Still Need Attention" : "Editing Complete"}
+            {hasRemainingEdits ? "Edits Still Need Attention" : "Editing Complete"}
           </h3>
-          {hasRemainingWork ? (
+          {hasRemainingEdits ? (
             <div className="mt-2 space-y-1 text-sm">
               {unresolvedFlags > 0 && (
                 <p className="text-amber-700 font-medium">{unresolvedFlags} unresolved flag{unresolvedFlags !== 1 ? "s" : ""}</p>
@@ -3464,9 +3627,6 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, onSave
               {grammarRemaining > 0 && (
                 <p className="text-yellow-700 font-medium">{grammarRemaining} grammar issue{grammarRemaining !== 1 ? "s" : ""}</p>
               )}
-              {hasPendingCitations && (
-                <p className="text-amber-700 font-medium">{citationsPending} citation{citationsPending !== 1 ? "s" : ""} to review</p>
-              )}
             </div>
           ) : (
             <p className="mt-1 text-sm text-gray-500">
@@ -3474,6 +3634,22 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, onSave
             </p>
           )}
         </div>
+
+        {/* Citations — the final step, once edits are done. Kept separate from
+            the edit pass on purpose: fixing citations earlier is wasted effort
+            because rewrites can move or remove the surrounding text. */}
+        {hasPendingCitations && (
+          <div className={`rounded-lg border p-3 text-left ${hasRemainingEdits ? "border-gray-200 bg-gray-50" : "border-amber-200 bg-amber-50"}`}>
+            <p className={`text-xs font-semibold ${hasRemainingEdits ? "text-gray-600" : "text-amber-800"}`}>
+              Final step: review your citations
+            </p>
+            <p className="mt-1 text-[11px] leading-relaxed text-gray-500">
+              {hasRemainingEdits
+                ? `Finish the edits above first. Then check the ${citationsPending} citation${citationsPending !== 1 ? "s" : ""} flagged on the Citations tab — leave them until your wording is final.`
+                : `${citationsPending} citation${citationsPending !== 1 ? "s" : ""} flagged on the Citations tab. Now that your edits are done, this is the right time to review them.`}
+            </p>
+          </div>
+        )}
 
         {/* Stats */}
         <div className="flex justify-center gap-4">
@@ -3511,15 +3687,20 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, onSave
           {hasPendingCitations && (
             <button
               onClick={onGoToCitations}
-              className="w-full rounded-lg bg-amber-600 py-2 text-sm font-medium text-white hover:bg-amber-700"
+              disabled={hasRemainingEdits}
+              className={`w-full rounded-lg py-2 text-sm font-medium ${
+                hasRemainingEdits
+                  ? "border border-gray-200 bg-gray-50 text-gray-400 cursor-not-allowed"
+                  : "bg-amber-600 text-white hover:bg-amber-700"
+              }`}
             >
-              Go to Citations ({citationsPending})
+              {hasRemainingEdits ? `Citations (${citationsPending}) — finish edits first` : `Go to Citations (${citationsPending})`}
             </button>
           )}
           <button
             onClick={onSaveVersion}
             className={`w-full rounded-lg py-2 text-sm font-medium ${
-              hasRemainingWork
+              hasRemainingEdits || hasPendingCitations
                 ? "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
                 : "bg-blue-600 text-white hover:bg-blue-700"
             }`}
