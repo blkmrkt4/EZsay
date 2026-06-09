@@ -15,8 +15,8 @@ import { rateLimit } from "@/lib/rate-limit";
 import { trackEvent } from "@/lib/events/track";
 
 // Detection over a long document plus optional spelling/grammar can take tens of
-// seconds; give the function headroom so Vercel doesn't kill it mid-scan.
-export const maxDuration = 120;
+// seconds; 60s is the Vercel Hobby function cap.
+export const maxDuration = 60;
 
 /**
  * Maps a library entry to the most appropriate flag patternType.

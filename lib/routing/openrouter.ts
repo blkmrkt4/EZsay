@@ -110,7 +110,10 @@ export async function loadBind(slug: string) {
  * Tries primary model first, then fallbacks in order.
  * Each model is tried exactly once — no retry loops.
  */
-const REQUEST_TIMEOUT_MS = 60_000;
+// Kept safely under the Vercel Hobby 60s function cap so a slow call is aborted
+// and the route still returns a clean response (recoverable "failed → Retry")
+// instead of the whole function being hard-killed at the ceiling.
+const REQUEST_TIMEOUT_MS = 45_000;
 const MAX_RETRIES_ON_429 = 3;
 
 function sleep(ms: number) {

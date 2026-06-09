@@ -7,9 +7,9 @@ import { executeActivity } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { buildIntakeTokens } from "@/lib/prompts/intake-tokens";
 
-// A single LLM generation can take up to ~60s (OpenRouter cap) plus 429 backoff.
-// Give the function headroom so Vercel doesn't kill it mid-call.
-export const maxDuration = 120;
+// Vercel Hobby caps functions at 60s. One LLM call aborts at 45s
+// (REQUEST_TIMEOUT_MS), leaving room to return a response within the cap.
+export const maxDuration = 60;
 
 /**
  * Generates replacement options for a flag by calling OpenRouter

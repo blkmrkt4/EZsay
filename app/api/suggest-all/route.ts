@@ -8,10 +8,9 @@ import { checkForCorruption } from "@/lib/analysis/corruption-checker";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { buildIntakeTokens } from "@/lib/prompts/intake-tokens";
 
-// Each flag is an LLM call (~60s OpenRouter cap + 429 backoff). The client calls
-// this in small slices (a few flagIds per request) so no single invocation runs
-// long enough for Vercel to kill it; maxDuration gives headroom over one slow call.
-export const maxDuration = 120;
+// The client calls this one flag per request, so each invocation is a single LLM
+// call (aborts at 45s) — fits inside the Vercel Hobby 60s function cap.
+export const maxDuration = 60;
 
 /**
  * Generates suggestions for open flags in a document.

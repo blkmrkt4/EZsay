@@ -899,14 +899,13 @@ export default function WorkspacePage() {
       if (pending.length === 0) return;
 
       let idx = 0;
-      let first = true;
       while (idx < pending.length) {
         // Stop if the user switched away to another document mid-run, so we don't
         // merge this doc's options into a different doc's state.
         if (activeDocIdRef.current !== docId) return;
-        const size = first ? 1 : 2;
-        first = false;
-        const slice = pending.slice(idx, idx + size);
+        // One flag per request: each is a single LLM call, guaranteed to fit
+        // inside the Vercel Hobby 60s function cap (calls abort at 45s).
+        const slice = pending.slice(idx, idx + 1);
         idx += slice.length;
         const sliceIds = slice.map((f) => f.id);
         setGeneratingIds((prev) => new Set([...prev, ...sliceIds]));
