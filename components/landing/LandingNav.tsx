@@ -22,8 +22,10 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
   // layout's subscription gate → /pricing (which reads as "Log In sends me
   // to pricing" — confusing).
   const [isAuthed, setIsAuthed] = useState<boolean | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const pathname = usePathname();
   const onHome = pathname === "/";
+  const initial = (userEmail?.trim()?.[0] ?? "?").toUpperCase();
 
   useEffect(() => {
     const el = navRef.current;
@@ -40,10 +42,10 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
     const supabase = createClient();
     let cancelled = false;
     supabase.auth.getUser().then(({ data }) => {
-      if (!cancelled) setIsAuthed(!!data.user);
+      if (!cancelled) { setIsAuthed(!!data.user); setUserEmail(data.user?.email ?? null); }
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!cancelled) setIsAuthed(!!session?.user);
+      if (!cancelled) { setIsAuthed(!!session?.user); setUserEmail(session?.user?.email ?? null); }
     });
     return () => {
       cancelled = true;
@@ -71,7 +73,7 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
           <div className="min-w-0 flex-1 pt-[150px]">{middleSlot}</div>
         )}
 
-        <div className="flex shrink-0 items-center gap-5">
+        <div className="flex shrink-0 items-center gap-4">
           {onHome ? (
             <Link href="/pricing" className="hidden text-sm text-gray-500 hover:text-gray-900 sm:block">
               Pricing
@@ -81,21 +83,51 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
               Home
             </Link>
           )}
-          {isAuthed ? (
-            <Link href="/w" className="text-sm text-gray-500 hover:text-gray-900">
-              Workspace
-            </Link>
+          {isAuthed === null ? (
+            // Auth state still loading — neutral placeholder avoids a
+            // "Log In" → "Workspace" flash for already-signed-in users.
+            <span className="h-9 w-28 animate-pulse rounded-full bg-gray-100" aria-hidden />
+          ) : isAuthed ? (
+            <>
+              {/* Signed-in indicator: avatar + email, links to the workspace */}
+              <Link
+                href="/w"
+                title={userEmail ? `Signed in as ${userEmail}` : "Signed in"}
+                className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 py-1 pl-1 pr-3 hover:border-gray-300"
+              >
+                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-900 text-xs font-semibold text-white">
+                  {initial}
+                </span>
+                <span className="hidden max-w-[160px] truncate text-sm text-gray-600 sm:block">
+                  {userEmail ?? "Signed in"}
+                </span>
+              </Link>
+              <Link
+                href="/w"
+                className="flex items-center gap-1.5 rounded-full bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700"
+              >
+                Go to Workspace
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+                </svg>
+              </Link>
+            </>
           ) : (
-            <Link href="/login" className="text-sm text-gray-500 hover:text-gray-900">
-              Log In
-            </Link>
+            <>
+              <Link
+                href="/login"
+                className="rounded-full border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:border-gray-400 hover:text-gray-900"
+              >
+                Log In
+              </Link>
+              <button className="flex items-center gap-1.5 rounded-full bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700">
+                Watch Demo
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+                </svg>
+              </button>
+            </>
           )}
-          <button className="flex items-center gap-1.5 rounded-full border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:border-gray-400 hover:text-gray-900">
-            Watch Demo
-            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
-            </svg>
-          </button>
         </div>
       </nav>
 
@@ -134,33 +166,47 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
               Home
             </Link>
           )}
-          {isAuthed ? (
-            <Link
-              href="/w"
-              tabIndex={scrolledPast ? 0 : -1}
-              className="rounded-full px-3 py-1.5 text-gray-300 hover:text-white"
-            >
-              Workspace
-            </Link>
+          {isAuthed === null ? null : isAuthed ? (
+            <>
+              {/* Signed-in avatar indicator on the dark pill */}
+              <span
+                title={userEmail ? `Signed in as ${userEmail}` : "Signed in"}
+                className="ml-1 flex h-6 w-6 items-center justify-center rounded-full bg-white/15 text-xs font-semibold text-white"
+              >
+                {initial}
+              </span>
+              <Link
+                href="/w"
+                tabIndex={scrolledPast ? 0 : -1}
+                className="inline-flex items-center gap-1 rounded-full bg-white px-4 py-1.5 font-medium text-gray-900 hover:bg-gray-100"
+              >
+                Workspace
+                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+                </svg>
+              </Link>
+            </>
           ) : (
-            <Link
-              href="/login"
-              tabIndex={scrolledPast ? 0 : -1}
-              className="rounded-full px-3 py-1.5 text-gray-300 hover:text-white"
-            >
-              Log In
-            </Link>
+            <>
+              <Link
+                href="/login"
+                tabIndex={scrolledPast ? 0 : -1}
+                className="rounded-full px-3 py-1.5 text-gray-300 hover:text-white"
+              >
+                Log In
+              </Link>
+              <Link
+                href="/upload?free=1"
+                tabIndex={scrolledPast ? 0 : -1}
+                className="inline-flex items-center gap-1 rounded-full bg-white px-4 py-1.5 font-medium text-gray-900 hover:bg-gray-100"
+              >
+                Watch Demo
+                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+                </svg>
+              </Link>
+            </>
           )}
-          <Link
-            href="/upload?free=1"
-            tabIndex={scrolledPast ? 0 : -1}
-            className="inline-flex items-center gap-1 rounded-full bg-white px-4 py-1.5 font-medium text-gray-900 hover:bg-gray-100"
-          >
-            Watch Demo
-            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
-            </svg>
-          </Link>
         </div>
       </div>
     </>
