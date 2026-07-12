@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { isDevBypass } from "@/lib/supabase/dev-auth";
+import LogoutButton from "@/components/auth/LogoutButton";
 
 export default async function AdminLayout({
   children,
@@ -67,10 +68,13 @@ export default async function AdminLayout({
             Big Test
           </Link>
         </nav>
-        <div className="border-t border-gray-200 p-4">
+        <div className="flex items-center justify-between border-t border-gray-200 p-4">
           <Link href="/w" className="text-xs text-gray-500 hover:underline">
             Back to app
           </Link>
+          <LogoutButton className="text-xs text-gray-500 hover:underline">
+            Log Out
+          </LogoutButton>
         </div>
       </aside>
       <main className="flex-1 overflow-auto">{children}</main>

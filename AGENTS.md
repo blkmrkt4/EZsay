@@ -1,6 +1,6 @@
-# CLAUDE.md — EzSay Project
+# AGENTS.md — EzSay Project
 
-This file is the persistent context for Claude Code working on the EzSay project. Read it fully at the start of every session before writing any code.
+This file is the persistent context for Codex working on the EzSay project. Read it fully at the start of every session before writing any code.
 
 ---
 
@@ -149,7 +149,7 @@ ezsay/
 ├── scripts/
 │   └── seed-library.ts             # Seeds library_entries from ContextLLM.md on first deploy
 ├── PRD.md
-└── CLAUDE.md
+└── AGENTS.md
 ```
 
 ---
@@ -168,7 +168,7 @@ user message  = interpolated prompt template
 
 `context.md` is always prepended. It is never skipped. It is the global base layer that applies to every single LLM call regardless of activity type.
 
-The active prompt per activity is set in the admin panel (`/admin/prompts`) and stored in `prompt_configs`. Claude Code never hardcodes which prompt to use — always call `config-loader.ts`.
+The active prompt per activity is set in the admin panel (`/admin/prompts`) and stored in `prompt_configs`. Codex never hardcodes which prompt to use — always call `config-loader.ts`.
 
 ### Activity types and default prompt files
 

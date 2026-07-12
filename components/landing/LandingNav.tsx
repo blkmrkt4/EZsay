@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import LogoutButton from "@/components/auth/LogoutButton";
 
 interface LandingNavProps {
   /**
@@ -89,6 +90,14 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
             <span className="h-9 w-28 animate-pulse rounded-full bg-gray-100" aria-hidden />
           ) : isAuthed ? (
             <>
+              {/* Watch Demo stays reachable while signed in — doubles as a
+                  "how it works" / what's-new refresher for returning users. */}
+              <Link
+                href="/demo"
+                className="hidden rounded-full border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:border-gray-400 hover:text-gray-900 sm:block"
+              >
+                Watch Demo
+              </Link>
               {/* Signed-in indicator: avatar + email, links to the workspace */}
               <Link
                 href="/w"
@@ -111,6 +120,9 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
                 </svg>
               </Link>
+              <LogoutButton className="hidden text-sm text-gray-500 hover:text-gray-900 sm:block">
+                Log Out
+              </LogoutButton>
             </>
           ) : (
             <>
@@ -120,12 +132,15 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
               >
                 Log In
               </Link>
-              <button className="flex items-center gap-1.5 rounded-full bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700">
+              <Link
+                href="/demo"
+                className="flex items-center gap-1.5 rounded-full bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700"
+              >
                 Watch Demo
                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
                 </svg>
-              </button>
+              </Link>
             </>
           )}
         </div>
@@ -168,6 +183,13 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
           )}
           {isAuthed === null ? null : isAuthed ? (
             <>
+              <Link
+                href="/demo"
+                tabIndex={scrolledPast ? 0 : -1}
+                className="hidden rounded-full px-3 py-1.5 text-gray-300 hover:text-white sm:inline-block"
+              >
+                Watch Demo
+              </Link>
               {/* Signed-in avatar indicator on the dark pill */}
               <span
                 title={userEmail ? `Signed in as ${userEmail}` : "Signed in"}
@@ -196,7 +218,7 @@ export default function LandingNav({ middleSlot }: LandingNavProps = {}) {
                 Log In
               </Link>
               <Link
-                href="/upload?free=1"
+                href="/demo"
                 tabIndex={scrolledPast ? 0 : -1}
                 className="inline-flex items-center gap-1 rounded-full bg-white px-4 py-1.5 font-medium text-gray-900 hover:bg-gray-100"
               >

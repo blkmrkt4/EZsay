@@ -321,6 +321,7 @@ Validates text after replacements. Catches LLM response markers (CHANGED:, OPTIO
 | Admin: Activity Binds, Libraries, Settings, Log | Done |
 | Paywall modal UI | Done |
 | Stripe checkout + webhook (live mode) | Done |
+| Watch Demo walkthrough (`/demo`, public) | Done |
 | Production deployment to `ezsay.byzyb.ai` | Done |
 
 ---
@@ -546,3 +547,41 @@ For the funnel to work, **Anonymous Sign-Ins** must be enabled in the Supabase d
 Without this, `signInAnonymously()` returns an error and the page surfaces the message "Anonymous sign-ins may be disabled in Supabase…" inline on the scan button.
 
 The `/auth/callback` redirect URL must already be in Authentication → URL Configuration → Redirect URLs (it should be, from the password-reset wiring).
+
+---
+
+## 23. Watch Demo walkthrough
+
+Added 2026-06-09. The **"Watch Demo"** button links to `/demo`, a **public, no-auth, no-subscription** stepped wizard that walks a visitor through the whole product in ~2 minutes before they commit to a scan or signup. It doubles as a how-it-works / what's-new refresher for returning users, so it stays reachable while signed in. Entry points:
+
+- **Landing nav** (`components/landing/LandingNav.tsx`) — both the main row and the floating scroll pill, in **both** the signed-out and signed-in states.
+- **Workspace left rail** (`app/w/page.tsx`, bottom utility section next to Admin) — opens in a **new tab** (`target="_blank"`) so an in-progress edit session isn't lost.
+
+### 23.1 Structure
+
+- **Route:** `app/demo/page.tsx` — renders `LandingNav` + `<DemoWizard />`. No gating; not under `(dashboard)`/`/w`.
+- **Wizard:** `components/demo/DemoWizard.tsx` — `"use client"`, holds a step index. Progress dots, Back / "Got it" (Next), Exit (→ `/`). Keyboard: `→`/`Enter`/`Space` advance, `←` back, `Esc` exit. Final step CTAs link to `/scan` (free) and `/signup`. Supports a `?step=N` deep-link (1-based) for marketing links.
+- **Content:** `components/demo/steps.tsx` — single ordered `STEPS` array (eyebrow, title, body, faux `url`, `visual`, optional `callouts`, optional `caption`). 13 steps: welcome → upload/rename → library → scan & score → workspace tabs → Analysis → Edit three panes → compare options → color legend → Review → Citations → Style Rules → re-evaluate/save + CTA.
+- **Annotations:** `components/demo/Callout.tsx` — pulsing dot + label pill positioned by `{x,y}` **percent** of the visual box (so they scale with the fixed 16:10 stage); `CalloutLayer` overlays an array onto a visual.
+
+### 23.2 Drill-down detours (cul-de-sacs)
+
+Some main steps carry an optional **detour** — a short set of deeper sub-screens you can step into and return from, so the main path stays a clean overview while power detail lives one level down. Modeled on `DemoStep.drill = { label, steps: DrillStep[] }` in `steps.tsx`; entering a detour is opt-in via a "Go deeper: …" pill under the nav.
+
+The "tunnel" is shown in the progress bar: the **full main dot row stays visible**, and on any step that has a detour a vertical connector drops from the active dot to a **second, connected row of sub-dots** (one per detour screen — horizontal, since a detour can hold several screens). This branch renders **dimmed as a preview the moment you land on the step** (so the deeper layer is discoverable before you enter — clicking a preview sub-dot drops straight in), then brightens once you're inside: the active step dot turns amber, the current sub-dot widens, and the label reads "Step N · Detail M of K". The nav offers **← Back to tour** + Next/Done (forward past the last sub-screen returns to the main step). Deep-linkable via `?step=N&drill=M` (both 1-based).
+
+Detours shipped:
+
+| Main step | Detour |
+|---|---|
+| Welcome | "It's not just AI" → the full 8-spectrum dashboard (`DashboardMock focus="overview"`) |
+| Library | Document version history (`LibraryVersionsMock`) |
+| Analysis | Click a score → AI-detection flags · AI artifacts · writing-quality breakdown · plagiarism close-matches (`DashboardMock focus=…`) |
+| Edit panes | Collapse panels via the caret (`PanelCollapseMock`) · edit mark-points on the scroll rail (`EditMarksMock`) |
+| Citations | Structural checks + live web verification (`CitationsDetailMock`) |
+| Style Rules | Full universal-preferences list (`StyleRulesFullMock`) · document-formatting wizard (`FormattingWizardMock`) |
+| Re-evaluate | Scan → Auditor score (`AuditorScanMock`) · live word/char count status bar (`StatusBarMock`) |
+
+### 23.3 Visuals — hybrid, currently all HTML mockups
+
+The plan called for a hybrid of real workspace screenshots + HTML mockups for simpler screens. Shipped state: **all screens are HTML/Tailwind mockups** in `components/demo/mocks/` (`WelcomeMock`, `UploadMock`, `LibraryMock`, `ResultsMock`, `WorkspaceMock`, `AnalysisMock`, `MorphMock`, `ReviewMock`, `CitationsMock`, `StyleRulesMock`, `ShadingLegendMock`). The mocks reuse the app's real color tokens (`SIGNAL_COLORS` / `SIGNAL_BADGE` from `app/w/page.tsx`, pattern colors from `lib/constants.ts`) so the shading legend is truthful. Real captures were deferred because they need an authenticated session with a fully-scanned document + generated options; swapping a screenshot into a workspace step is a one-line `visual:` change in `steps.tsx` (drop the PNG in `public/demo/` and reference it with an `<img>`).
