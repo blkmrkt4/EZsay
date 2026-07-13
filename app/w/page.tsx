@@ -653,15 +653,24 @@ export default function WorkspacePage() {
       if (json.success && json.score != null) {
         setActiveDoc((prev) => prev ? { ...prev, citationsScore: json.score } : prev);
       }
-      // Step 2: Verify citations (are they real?)
-      const verifyRes = await fetch("/api/citations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "verify_all", documentId: docId }),
-      });
-      const verifyJson = await verifyRes.json();
-      if (verifyJson.success && verifyJson.data?.score != null) {
-        setActiveDoc((prev) => prev ? { ...prev, citationsScore: verifyJson.data.score } : prev);
+      // Step 2: Verify citations (are they real?) — batch loop: the server
+      // verifies a few entries per request to fit the function time cap.
+      let reset = true;
+      for (let guard = 0; guard < 60; guard++) {
+        const verifyRes = await fetch("/api/citations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "verify_batch", documentId: docId, reset }),
+        });
+        reset = false;
+        const verifyJson = await verifyRes.json();
+        if (!verifyJson.success) break;
+        if (verifyJson.data.remaining === 0) {
+          if (verifyJson.data.score != null) {
+            setActiveDoc((prev) => prev ? { ...prev, citationsScore: verifyJson.data.score } : prev);
+          }
+          break;
+        }
       }
     } catch (err) {
       console.error("Citation check error:", err);

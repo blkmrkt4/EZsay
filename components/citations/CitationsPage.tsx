@@ -1,28 +1,22 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import AuditSummary from "./AuditSummary";
+import CorrectedList from "./CorrectedList";
+import {
+  type Citation,
+  isNotFoundVerdict,
+  bucketOf,
+  BUCKET_ORDER,
+  proposedFixOf,
+} from "./types";
 
-interface VerificationData {
-  verdict: "verified" | "wrong_details" | "unverified" | "uncertain";
-  confidence: number;
-  explanation: string;
-  correctCitation: string | null;
-  sourceUrl: string | null;
-}
-
-interface Citation {
-  id: string;
-  rawText: string;
-  style: string;
-  entryType: "reference_entry" | "inline" | "quote";
-  linkedCitationId: string | null;
-  contextSentence: string | null;
-  structuralFlags: { type: string; message: string; severity: "error" | "warning"; suggestedFix?: string | null }[] | null;
-  verificationFlags: VerificationData | null;
-  status: string;
-  userAction: string | null;
-  correctedText: string | null;
-}
+const FIELD_LABELS: { key: "author" | "year" | "title" | "source"; label: string }[] = [
+  { key: "author", label: "Author" },
+  { key: "year", label: "Year" },
+  { key: "title", label: "Title" },
+  { key: "source", label: "Source" },
+];
 
 const STYLES = [
   {
@@ -94,6 +88,7 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const [verifyProgress, setVerifyProgress] = useState<{ done: number; total: number } | null>(null);
   const [targetStyle, setTargetStyle] = useState<string>("");
   const [converting, setConverting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -126,22 +121,34 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
 
   async function runVerification() {
     setVerifying(true);
+    setVerifyProgress(null);
     try {
-      const res = await fetch("/api/citations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "verify_all", documentId }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        if (json.data?.score != null && onScoreUpdate) onScoreUpdate(json.data.score);
-        // Reload citations to pick up verification flags
-        await loadCitations();
+      // Batch loop: the server verifies a few entries per request (Vercel
+      // function cap), we keep calling until none remain. reset=true on the
+      // first call clears previous verdicts for a full re-check.
+      let reset = true;
+      for (let guard = 0; guard < 60; guard++) {
+        const res = await fetch("/api/citations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "verify_batch", documentId, reset }),
+        });
+        reset = false;
+        const json = await res.json();
+        if (!json.success) break;
+        const { remaining, total, score } = json.data;
+        setVerifyProgress({ done: total - remaining, total });
+        await loadCitations(); // stream verdicts into the UI as they land
+        if (remaining === 0) {
+          if (score != null && onScoreUpdate) onScoreUpdate(score);
+          break;
+        }
       }
     } catch (err) {
       console.error("Verification error:", err);
     }
     setVerifying(false);
+    setVerifyProgress(null);
   }
 
   async function handleResolve(citationId: string, userAction: string, correctedText?: string) {
@@ -221,6 +228,13 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
   const refEntries = citations.filter((c) => !c.entryType || c.entryType === "reference_entry");
   const docFindings = citations.filter((c) => c.entryType === "inline" || c.entryType === "quote");
 
+  // Audit ordering: most severe first (fabricated → needs correction →
+  // uncertain → unchecked → verified). The corrected list keeps the
+  // document's original reference order.
+  const auditOrdered = [...refEntries].sort(
+    (a, b) => BUCKET_ORDER.indexOf(bucketOf(a)) - BUCKET_ORDER.indexOf(bucketOf(b)),
+  );
+
   const issueCount = citations.filter((c) => {
     const flags = c.structuralFlags ?? [];
     return flags.length > 0 && c.status === "open";
@@ -266,9 +280,21 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
           )}
         </div>
         {verifying && (
-          <div className="mt-1 flex items-center gap-2 text-[10px] text-purple-600">
-            <div className="h-3 w-3 animate-spin rounded-full border-2 border-purple-200 border-t-purple-600" />
-            Searching the web to verify each citation...
+          <div className="mt-1 space-y-1">
+            <div className="flex items-center gap-2 text-[10px] text-purple-600">
+              <div className="h-3 w-3 animate-spin rounded-full border-2 border-purple-200 border-t-purple-600" />
+              {verifyProgress
+                ? `Verifying sources… ${verifyProgress.done} of ${verifyProgress.total}`
+                : "Searching the web to verify each citation..."}
+            </div>
+            {verifyProgress && verifyProgress.total > 0 && (
+              <div className="h-1 w-48 overflow-hidden rounded-full bg-purple-100">
+                <div
+                  className="h-full rounded-full bg-purple-500 transition-all"
+                  style={{ width: `${Math.round((verifyProgress.done / verifyProgress.total) * 100)}%` }}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -360,6 +386,9 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
         </details>
       )}
 
+      {/* Audit summary — verdict counts with entry names */}
+      {refEntries.length > 0 && <AuditSummary entries={refEntries} />}
+
       {/* Document-wide findings — flagged in-text citations and quotes.
           These come from cross-referencing the whole document (citation graph),
           not from checking individual reference entries. */}
@@ -435,11 +464,11 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
         </div>
       )}
 
-      {/* Citation List */}
+      {/* Citation List — audit order, most severe first */}
       {refEntries.length > 0 && (
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-gray-700">Reference Entries</h3>
-          {refEntries.map((c, i) => {
+          {auditOrdered.map((c, i) => {
             const flags = c.structuralFlags ?? [];
             const isEditing = editingId === c.id;
             const isInline = c.entryType ? false : c.rawText.length <= 40;
@@ -471,19 +500,35 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                         <span className={`rounded px-1.5 py-0.5 text-[8px] font-semibold ${
                           c.verificationFlags.verdict === "verified" ? "bg-green-100 text-green-700" :
                           c.verificationFlags.verdict === "wrong_details" ? "bg-amber-100 text-amber-700" :
-                          c.verificationFlags.verdict === "unverified" ? "bg-red-100 text-red-700" :
+                          isNotFoundVerdict(c.verificationFlags.verdict) ? "bg-red-100 text-red-700" :
                           "bg-gray-100 text-gray-500"
                         }`}>
                           {c.verificationFlags.verdict === "verified" ? "Verified" :
                            c.verificationFlags.verdict === "wrong_details" ? "Wrong Details" :
-                           c.verificationFlags.verdict === "unverified" ? "Not Found" :
+                           isNotFoundVerdict(c.verificationFlags.verdict) ? "Likely Fabricated" :
                            "Uncertain"}
                         </span>
                       )}
                     </div>
                     <svg className={`h-3.5 w-3.5 text-gray-400 transition-transform ${isSelected ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
                   </div>
-                  <p className="text-xs text-gray-800 font-mono leading-relaxed">{c.correctedText ?? c.rawText}</p>
+                  {c.status === "open" && proposedFixOf(c) ? (
+                    /* BEFORE / AFTER — a fix is proposed but not yet accepted */
+                    <div className="space-y-1">
+                      <div className="rounded border border-red-200 bg-red-50/60 px-2 py-1">
+                        <span className="mr-1.5 text-[8px] font-semibold uppercase tracking-wider text-red-400">Before</span>
+                        <span className="text-xs font-mono leading-relaxed text-gray-700">{c.rawText}</span>
+                      </div>
+                      <div className="rounded border border-green-200 bg-green-50/60 px-2 py-1">
+                        <span className="mr-1.5 text-[8px] font-semibold uppercase tracking-wider text-green-500">After</span>
+                        <span className="text-xs font-mono leading-relaxed text-gray-800">{proposedFixOf(c)}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-800 font-mono leading-relaxed">
+                      {(c.status !== "open" && c.correctedText) || c.rawText}
+                    </p>
+                  )}
                   {flags.length > 0 && (
                     <div className="mt-1 space-y-0.5">
                       {flags.map((f, fi) => (
@@ -519,23 +564,49 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                       <div className={`rounded-lg border p-2.5 ${
                         c.verificationFlags.verdict === "verified" ? "border-green-200 bg-green-50" :
                         c.verificationFlags.verdict === "wrong_details" ? "border-amber-200 bg-amber-50" :
-                        c.verificationFlags.verdict === "unverified" ? "border-red-200 bg-red-50" :
+                        isNotFoundVerdict(c.verificationFlags.verdict) ? "border-red-200 bg-red-50" :
                         "border-gray-200 bg-gray-50"
                       }`}>
                         <div className="flex items-center gap-2 mb-1">
                           <span className={`text-[10px] font-semibold ${
                             c.verificationFlags.verdict === "verified" ? "text-green-700" :
                             c.verificationFlags.verdict === "wrong_details" ? "text-amber-700" :
-                            c.verificationFlags.verdict === "unverified" ? "text-red-700" :
+                            isNotFoundVerdict(c.verificationFlags.verdict) ? "text-red-700" :
                             "text-gray-600"
                           }`}>
                             {c.verificationFlags.verdict === "verified" ? "Source Verified" :
                              c.verificationFlags.verdict === "wrong_details" ? "Details Don't Match" :
-                             c.verificationFlags.verdict === "unverified" ? "Source Not Found" :
+                             isNotFoundVerdict(c.verificationFlags.verdict) ? "Likely Fabricated — No Matching Source Found" :
                              "Uncertain"}
                           </span>
                           <span className="text-[8px] text-gray-400">{Math.round(c.verificationFlags.confidence * 100)}% confidence</span>
                         </div>
+                        {/* Field-level diff: author / year / title / source checked independently */}
+                        {c.verificationFlags.fields && (
+                          <div className="mb-1.5 flex flex-wrap gap-1">
+                            {FIELD_LABELS.map(({ key, label }) => {
+                              const f = c.verificationFlags!.fields![key];
+                              if (!f || f.status === "unknown") return null;
+                              return (
+                                <span
+                                  key={key}
+                                  className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium ${
+                                    f.status === "ok" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                                  }`}
+                                  title={f.correct ? `Correct value: ${f.correct}` : undefined}
+                                >
+                                  {f.status === "ok" ? "✓" : "✗"} {label}
+                                  {f.status === "wrong" && f.correct && (
+                                    <span className="font-normal">→ {f.correct.slice(0, 40)}</span>
+                                  )}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {c.verificationFlags.plausibilityNote && (
+                          <p className="mb-1 text-[10px] italic text-amber-700">⚠ {c.verificationFlags.plausibilityNote}</p>
+                        )}
                         <p className="text-[10px] text-gray-600">{c.verificationFlags.explanation}</p>
                         {c.verificationFlags.correctCitation && (
                           <div className="mt-1.5 rounded bg-white border border-gray-200 p-2">
@@ -571,9 +642,19 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                     {/* Actions */}
                     {c.status === "open" && !isEditing && (
                       <div className="flex gap-1">
-                        <button onClick={() => handleResolve(c.id, "accepted")} className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-600 hover:bg-white">Accept</button>
-                        <button onClick={() => { setEditingId(c.id); setEditText(c.rawText); }} className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-600 hover:bg-white">Edit</button>
-                        <button onClick={() => handleResolve(c.id, "verified")} className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-600 hover:bg-white">Verify</button>
+                        {proposedFixOf(c) ? (
+                          <button
+                            onClick={() => handleResolve(c.id, "accepted", proposedFixOf(c)!)}
+                            className="rounded bg-green-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-green-700"
+                            title="Apply the suggested correction to your document"
+                          >
+                            Accept Fix
+                          </button>
+                        ) : (
+                          <button onClick={() => handleResolve(c.id, "accepted")} className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-600 hover:bg-white">Accept</button>
+                        )}
+                        <button onClick={() => { setEditingId(c.id); setEditText(proposedFixOf(c) ?? c.rawText); }} className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-600 hover:bg-white">Edit</button>
+                        <button onClick={() => handleResolve(c.id, "verified")} className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-600 hover:bg-white" title="Mark as verified without changing the text">Verify</button>
                         <button onClick={() => handleResolve(c.id, "dismissed")} className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-500 hover:bg-white">Dismiss</button>
                       </div>
                     )}
@@ -584,6 +665,9 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
           })}
         </div>
       )}
+
+      {/* Corrected reference list — assembled only from accepted fixes */}
+      {refEntries.length > 0 && <CorrectedList entries={refEntries} />}
     </div>
   );
 }

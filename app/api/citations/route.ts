@@ -4,7 +4,6 @@ import { db } from "@/db";
 import { citations, documents, sections, llmCallLog, libraryEntries } from "@/db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { callOpenRouter, loadBind } from "@/lib/routing/openrouter";
-import { webSearch } from "@/lib/search/tavily";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { buildCitationGraph, type GraphFlag } from "@/lib/citations/graph";
 import {
@@ -12,6 +11,11 @@ import {
   checkCitationArtifacts,
   cleanCitationArtifacts,
 } from "@/lib/citations/artifacts";
+import { verifyEntry } from "@/lib/citations/verify";
+
+// Verification runs one small batch per request (client-driven loop, same
+// pattern as background suggestion generation) — fits the Vercel Hobby 60s cap.
+export const maxDuration = 60;
 
 /**
  * GET: Load all citations for a document.
@@ -77,8 +81,8 @@ export async function POST(request: NextRequest) {
       return handleResolve(body, user.id);
     }
 
-    if (action === "verify_all") {
-      return handleVerifyAll(body, user.id);
+    if (action === "verify_all" || action === "verify_batch") {
+      return handleVerifyBatch(body, user.id);
     }
 
     if (action === "convert_all") {
@@ -474,39 +478,32 @@ function fillTemplate(template: string, tokens: Record<string, string>): string 
 }
 
 // ── Citation verification ─────────────────────────────────────────────────
+// Search queries are built deterministically from the parsed entry fields
+// (lib/citations/verify.ts) — no LLM query-generation step. The assess prompt
+// below is the LAST-RESORT fallback; the live prompt is the citation-verify
+// activity bind ("Citation Verify — Assess (field diff)").
 
-const VERIFY_QUERY_SYSTEM = `You generate web search queries to verify academic citations.
+const VERIFY_ASSESS_SYSTEM = `You verify whether an academic or media citation is real by comparing it against web search results, checking each field independently.
 
-For each numbered citation, create a search query that would find the original publication if it exists. Include the author's surname, year, and the most distinctive words from the title.
+Verdicts:
+- "verified" — a matching publication exists: author, year, and title are all consistent with the search results
+- "wrong_details" — the publication clearly exists but one or more cited fields are wrong (wrong year, wrong author or author order, wrong title wording, wrong journal/publisher/outlet). This includes cases where the TITLE exists but is attributed to the wrong author, or the AUTHOR exists but with a different title — check title and author INDEPENDENTLY.
+- "fabricated" — no plausible matching publication can be found; the citation appears invented
+- "uncertain" — search results are insufficient to decide either way
 
-Respond with a JSON array:
-[{"num": 1, "query": "search query here"}, ...]
+Also sanity-check internal plausibility using your general knowledge: impossible dates (e.g. an article naming a suspect before they were publicly identified, coverage of a sentencing dated before the sentencing occurred), publishers that don't publish in that field, and similar contradictions.
 
-Return ONLY the JSON array.`;
-
-const VERIFY_ASSESS_SYSTEM = `You verify whether an academic citation is real by comparing it to web search results.
-
-Given the citation and search results, determine:
-- "verified" — search results confirm this publication exists with matching author, year, and title
-- "wrong_details" — a similar publication exists but some details are wrong (year, author spelling, title, journal)
-- "unverified" — no matching publication found in search results
-- "uncertain" — partial match, cannot confirm or deny
-
-Respond in EXACTLY this format:
-VERDICT: [verified/wrong_details/unverified/uncertain]
+Respond in EXACTLY this format (one line each):
+VERDICT: [verified/wrong_details/fabricated/uncertain]
 CONFIDENCE: [0.0 to 1.0]
-EXPLANATION: [2-3 sentences about what you found or didn't find]
-CORRECT_CITATION: [the corrected citation text if wrong_details, otherwise "n/a"]
-SOURCE_URL: [URL of the matching source if found, otherwise "none"]`;
-
-const VERIFY_QUERY_FALLBACK: CitationLLMFallback = {
-  system: VERIFY_QUERY_SYSTEM,
-  user: "Citations to verify:\n[CITATIONS]",
-  model: "google/gemini-2.5-flash",
-  fallbacks: ["google/gemini-2.5-flash-lite"],
-  temperature: 0.1,
-  maxTokens: 2048,
-};
+FIELD_AUTHOR: [ok/wrong/unknown] | [correct value or n/a]
+FIELD_YEAR: [ok/wrong/unknown] | [correct value or n/a]
+FIELD_TITLE: [ok/wrong/unknown] | [correct value or n/a]
+FIELD_SOURCE: [ok/wrong/unknown] | [correct journal/publisher/outlet or n/a]
+PLAUSIBILITY: [one-sentence note on internal impossibilities, or "none"]
+EXPLANATION: [2-4 sentences: what you found, what matches, what doesn't]
+CORRECT_CITATION: [fully corrected citation in the same style if fixable, otherwise "n/a"]
+SOURCE_URL: [URL of the best matching source if found, otherwise "none"]`;
 
 const VERIFY_ASSESS_FALLBACK: CitationLLMFallback = {
   system: VERIFY_ASSESS_SYSTEM,
@@ -517,168 +514,101 @@ const VERIFY_ASSESS_FALLBACK: CitationLLMFallback = {
   maxTokens: 1024,
 };
 
-async function handleVerifyAll(body: { documentId: string }, userId: string) {
-  const { documentId } = body;
+// How many entries one request may verify, and the wall-clock guard after
+// which no NEW entry is started (each entry ≈ 2-3 searches + 1 LLM call).
+const VERIFY_BATCH_LIMIT = 4;
+const VERIFY_TIME_BUDGET_MS = 35_000;
+
+/**
+ * Verifies a batch of reference entries. The client loops this action until
+ * `remaining` hits 0, showing progress. `reset: true` on the first call
+ * clears previous verdicts so Verify All re-checks everything.
+ */
+async function handleVerifyBatch(
+  body: { documentId: string; reset?: boolean; limit?: number },
+  userId: string
+) {
+  const { documentId, reset } = body;
+  const limit = Math.min(Math.max(body.limit ?? VERIFY_BATCH_LIMIT, 1), 6);
 
   const [doc] = await db.select().from(documents).where(and(eq(documents.id, documentId), eq(documents.userId, userId))).limit(1);
   if (!doc) return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
 
+  if (reset) {
+    await db
+      .update(citations)
+      .set({ verificationFlags: null })
+      .where(and(eq(citations.documentId, documentId), eq(citations.entryType, "reference_entry")));
+  }
+
   // Only reference-list entries are verifiable against the web — inline and
   // quote rows are document-consistency findings, not lookups.
-  const docCitations = await db
+  const allEntries = await db
     .select()
     .from(citations)
     .where(and(eq(citations.documentId, documentId), eq(citations.entryType, "reference_entry")));
-  if (docCitations.length === 0) {
-    return NextResponse.json({ success: true, data: { verified: 0, total: 0 } });
-  }
 
-  console.log(`[citations/verify] Verifying ${docCitations.length} citations...`);
+  const pending = allEntries.filter((c) => c.verificationFlags == null);
+  const total = allEntries.length;
 
-  const queryCfg = await loadCitationConfig("citation-verify-queries", VERIFY_QUERY_FALLBACK);
-  const assessCfg = await loadCitationConfig("citation-verify", VERIFY_ASSESS_FALLBACK);
-
-  // Step 1: Generate search queries for all citations (one LLM call)
-  const numberedCitations = docCitations.map((c, i) => `[${i + 1}] ${c.rawText}`).join("\n");
-  const queryMap = new Map<number, string>();
-
-  try {
-    const queryResult = await callOpenRouter(
-      [
-        { role: "system", content: queryCfg.contextText + queryCfg.system },
-        { role: "user", content: fillTemplate(queryCfg.userTemplate, { CITATIONS: numberedCitations }) },
-      ],
-      queryCfg.model,
-      queryCfg.fallbacks,
-      queryCfg.temperature,
-      queryCfg.maxTokens,
-    );
-
-    await db.insert(llmCallLog).values({
-      activityType: "citation_verify_queries",
-      modelUsed: queryResult.modelUsed,
-      inputTokens: queryResult.inputTokens,
-      outputTokens: queryResult.outputTokens,
-      latencyMs: queryResult.latencyMs ?? 0,
-      outcome: "pending",
+  if (pending.length === 0) {
+    const score = await computeAndUpdateScore(documentId);
+    return NextResponse.json({
+      success: true,
+      data: { processed: 0, remaining: 0, total, score },
     });
-
-    const jsonMatch = queryResult.content.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      const parsed: { num: number; query: string }[] = JSON.parse(jsonMatch[0]);
-      for (const entry of parsed) queryMap.set(entry.num, entry.query);
-    }
-  } catch (err) {
-    console.error("[citations/verify] Query generation failed:", err);
-    // Fallback: use the raw citation text as the query
-    docCitations.forEach((c, i) => queryMap.set(i + 1, c.rawText.slice(0, 100)));
   }
 
-  // Step 2 & 3: Search and assess each citation
-  let verifiedCount = 0;
-  let unverifiedCount = 0;
-  let wrongDetailsCount = 0;
+  const assessCfg = await loadCitationConfig("citation-verify", VERIFY_ASSESS_FALLBACK);
+  const started = Date.now();
+  let processed = 0;
 
-  for (let i = 0; i < docCitations.length; i++) {
-    const citation = docCitations[i];
-    const query = queryMap.get(i + 1) ?? citation.rawText.slice(0, 80);
+  for (const citation of pending.slice(0, limit)) {
+    if (processed > 0 && Date.now() - started > VERIFY_TIME_BUDGET_MS) break;
 
-    console.log(`[citations/verify] ${i + 1}/${docCitations.length}: "${citation.rawText.slice(0, 50)}..."`);
-
+    console.log(`[citations/verify] "${citation.rawText.slice(0, 50)}..."`);
     try {
-      const searchResults = await webSearch(query, 5);
-      const relevantResults = searchResults.filter((r) => r.score >= 0.3);
+      const result = await verifyEntry(citation.rawText, assessCfg);
 
-      if (relevantResults.length === 0) {
-        // No results — mark as unverified
-        await db.update(citations).set({
-          verificationFlags: {
-            verdict: "unverified",
-            confidence: 0.7,
-            explanation: "No matching publication found in web search results.",
-            correctCitation: null,
-            sourceUrl: null,
-          },
-        }).where(eq(citations.id, citation.id));
-        unverifiedCount++;
-        continue;
+      await db.update(citations).set({ verificationFlags: result }).where(eq(citations.id, citation.id));
+
+      if (result.modelUsed) {
+        await db.insert(llmCallLog).values({
+          activityType: "citation_verify",
+          modelUsed: result.modelUsed,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          latencyMs: result.latencyMs,
+          outcome: "pending",
+        });
       }
 
-      // Assess with LLM
-      const searchContext = relevantResults
-        .map((r, idx) => `[${idx + 1}] URL: ${r.url}\nTitle: ${r.title}\nSnippet: ${r.content}`)
-        .join("\n\n");
-
-      const assessResult = await callOpenRouter(
-        [
-          { role: "system", content: assessCfg.contextText + assessCfg.system },
-          {
-            role: "user",
-            content: fillTemplate(assessCfg.userTemplate, {
-              CITATION: citation.rawText,
-              SEARCH_RESULTS: searchContext,
-            }),
-          },
-        ],
-        assessCfg.model,
-        assessCfg.fallbacks,
-        assessCfg.temperature,
-        assessCfg.maxTokens,
-      );
-
-      await db.insert(llmCallLog).values({
-        activityType: "citation_verify",
-        modelUsed: assessResult.modelUsed,
-        inputTokens: assessResult.inputTokens,
-        outputTokens: assessResult.outputTokens,
-        latencyMs: assessResult.latencyMs ?? 0,
-        outcome: "pending",
-      });
-
-      // Parse response
-      const verdictMatch = assessResult.content.match(/VERDICT:\s*(verified|wrong_details|unverified|uncertain)/i);
-      const confMatch = assessResult.content.match(/CONFIDENCE:\s*([\d.]+)/i);
-      const explMatch = assessResult.content.match(/EXPLANATION:\s*([\s\S]*?)(?=\nCORRECT_CITATION:|$)/i);
-      const correctMatch = assessResult.content.match(/CORRECT_CITATION:\s*([\s\S]*?)(?=\nSOURCE_URL:|$)/i);
-      const urlMatch = assessResult.content.match(/SOURCE_URL:\s*(.+)/i);
-
-      const verdict = verdictMatch?.[1]?.toLowerCase() ?? "uncertain";
-      const correctCitation = correctMatch?.[1]?.trim();
-      const sourceUrl = urlMatch?.[1]?.trim();
-
+      console.log(`[citations/verify] verdict=${result.verdict}`);
+    } catch (err) {
+      console.error(`[citations/verify] Error:`, err);
       await db.update(citations).set({
         verificationFlags: {
-          verdict,
-          confidence: confMatch ? parseFloat(confMatch[1]) : 0.5,
-          explanation: explMatch?.[1]?.trim() ?? assessResult.content.trim(),
-          correctCitation: correctCitation && correctCitation !== "n/a" ? correctCitation : null,
-          sourceUrl: sourceUrl && sourceUrl !== "none" ? sourceUrl : null,
+          verdict: "uncertain",
+          confidence: 0,
+          explanation: "Verification failed: " + (err instanceof Error ? err.message : "unknown error"),
+          correctCitation: null,
+          sourceUrl: null,
+          fields: null,
+          plausibilityNote: null,
         },
       }).where(eq(citations.id, citation.id));
-
-      if (verdict === "verified") verifiedCount++;
-      else if (verdict === "wrong_details") wrongDetailsCount++;
-      else if (verdict === "unverified") unverifiedCount++;
-
-      console.log(`[citations/verify] ${i + 1}: verdict=${verdict}`);
-
-      // Small delay
-      if (i < docCitations.length - 1) await new Promise((r) => setTimeout(r, 300));
-    } catch (err) {
-      console.error(`[citations/verify] Error on citation ${i + 1}:`, err);
-      await db.update(citations).set({
-        verificationFlags: { verdict: "uncertain", confidence: 0, explanation: "Verification failed: " + (err instanceof Error ? err.message : "unknown error"), correctCitation: null, sourceUrl: null },
-      }).where(eq(citations.id, citation.id));
     }
+    processed++;
   }
 
-  const score = await computeAndUpdateScore(documentId);
-
-  console.log(`[citations/verify] Done: ${verifiedCount} verified, ${wrongDetailsCount} wrong details, ${unverifiedCount} unverified`);
+  const remaining = pending.length - processed;
+  // Only recompute the score once the whole document is verified — partial
+  // scores mid-loop would make the header number bounce around.
+  const score = remaining === 0 ? await computeAndUpdateScore(documentId) : null;
 
   return NextResponse.json({
     success: true,
-    data: { verified: verifiedCount, wrongDetails: wrongDetailsCount, unverified: unverifiedCount, total: docCitations.length, score },
+    data: { processed, remaining, total, score },
   });
 }
 
@@ -692,9 +622,12 @@ async function computeAndUpdateScore(documentId: string): Promise<number> {
     // Structural issues
     const structFlags = (c.structuralFlags as StructuralFlag[] | null) || [];
     const hasStructIssue = structFlags.length > 0 && c.status === "open";
-    // Verification issues
+    // Verification issues ("unverified" is the legacy name for "fabricated")
     const verifyData = c.verificationFlags as { verdict?: string } | null;
-    const hasVerifyIssue = verifyData?.verdict === "unverified" || verifyData?.verdict === "wrong_details";
+    const hasVerifyIssue =
+      verifyData?.verdict === "fabricated" ||
+      verifyData?.verdict === "unverified" ||
+      verifyData?.verdict === "wrong_details";
     return hasStructIssue || hasVerifyIssue;
   }).length;
 

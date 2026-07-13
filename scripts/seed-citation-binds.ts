@@ -25,6 +25,28 @@ Respond with a JSON array:
 
 Return ONLY the JSON array.`;
 
+const VERIFY_ASSESS_V2_SYSTEM = `You verify whether an academic or media citation is real by comparing it against web search results, checking each field independently.
+
+Verdicts:
+- "verified" — a matching publication exists: author, year, and title are all consistent with the search results
+- "wrong_details" — the publication clearly exists but one or more cited fields are wrong (wrong year, wrong author or author order, wrong title wording, wrong journal/publisher/outlet). This includes cases where the TITLE exists but is attributed to the wrong author, or the AUTHOR exists but with a different title — check title and author INDEPENDENTLY.
+- "fabricated" — no plausible matching publication can be found; the citation appears invented
+- "uncertain" — search results are insufficient to decide either way
+
+Also sanity-check internal plausibility using your general knowledge: impossible dates (e.g. an article naming a suspect before they were publicly identified, coverage of a sentencing dated before the sentencing occurred), publishers that don't publish in that field, and similar contradictions.
+
+Respond in EXACTLY this format (one line each):
+VERDICT: [verified/wrong_details/fabricated/uncertain]
+CONFIDENCE: [0.0 to 1.0]
+FIELD_AUTHOR: [ok/wrong/unknown] | [correct value or n/a]
+FIELD_YEAR: [ok/wrong/unknown] | [correct value or n/a]
+FIELD_TITLE: [ok/wrong/unknown] | [correct value or n/a]
+FIELD_SOURCE: [ok/wrong/unknown] | [correct journal/publisher/outlet or n/a]
+PLAUSIBILITY: [one-sentence note on internal impossibilities, or "none"]
+EXPLANATION: [2-4 sentences: what you found, what matches, what doesn't]
+CORRECT_CITATION: [fully corrected citation in the same style if fixable, otherwise "n/a"]
+SOURCE_URL: [URL of the best matching source if found, otherwise "none"]`;
+
 const VERIFY_ASSESS_SYSTEM = `You verify whether an academic citation is real by comparing it to web search results.
 
 Given the citation and search results, determine:
@@ -74,6 +96,12 @@ const PROMPTS = [
     name: "Citation Verify — Assess",
     description: "Assesses citation reality against web search results",
     systemPrompt: VERIFY_ASSESS_SYSTEM,
+    userPrompt: 'CITATION:\n"[CITATION]"\n\nWEB SEARCH RESULTS:\n[SEARCH_RESULTS]',
+  },
+  {
+    name: "Citation Verify — Assess (field diff)",
+    description: "Field-level citation verification: author/year/title/source checked independently, with plausibility sanity check",
+    systemPrompt: VERIFY_ASSESS_V2_SYSTEM,
     userPrompt: 'CITATION:\n"[CITATION]"\n\nWEB SEARCH RESULTS:\n[SEARCH_RESULTS]',
   },
   {
@@ -159,6 +187,20 @@ async function main() {
       console.log(`  ~ wired ${spec.slug}: ${Object.keys(updates).join(", ")}`);
     } else {
       console.log(`  = ${spec.slug} already fully configured`);
+    }
+  }
+
+  // Upgrade: point citation-verify at the field-diff assess prompt (v2) —
+  // but only when its current prompt is one of the known seeded prompts, so
+  // an admin's custom prompt is never overwritten.
+  const [verifyBind] = await db.select().from(activityBinds).where(eq(activityBinds.slug, "citation-verify")).limit(1);
+  if (verifyBind?.promptId) {
+    const [currentPrompt] = await db.select().from(promptLibrary).where(eq(promptLibrary.id, verifyBind.promptId)).limit(1);
+    const knownSeeded = ["Citation Verification", "Citation Verify — Assess"];
+    if (currentPrompt && knownSeeded.includes(currentPrompt.name)) {
+      const v2Id = await ensurePrompt("Citation Verify — Assess (field diff)");
+      await db.update(activityBinds).set({ promptId: v2Id }).where(eq(activityBinds.id, verifyBind.id));
+      console.log(`  ~ upgraded citation-verify prompt: "${currentPrompt.name}" → field diff (v2)`);
     }
   }
 

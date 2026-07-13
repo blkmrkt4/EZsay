@@ -267,7 +267,27 @@ The structural check builds a **citation graph** (`lib/citations/graph.ts`) inst
 
 **UI:** the Citations page shows a **Document-Wide Findings** section (flagged in-text citations and quotes; actions: Mark Fixed / Dismiss) above the **Reference Entries** list.
 
-**Phases 2–4 (planned):** multi-query existence verification with field-level diffs and background-job execution (2), audit-style report with verdict summary + BEFORE/AFTER + corrected-list export built from user-accepted fixes only (3), quote verification against fetched source text — verbatim match + misinterpretation warnings (4).
+### 10.2 Existence verification — field-level diffs (added 2026-07-13, phase 2 of 4)
+
+`lib/citations/verify.ts` replaces the single-query verify. Per reference entry:
+
+1. **Deterministic queries** built from the parsed entry fields (no LLM query-generation step — the `citation-verify-queries` bind exists but is no longer called): exact-title phrase search, author + year + title keywords, author + entry text fallback. Each attacks a different failure mode — the exact-title search is what finds "title exists under a different author" (the Boyle/Humphries case).
+2. Results merged across queries (dedupe by URL, best score wins, top 6).
+3. **Field-diff assessment** via the `citation-verify` bind (prompt "Citation Verify — Assess (field diff)"): author / year / title / source each checked **independently** (`ok`/`wrong`/`unknown` + correct value), plus a **plausibility** sanity check for internal impossibilities (anachronistic dates etc.). Verdicts: `verified` / `wrong_details` / `fabricated` / `uncertain` (`unverified` is the legacy name for fabricated; both are handled everywhere). All-searches-failed → `uncertain`, zero results across queries → `fabricated` at 0.6 confidence without an LLM call.
+4. `verificationFlags` jsonb now stores `fields`, `plausibilityNote`, `queriesUsed` alongside the verdict; the UI renders field chips (✓ Author / ✗ Year → 2005) and the plausibility warning.
+
+**Batch execution (Vercel Hobby 60s cap):** `verify_batch` action verifies up to 4 entries per request (35s wall-clock guard; `reset: true` on the first call clears old verdicts). Both clients — the Citations page "Verify All Sources" button (with progress bar, verdicts streaming in per batch) and the scan-time citation phase in `app/w/page.tsx` — drive the loop until `remaining === 0`. The score is recomputed only when the loop finishes. `verify_all` is an alias for one batch (kept for stale clients). Verified live 2026-07-13: Jewkes 2015 → verified 95%; Gill "Gender and media futures" 2022 → wrong_details (year → 2007, real title "Gender and the Media"); Boyle 2019 → wrong_details (author → Drew Humphries (Ed.), year → 2009, publisher → Northeastern University Press) with exact corrected citation.
+
+### 10.3 Citation audit report (added 2026-07-13, phase 3 of 4)
+
+The Citations page presents results as an audit rather than a flat list (`components/citations/AuditSummary.tsx`, `CorrectedList.tsx`, shared types + bucket logic in `components/citations/types.ts`):
+
+- **Verdict summary** at the top: tiles for ✅ Verified / 🟡 Needs correction / 🔴 Fabricated–wrong source / ⚪ Uncertain / ⏳ Not yet verified, each with counts and the short names of its entries ("Boyle (2019), Gill (2022)…").
+- **Audit ordering:** reference entry cards sort most-severe-first (fabricated → needs correction → uncertain → unchecked → verified). Bucket rules in `bucketOf()`: fabricated/legacy-unverified verdict → fabricated; wrong_details verdict or open structural flags → needs correction; resolved entries fall back to their verdict bucket.
+- **BEFORE/AFTER cards:** an open entry with a proposed fix (verification's `correctCitation` wins over the structural `correctedText` — `proposedFixOf()`) shows red BEFORE / green AFTER blocks. The primary action is **Accept Fix**, which passes the proposed text through the resolve endpoint — the same explicit-user-action path as always (constraint #3, no silent corrections); Edit pre-fills with the proposed fix.
+- **Corrected Reference List** (collapsible, bottom): copy-paste-ready list in the document's original reference order. Final text per entry = accepted/edited `correctedText`, otherwise the original — suggestions the user has NOT accepted appear unchanged with an "unresolved" badge, and the header counts them. Copy-to-clipboard button.
+
+**Phase 4 (planned):** quote verification against fetched source text — verbatim match + misinterpretation warnings.
 
 ---
 
