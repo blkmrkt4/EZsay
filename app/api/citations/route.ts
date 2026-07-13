@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
-import { citations, documents, sections, llmCallLog } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
-import { callOpenRouter } from "@/lib/routing/openrouter";
+import { citations, documents, sections, llmCallLog, libraryEntries } from "@/db/schema";
+import { eq, and, sql } from "drizzle-orm";
+import { callOpenRouter, loadBind } from "@/lib/routing/openrouter";
 import { webSearch } from "@/lib/search/tavily";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
+import { buildCitationGraph, type GraphFlag } from "@/lib/citations/graph";
+import {
+  loadCitationArtifacts,
+  checkCitationArtifacts,
+  cleanCitationArtifacts,
+} from "@/lib/citations/artifacts";
 
 /**
  * GET: Load all citations for a document.
@@ -108,53 +114,112 @@ async function handleStructuralCheck(
     return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
   }
 
-  // Find citation content in the raw text
-  const rawCitations = extractCitationStrings(doc.rawText);
+  // Build the document-wide citation graph: reference entries, in-text
+  // citations, quotes — linked, with reconciliation findings attached.
+  const graph = buildCitationGraph(doc.rawText);
+  const artifactPatterns = await loadCitationArtifacts();
 
-  if (rawCitations.length === 0) {
+  if (graph.entries.length === 0 && graph.inline.length === 0) {
     return NextResponse.json({
       success: true,
       data: { citations: [], message: "No citations detected in document." },
     });
   }
 
-  // Detect citation style
-  const detectedStyle = detectCitationStyle(rawCitations);
+  const detectedStyle = detectCitationStyle([
+    ...graph.inline.map((c) => c.text),
+    ...graph.entries.map((e) => e.text),
+  ]);
 
-  // Run structural checks per citation and generate auto-fix suggestions
-  const results = rawCitations.map((raw) => {
-    const structuralFlags = checkStructure(raw, detectedStyle);
-    const correctedText = buildCorrectedText(raw, structuralFlags);
-    return {
-      rawText: raw,
-      style: detectedStyle,
-      structuralFlags,
-      correctedText,
-    };
+  // Reference entries: style/format checks + artifact patterns + graph findings.
+  const entryRecords = graph.entries.map((entry) => {
+    const artifactFlags = checkCitationArtifacts(entry.text, artifactPatterns);
+    const structuralFlags: GraphFlag[] = [
+      ...checkStructure(entry.text, detectedStyle),
+      ...artifactFlags,
+      ...entry.flags,
+    ];
+    // Suggested correction: strip artifacts first, then apply format fixes.
+    const cleaned = artifactFlags.length > 0 ? cleanCitationArtifacts(entry.text, artifactPatterns) : entry.text;
+    const formatFixed = buildCorrectedText(cleaned, checkStructure(cleaned, detectedStyle));
+    const correctedText = formatFixed ?? (cleaned !== entry.text ? cleaned : null);
+    return { entry, structuralFlags, correctedText };
   });
 
-  // Clear previous citations
+  // Clear previous citations, then insert reference entries first so inline
+  // and quote rows can point at their entry's row id.
   await db.delete(citations).where(eq(citations.documentId, documentId));
 
-  // Insert into DB
-  const inserted = await db
-    .insert(citations)
-    .values(
-      results.map((r) => ({
-        documentId,
-        rawText: r.rawText,
-        style: r.style,
-        structuralFlags: r.structuralFlags,
-        verificationFlags: null,
-        correctedText: r.correctedText,
-        status: r.structuralFlags.length > 0 ? ("open" as const) : ("resolved" as const),
-      }))
-    )
-    .returning();
+  const insertedEntries = graph.entries.length
+    ? await db
+        .insert(citations)
+        .values(
+          entryRecords.map((r) => ({
+            documentId,
+            rawText: r.entry.text,
+            style: detectedStyle,
+            entryType: "reference_entry",
+            structuralFlags: r.structuralFlags,
+            verificationFlags: null,
+            correctedText: r.correctedText,
+            status: r.structuralFlags.length > 0 ? ("open" as const) : ("resolved" as const),
+          }))
+        )
+        .returning()
+    : [];
+
+  // In-text citations and quotes are stored only when they carry findings —
+  // healthy ones exist transiently in the graph and would only add noise.
+  const flaggedInline = graph.inline.filter((c) => c.flags.length > 0);
+  const flaggedQuotes = graph.quotes.filter((q) => q.flags.length > 0);
+
+  const insertedFindings = flaggedInline.length + flaggedQuotes.length > 0
+    ? await db
+        .insert(citations)
+        .values([
+          ...flaggedInline.map((c) => ({
+            documentId,
+            rawText: c.text,
+            style: detectedStyle,
+            entryType: "inline",
+            linkedCitationId:
+              c.matchedEntryIndex !== null ? insertedEntries[c.matchedEntryIndex]?.id ?? null : null,
+            contextSentence: c.contextSentence,
+            structuralFlags: c.flags,
+            verificationFlags: null,
+            status: "open" as const,
+          })),
+          ...flaggedQuotes.map((q) => ({
+            documentId,
+            rawText: q.text,
+            style: detectedStyle,
+            entryType: "quote",
+            contextSentence: q.contextSentence,
+            structuralFlags: q.flags,
+            verificationFlags: null,
+            status: "open" as const,
+          })),
+        ])
+        .returning()
+    : [];
+
+  // Bump flagCount on matched artifact library entries (acceptance analytics).
+  const artifactHits = new Map<string, number>();
+  for (const r of entryRecords) {
+    for (const f of r.structuralFlags as (GraphFlag & { libraryEntryId?: string })[]) {
+      if (f.libraryEntryId) artifactHits.set(f.libraryEntryId, (artifactHits.get(f.libraryEntryId) ?? 0) + 1);
+    }
+  }
+  for (const [libId, count] of artifactHits) {
+    db.update(libraryEntries)
+      .set({ flagCount: sql`${libraryEntries.flagCount} + ${count}` })
+      .where(eq(libraryEntries.id, libId))
+      .catch(() => {});
+  }
 
   const score = await computeAndUpdateScore(documentId);
 
-  return NextResponse.json({ success: true, data: inserted, score });
+  return NextResponse.json({ success: true, data: [...insertedEntries, ...insertedFindings], score });
 }
 
 async function handleResolve(body: {
@@ -216,87 +281,8 @@ async function handleResolve(body: {
 }
 
 // ── Helper functions ───────────────────────────────────────────────────────
-
-function extractCitationStrings(text: string): string[] {
-  const results: string[] = [];
-
-  // APA-style inline: (Author, Year) or (Author et al., Year)
-  const apaMatches = text.match(
-    /\([A-Z][a-zA-Z'-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][a-zA-Z'-]+))?,?\s*\d{4}[a-z]?(?:,\s*p{1,2}\.\s*\d+(?:-\d+)?)?\)/g
-  );
-  if (apaMatches) results.push(...apaMatches);
-
-  // Reference list entries — find the reference section by header.
-  //
-  // The header must appear as a STANDALONE heading: at the start of a line and
-  // immediately followed by a colon, a newline, or end-of-text. This prevents a
-  // passing mention of the word ("…indicated in the bibliography at the end…" in
-  // a coursework declaration) from matching and swallowing the entire document.
-  const refSectionMatch = text.match(
-    /(?:^|\n)[^\S\n]*(?:References|Bibliography|Works Cited|Reference List)[^\S\n]*(?::|(?=\n)|$)([\s\S]*?)(?:\n\n\n|$)/i
-  );
-  if (refSectionMatch) {
-    const refText = refSectionMatch[1].trim();
-    const entries = splitReferenceEntries(refText);
-    results.push(...entries);
-  }
-
-  // Dedupe — the inline and reference passes can surface the same string.
-  return [...new Set(results)];
-}
-
-/**
- * Whether a line plausibly is a bibliography entry rather than ordinary prose.
- * A real reference entry contains a publication year AND an author-shaped token
- * ("Surname, I." or "… et al"). Body-text fragments — which the old splitter
- * happily returned as "citations" — have neither and are rejected here.
- */
-function looksLikeReferenceEntry(line: string): boolean {
-  // Must contain a plausible publication year (1500–2099).
-  if (!/\b(?:1[5-9]\d{2}|20\d{2})\b/.test(line)) return false;
-  // Must look authored: "Surname, I", "Surname, Firstname", or "et al".
-  return /\b[A-Z][a-zA-ZÀ-ÿ'-]+,\s*[A-Z]/.test(line) || /\bet\s+al\b/i.test(line);
-}
-
-/**
- * Splits a reference section into individual citation entries.
- * Handles both newline-separated and run-together bibliography text
- * (common after PDF extraction strips line breaks).
- *
- * Strategy: try newline split first. If that yields too few entries
- * relative to the text length, fall back to pattern-based splitting
- * that detects entry boundaries where a new author name begins
- * (e.g. "Surname, I." or "Surname, Initial" after a sentence-ending period/number).
- */
-function splitReferenceEntries(text: string): string[] {
-  // Try newline split first, then keep only lines that actually look like
-  // bibliography entries. Without this filter a captured block of body prose
-  // returns every wrapped line as a bogus "citation".
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 10 && looksLikeReferenceEntry(l));
-
-  if (lines.length >= 2) {
-    return lines;
-  }
-
-  // Newline split failed (text is run together). Split on author-name boundaries.
-  // Split before "Surname, I. Year" or "Surname, Firstname. "Title" patterns.
-  // This catches entries like: "Harding, S. 2005." or "Hoffman, Mark. \"Critical..."
-  const entryBoundary = /\s+(?=[A-Z][a-zA-ZÀ-ÿ'-]+,\s*[A-Z][a-zA-Z]*[\.\s]\s*(?:\d{4}|[A-Z\u201C"']))/g;
-  const parts = text
-    .split(entryBoundary)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 10 && looksLikeReferenceEntry(s));
-
-  if (parts.length > 1) {
-    return parts;
-  }
-
-  // Last resort: keep the whole block only if it itself reads like a citation.
-  return text.length > 10 && looksLikeReferenceEntry(text) ? [text] : [];
-}
+// Extraction and reference-section splitting live in lib/citations/graph.ts;
+// this route keeps only style detection and per-entry format checks.
 
 type CitationStyle = "apa" | "mla" | "chicago" | "harvard" | "oxford" | "bluebook" | "oscola" | "business";
 
@@ -429,6 +415,64 @@ function buildCorrectedText(citation: string, flags: StructuralFlag[]): string |
   return changed ? result : null;
 }
 
+// ── LLM config via activity binds ──────────────────────────────────────────
+// Prompts and models are managed in the admin panel (activity binds). The
+// constants below are LAST-RESORT fallbacks used only if a bind hasn't been
+// seeded — normal operation reads everything from the database (constraint #7).
+
+interface CitationLLMConfig {
+  system: string;
+  userTemplate: string;
+  contextText: string;
+  model: string;
+  fallbacks: string[];
+  temperature: number;
+  maxTokens: number;
+}
+
+interface CitationLLMFallback {
+  system: string;
+  user: string;
+  model: string;
+  fallbacks: string[];
+  temperature: number;
+  maxTokens: number;
+}
+
+async function loadCitationConfig(slug: string, fb: CitationLLMFallback): Promise<CitationLLMConfig> {
+  try {
+    const b = await loadBind(slug);
+    return {
+      system: b.systemPrompt || fb.system,
+      userTemplate: b.userPrompt || fb.user,
+      contextText: b.contextText,
+      model: b.model.openrouterModelId,
+      fallbacks: b.fallbacks.length > 0 ? b.fallbacks : fb.fallbacks,
+      temperature: b.model.temperature,
+      maxTokens: b.model.maxTokens,
+    };
+  } catch {
+    return {
+      system: fb.system,
+      userTemplate: fb.user,
+      contextText: "",
+      model: fb.model,
+      fallbacks: fb.fallbacks,
+      temperature: fb.temperature,
+      maxTokens: fb.maxTokens,
+    };
+  }
+}
+
+/** Fills [TOKEN] placeholders in a prompt template. */
+function fillTemplate(template: string, tokens: Record<string, string>): string {
+  let result = template;
+  for (const [key, value] of Object.entries(tokens)) {
+    result = result.split(`[${key}]`).join(value);
+  }
+  return result;
+}
+
 // ── Citation verification ─────────────────────────────────────────────────
 
 const VERIFY_QUERY_SYSTEM = `You generate web search queries to verify academic citations.
@@ -455,9 +499,23 @@ EXPLANATION: [2-3 sentences about what you found or didn't find]
 CORRECT_CITATION: [the corrected citation text if wrong_details, otherwise "n/a"]
 SOURCE_URL: [URL of the matching source if found, otherwise "none"]`;
 
-const VERIFY_QUERY_MODEL = "google/gemini-2.5-flash";
-const VERIFY_ASSESS_MODEL = "anthropic/claude-sonnet-4";
-const VERIFY_ASSESS_FALLBACKS = ["google/gemini-2.5-pro", "openai/gpt-4o"];
+const VERIFY_QUERY_FALLBACK: CitationLLMFallback = {
+  system: VERIFY_QUERY_SYSTEM,
+  user: "Citations to verify:\n[CITATIONS]",
+  model: "google/gemini-2.5-flash",
+  fallbacks: ["google/gemini-2.5-flash-lite"],
+  temperature: 0.1,
+  maxTokens: 2048,
+};
+
+const VERIFY_ASSESS_FALLBACK: CitationLLMFallback = {
+  system: VERIFY_ASSESS_SYSTEM,
+  user: 'CITATION:\n"[CITATION]"\n\nWEB SEARCH RESULTS:\n[SEARCH_RESULTS]',
+  model: "anthropic/claude-sonnet-4",
+  fallbacks: ["google/gemini-2.5-pro", "openai/gpt-4o"],
+  temperature: 0.2,
+  maxTokens: 1024,
+};
 
 async function handleVerifyAll(body: { documentId: string }, userId: string) {
   const { documentId } = body;
@@ -465,27 +523,35 @@ async function handleVerifyAll(body: { documentId: string }, userId: string) {
   const [doc] = await db.select().from(documents).where(and(eq(documents.id, documentId), eq(documents.userId, userId))).limit(1);
   if (!doc) return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
 
-  const docCitations = await db.select().from(citations).where(eq(citations.documentId, documentId));
+  // Only reference-list entries are verifiable against the web — inline and
+  // quote rows are document-consistency findings, not lookups.
+  const docCitations = await db
+    .select()
+    .from(citations)
+    .where(and(eq(citations.documentId, documentId), eq(citations.entryType, "reference_entry")));
   if (docCitations.length === 0) {
     return NextResponse.json({ success: true, data: { verified: 0, total: 0 } });
   }
 
   console.log(`[citations/verify] Verifying ${docCitations.length} citations...`);
 
+  const queryCfg = await loadCitationConfig("citation-verify-queries", VERIFY_QUERY_FALLBACK);
+  const assessCfg = await loadCitationConfig("citation-verify", VERIFY_ASSESS_FALLBACK);
+
   // Step 1: Generate search queries for all citations (one LLM call)
   const numberedCitations = docCitations.map((c, i) => `[${i + 1}] ${c.rawText}`).join("\n");
-  let queryMap = new Map<number, string>();
+  const queryMap = new Map<number, string>();
 
   try {
     const queryResult = await callOpenRouter(
       [
-        { role: "system", content: VERIFY_QUERY_SYSTEM },
-        { role: "user", content: `Citations to verify:\n${numberedCitations}` },
+        { role: "system", content: queryCfg.contextText + queryCfg.system },
+        { role: "user", content: fillTemplate(queryCfg.userTemplate, { CITATIONS: numberedCitations }) },
       ],
-      VERIFY_QUERY_MODEL,
-      ["google/gemini-2.5-flash-lite"],
-      0.1,
-      2048,
+      queryCfg.model,
+      queryCfg.fallbacks,
+      queryCfg.temperature,
+      queryCfg.maxTokens,
     );
 
     await db.insert(llmCallLog).values({
@@ -545,13 +611,19 @@ async function handleVerifyAll(body: { documentId: string }, userId: string) {
 
       const assessResult = await callOpenRouter(
         [
-          { role: "system", content: VERIFY_ASSESS_SYSTEM },
-          { role: "user", content: `CITATION:\n"${citation.rawText}"\n\nWEB SEARCH RESULTS:\n${searchContext}` },
+          { role: "system", content: assessCfg.contextText + assessCfg.system },
+          {
+            role: "user",
+            content: fillTemplate(assessCfg.userTemplate, {
+              CITATION: citation.rawText,
+              SEARCH_RESULTS: searchContext,
+            }),
+          },
         ],
-        VERIFY_ASSESS_MODEL,
-        VERIFY_ASSESS_FALLBACKS,
-        0.2,
-        1024,
+        assessCfg.model,
+        assessCfg.fallbacks,
+        assessCfg.temperature,
+        assessCfg.maxTokens,
       );
 
       await db.insert(llmCallLog).values({
@@ -656,8 +728,14 @@ Style formats:
 - Chicago: [1] footnote inline; Author. Title. Journal Vol, no. Issue (Year): Pages. for references
 - Oxford: footnote inline; Author, Title (Place: Publisher, Year), Pages. for references`;
 
-const CONVERT_MODEL = "anthropic/claude-sonnet-4";
-const CONVERT_FALLBACKS = ["google/gemini-2.5-pro", "openai/gpt-4o"];
+const CONVERT_FALLBACK: CitationLLMFallback = {
+  system: CONVERT_SYSTEM,
+  user: "Convert from [SOURCE_STYLE] to [TARGET_STYLE]:\n[CITATION]",
+  model: "anthropic/claude-sonnet-4",
+  fallbacks: ["google/gemini-2.5-pro", "openai/gpt-4o"],
+  temperature: 0.2,
+  maxTokens: 512,
+};
 
 async function handleConvertAll(body: { documentId: string; targetStyle: string }, userId: string) {
   const { documentId, targetStyle } = body;
@@ -670,28 +748,37 @@ async function handleConvertAll(body: { documentId: string; targetStyle: string 
     return NextResponse.json({ success: true, data: { converted: 0, citations: [] } });
   }
 
+  const convertCfg = await loadCitationConfig("citation-convert", CONVERT_FALLBACK);
+
   const docSections = await db.select().from(sections).where(eq(sections.documentId, documentId)).orderBy(sections.index);
 
   let converted = 0;
   const updatedCitations: typeof docCitations = [];
 
   for (const citation of docCitations) {
-    if (citation.style === targetStyle) {
+    // Quote rows are quoted prose, not citation strings — nothing to convert.
+    if (citation.style === targetStyle || citation.entryType === "quote") {
       updatedCitations.push(citation);
       continue;
     }
 
     try {
-      const isRefEntry = citation.rawText.length > 40;
       const result = await callOpenRouter(
         [
-          { role: "system", content: CONVERT_SYSTEM },
-          { role: "user", content: `Convert from ${citation.style.toUpperCase()} to ${targetStyle.toUpperCase()}:\n${citation.rawText}` },
+          { role: "system", content: convertCfg.contextText + convertCfg.system },
+          {
+            role: "user",
+            content: fillTemplate(convertCfg.userTemplate, {
+              SOURCE_STYLE: citation.style.toUpperCase(),
+              TARGET_STYLE: targetStyle.toUpperCase(),
+              CITATION: citation.rawText,
+            }),
+          },
         ],
-        CONVERT_MODEL,
-        CONVERT_FALLBACKS,
-        0.2,
-        512,
+        convertCfg.model,
+        convertCfg.fallbacks,
+        convertCfg.temperature,
+        convertCfg.maxTokens,
       );
 
       const convertedText = result.content.trim();

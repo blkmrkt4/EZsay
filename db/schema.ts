@@ -98,6 +98,7 @@ export const libraryCategoryEnum = pgEnum("library_category", [
   "burstiness",
   "academic_pattern",
   "emerging",
+  "citation_artifact",
 ]);
 
 export const librarySeverityEnum = pgEnum("library_severity", [
@@ -280,6 +281,12 @@ export const citations = pgTable("citations", {
     .references(() => documents.id, { onDelete: "cascade" }),
   rawText: text("raw_text").notNull(),
   style: citationStyleEnum("style").notNull(),
+  // Citation graph: what kind of object this row is. Reference-list entries
+  // are the verifiable unit; inline citations and quotes are stored only
+  // when they carry findings (e.g. no matching entry, orphan quote).
+  entryType: text("entry_type").notNull().default("reference_entry"), // 'reference_entry' | 'inline' | 'quote'
+  linkedCitationId: uuid("linked_citation_id"), // inline/quote → its reference_entry row
+  contextSentence: text("context_sentence"),    // surrounding sentence for inline/quote rows
   structuralFlags: jsonb("structural_flags"),
   verificationFlags: jsonb("verification_flags"),
   status: citationStatusEnum("status").notNull().default("open"),

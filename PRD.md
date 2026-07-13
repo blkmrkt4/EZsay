@@ -241,9 +241,33 @@ Collapsible style conversion section with 8 expandable style cards (full name, u
 
 **Bridge from the edit queue → Citations tab** is documented in section 9.1: the footer count exposes pending citations throughout editing, and the end-of-queue summary surfaces a "Go to Citations" primary action when citations remain unresolved. This closes the discoverability gap that the architectural separation would otherwise create.
 
-**Citation extraction must not over-detect** (`extractCitationStrings` in `app/api/citations/route.ts`). Two constraints, both added 2026-06-08 after a 23k-char essay reported 309 "citations" (almost all bogus, inflating the edit queue to 309 items vs. ~61 real flags):
+**Citation extraction must not over-detect** (now `lib/citations/graph.ts`; moved out of the route 2026-07-13). Two constraints, both added 2026-06-08 after a 23k-char essay reported 309 "citations" (almost all bogus, inflating the edit queue to 309 items vs. ~61 real flags):
 1. A reference section is only recognised when a header word (References / Bibliography / Works Cited / Reference List) appears as a **standalone heading** — at the start of a line and immediately followed by a colon, newline, or end-of-text. A passing mention in prose (e.g. a coursework declaration's "…indicated in the bibliography at the end…") must never match and swallow the document.
-2. `splitReferenceEntries` only returns lines/parts that pass `looksLikeReferenceEntry` — a plausible publication year (1500–2099) **and** an author-shaped token ("Surname, I." or "et al"). This rejects body-text fragments even if the section capture is too greedy. Results are de-duplicated before insertion.
+2. `splitReferenceEntries` only returns lines/parts that pass `looksLikeReferenceEntry` — a plausible publication year (1500–2099) **and** an author-shaped token ("Surname, I.", "et al", or a corporate author like "BBC News (2021)"). This rejects body-text fragments even if the section capture is too greedy. Results are de-duplicated before insertion.
+
+### 10.1 Citation graph — document-wide checks (added 2026-07-13, phase 1 of 4)
+
+The structural check builds a **citation graph** (`lib/citations/graph.ts`) instead of checking entries in isolation. Three object types are extracted and linked: **reference entries**, **in-text citations** (parenthetical `(Gill, 2022)` and narrative `Boyle (2019)`, person and corporate authors), and **quotes** (≥5-word quoted spans with their context sentence). Deterministic, LLM-free reconciliation runs at scan time:
+
+| Finding type | Severity | Meaning |
+|---|---|---|
+| `no_reference_entry` | error | In-text citation matches nothing in the reference list |
+| `year_mismatch` | error | Body year ≠ reference-list year for the same source |
+| `author_inconsistent` | warning | In-text names a non-first author of the matched entry |
+| `never_cited` | warning | Reference entry never cited in the body |
+| `possible_duplicate` | warning | Two entries appear to reference the same source |
+| `quote_without_citation` | error | Quote has no citation inside its own sentence |
+| `ai_artifact` | error/warning | Entry matches a `citation_artifact` phrase-library pattern |
+
+**Storage:** `citations.entryType` (`reference_entry` / `inline` / `quote`), `linkedCitationId` (inline/quote → entry row), `contextSentence`. Reference entries are always stored; inline/quote rows are stored **only when they carry findings**. Verify-all and style conversion target reference entries only (quotes are never converted). A quote's citation must be inside the quote's own sentence — never a following sentence/paragraph, which would silently cover an uncited quote.
+
+**AI artifacts** (`lib/citations/artifacts.ts`): patterns live in `library_entries` with category `citation_artifact` (seeded by `scripts/seed-citation-artifacts.ts` — dangling "Wikipedia", `(Accessed: [insert date])`, `[insert …]`/`[date]`/`[URL]` placeholders, editor instructions like `[pull live URL …]`, "Various coverage", year-less access dates). Regex artifacts contribute a removal-based suggested fix; suggested corrections strip artifacts first, then apply format fixes. Admin-managed per constraint #8.
+
+**LLM config:** citation prompts/models moved from hardcoded route constants to activity binds — `citation-verify`, `citation-verify-queries`, `citation-convert` (seeded by `scripts/seed-citation-binds.ts`; hardcoded values remain only as last-resort fallbacks when a bind is missing). Fixes the constraint-#7 violation.
+
+**UI:** the Citations page shows a **Document-Wide Findings** section (flagged in-text citations and quotes; actions: Mark Fixed / Dismiss) above the **Reference Entries** list.
+
+**Phases 2–4 (planned):** multi-query existence verification with field-level diffs and background-job execution (2), audit-style report with verdict summary + BEFORE/AFTER + corrected-list export built from user-accepted fixes only (3), quote verification against fetched source text — verbatim match + misinterpretation warnings (4).
 
 ---
 

@@ -14,7 +14,10 @@ interface Citation {
   id: string;
   rawText: string;
   style: string;
-  structuralFlags: { type: string; message: string; severity: "error" | "warning" }[] | null;
+  entryType: "reference_entry" | "inline" | "quote";
+  linkedCitationId: string | null;
+  contextSentence: string | null;
+  structuralFlags: { type: string; message: string; severity: "error" | "warning"; suggestedFix?: string | null }[] | null;
   verificationFlags: VerificationData | null;
   status: string;
   userAction: string | null;
@@ -213,6 +216,11 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
     ? STYLES.find((s) => s.value === citations[0].style)?.label ?? citations[0].style
     : "Unknown";
 
+  // Reference-list entries vs document-wide findings (flagged in-text
+  // citations and quotes). Legacy rows without entryType count as entries.
+  const refEntries = citations.filter((c) => !c.entryType || c.entryType === "reference_entry");
+  const docFindings = citations.filter((c) => c.entryType === "inline" || c.entryType === "quote");
+
   const issueCount = citations.filter((c) => {
     const flags = c.structuralFlags ?? [];
     return flags.length > 0 && c.status === "open";
@@ -352,14 +360,89 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
         </details>
       )}
 
-      {/* Citation List */}
-      {citations.length > 0 && (
+      {/* Document-wide findings — flagged in-text citations and quotes.
+          These come from cross-referencing the whole document (citation graph),
+          not from checking individual reference entries. */}
+      {docFindings.length > 0 && (
         <div className="space-y-2">
-          <h3 className="text-sm font-semibold text-gray-700">All Citations</h3>
-          {citations.map((c, i) => {
+          <h3 className="text-sm font-semibold text-gray-700">Document-Wide Findings</h3>
+          <p className="text-[10px] text-gray-400">
+            Issues found by cross-referencing the body text against the reference list.
+          </p>
+          {docFindings.map((c) => {
+            const flags = c.structuralFlags ?? [];
+            const resolvedOut = c.status !== "open";
+            return (
+              <div
+                key={c.id}
+                className={`rounded-lg border overflow-hidden ${
+                  resolvedOut ? "border-gray-200 bg-gray-50 opacity-60" :
+                  flags.some((f) => f.severity === "error") ? "border-red-200 bg-red-50" :
+                  "border-amber-200 bg-amber-50"
+                }`}
+              >
+                <div className="px-3 py-2.5">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold bg-gray-100 text-gray-600">
+                      {c.entryType === "quote" ? "quote" : "in-text citation"}
+                    </span>
+                    {resolvedOut && (
+                      <span className="text-[9px] text-gray-400">
+                        {c.status === "dismissed" ? "dismissed" : "resolved"}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => onScrollToText?.(c.entryType === "quote" ? c.rawText : c.rawText)}
+                    className="text-left w-full"
+                    title="Locate in document"
+                  >
+                    <p className="text-xs text-gray-800 font-mono leading-relaxed">
+                      {c.entryType === "quote" ? `“${c.rawText}”` : c.rawText}
+                    </p>
+                  </button>
+                  {c.contextSentence && (
+                    <p className="mt-1 text-[10px] text-gray-500 italic leading-relaxed">…{c.contextSentence}…</p>
+                  )}
+                  <div className="mt-1 space-y-0.5">
+                    {flags.map((f, fi) => (
+                      <p key={fi} className={`text-[10px] ${f.severity === "error" ? "text-red-600" : "text-amber-600"}`}>
+                        {f.severity === "error" ? "Error" : "Warning"}: {f.message}
+                      </p>
+                    ))}
+                  </div>
+                  {c.status === "open" && (
+                    <div className="mt-1.5 flex gap-1">
+                      <button
+                        onClick={() => handleResolve(c.id, "verified")}
+                        className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-600 hover:bg-white"
+                        title="I've fixed this in the document"
+                      >
+                        Mark Fixed
+                      </button>
+                      <button
+                        onClick={() => handleResolve(c.id, "dismissed")}
+                        className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-500 hover:bg-white"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Citation List */}
+      {refEntries.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-gray-700">Reference Entries</h3>
+          {refEntries.map((c, i) => {
             const flags = c.structuralFlags ?? [];
             const isEditing = editingId === c.id;
-            const isInline = c.rawText.length <= 40;
+            const isInline = c.entryType ? false : c.rawText.length <= 40;
 
             const isSelected = selectedId === c.id;
             const context = isSelected ? findContext(c.rawText) : null;

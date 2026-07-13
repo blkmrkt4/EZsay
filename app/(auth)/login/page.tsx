@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -28,8 +28,21 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirect = searchParams.get("redirect") || "/w";
+  // switch=1: the visitor was sent here because their current account lacks
+  // access to `redirect` (e.g. a non-admin clicking Admin Panel). Show who
+  // they're signed in as so it's clear why they need different credentials.
+  const switching = searchParams.get("switch") === "1";
+  const [currentEmail, setCurrentEmail] = useState<string | null>(null);
 
   const supabase = createClient();
+
+  useEffect(() => {
+    if (!switching) return;
+    supabase.auth.getUser().then(({ data }) => {
+      setCurrentEmail(data.user?.email ?? null);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [switching]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -148,6 +161,15 @@ function LoginForm() {
         <h1 className="text-center text-xl font-bold text-gray-900">
           Login to EzSay
         </h1>
+
+        {switching && currentEmail && (
+          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            You&apos;re signed in as{" "}
+            <span className="font-semibold">{currentEmail}</span>, which
+            doesn&apos;t have access to that page. Sign in below with an
+            account that does — it will replace your current session.
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleLogin} className="mt-6 space-y-3">

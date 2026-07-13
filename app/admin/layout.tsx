@@ -14,7 +14,7 @@ export default async function AdminLayout({
     const {
       data: { user },
     } = await supabase.auth.getUser();
-    if (!user) redirect("/login");
+    if (!user) redirect("/login?redirect=/admin");
 
     const { data: profile } = await supabase
       .from("profiles")
@@ -22,7 +22,10 @@ export default async function AdminLayout({
       .eq("id", user.id)
       .single();
 
-    if (profile?.role !== "admin") redirect("/w");
+    // Signed in but not an admin: send to the login page (not /w) so the
+    // user can switch to an admin account — there is no in-app account
+    // switcher. switch=1 makes the login page explain why they landed there.
+    if (profile?.role !== "admin") redirect("/login?redirect=/admin&switch=1");
   }
 
   return (
