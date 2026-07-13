@@ -16,6 +16,7 @@ const SYSTEM_SLUGS = [
   { slug: "citation-verify", name: "Citation Verification", description: "Verify citation accuracy via web search" },
   { slug: "citation-verify-queries", name: "Citation Search Queries", description: "Generate web search queries for citation verification" },
   { slug: "citation-convert", name: "Citation Style Conversion", description: "Convert citations between academic styles" },
+  { slug: "citation-quote-check", name: "Citation Quote Check", description: "Verify quotations against fetched source text" },
   { slug: "expand-prose", name: "Expand Prose", description: "Expand outline sections into full prose" },
 ];
 

@@ -68,6 +68,44 @@ export async function GET(
   }
 }
 
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ docId: string }> }
+) {
+  const { docId } = await params;
+  const user = await getCurrentUser();
+
+  if (!user) {
+    return NextResponse.json(
+      { success: false, error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
+
+  try {
+    // Sections, flags, flag options, and citations all cascade on delete.
+    const deleted = await db
+      .delete(documents)
+      .where(and(eq(documents.id, docId), eq(documents.userId, user.id)))
+      .returning({ id: documents.id });
+
+    if (deleted.length === 0) {
+      return NextResponse.json(
+        { success: false, error: "Document not found" },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ success: true, data: { id: docId } });
+  } catch (err) {
+    console.error("Document delete failed:", err);
+    return NextResponse.json(
+      { success: false, error: "Failed to delete document." },
+      { status: 500 }
+    );
+  }
+}
+
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ docId: string }> }

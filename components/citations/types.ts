@@ -8,15 +8,38 @@ export interface FieldCheck {
 }
 
 export interface VerificationData {
-  // "unverified" is the legacy name for "fabricated" (pre-field-diff rows)
-  verdict: "verified" | "wrong_details" | "fabricated" | "unverified" | "uncertain";
+  // Entry verdicts ("unverified" is the legacy name for "fabricated") plus
+  // quote verdicts — quote rows store their check result in the same column.
+  verdict:
+    | "verified" | "wrong_details" | "fabricated" | "unverified" | "uncertain"
+    | "quote_verified" | "quote_near_match" | "quote_not_found"
+    | "quote_misrepresented" | "quote_source_found";
   confidence: number;
   explanation: string;
-  correctCitation: string | null;
+  correctCitation?: string | null;
   sourceUrl: string | null;
   fields?: { author: FieldCheck; year: FieldCheck; title: FieldCheck; source: FieldCheck } | null;
   plausibilityNote?: string | null;
+  // Quote-check fields (entryType === "quote" rows)
+  quoteMatch?: "verbatim" | "near" | "paraphrase" | "not_found" | "unknown";
+  contextVerdict?: "faithful" | "misrepresented" | "unclear" | null;
+  actualArgument?: string | null;
+  suggestedRewrite?: string | null;
+  matchedExcerpt?: string | null;
 }
+
+/** Display config for quote-check verdicts. */
+export const QUOTE_VERDICT_DISPLAY: Record<
+  string,
+  { label: string; tone: "green" | "amber" | "red" | "blue" | "gray" }
+> = {
+  quote_verified: { label: "Quote Verified", tone: "green" },
+  quote_near_match: { label: "Close Match", tone: "amber" },
+  quote_not_found: { label: "Not Found in Source", tone: "red" },
+  quote_misrepresented: { label: "Misrepresents Source", tone: "red" },
+  quote_source_found: { label: "Possible Source Found", tone: "blue" },
+  uncertain: { label: "Couldn't Check", tone: "gray" },
+};
 
 export interface Citation {
   id: string;

@@ -138,3 +138,73 @@ export async function webSearch(
   console.log(`[search] Using DuckDuckGo for: "${query.slice(0, 50)}..."`);
   return duckDuckGoSearch(query, maxResults);
 }
+
+// ── Full-page content extraction ────────────────────────────────────────────
+
+/** Crude HTML→text: drop scripts/styles/tags, decode common entities. */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<(?:nav|header|footer|aside)[\s\S]*?<\/(?:nav|header|footer|aside)>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&(?:lsquo|rsquo);/g, "'")
+    .replace(/&(?:ldquo|rdquo);/g, '"')
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+const PAGE_TEXT_MAX_CHARS = 24_000;
+
+/**
+ * Fetches the readable text of a web page for quote verification.
+ * Tries the Tavily Extract API first (clean article text), then falls back
+ * to a direct fetch with HTML stripping. Returns null when unreachable
+ * (paywall, 404, blocked) — callers must treat that as "cannot verify",
+ * never as "quote is fake".
+ */
+export async function fetchPageText(url: string): Promise<string | null> {
+  const tavilyKey = await getTavilyKey();
+
+  if (tavilyKey) {
+    try {
+      const response = await fetch("https://api.tavily.com/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: tavilyKey, urls: [url] }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const raw = data.results?.[0]?.raw_content;
+        if (typeof raw === "string" && raw.trim().length > 200) {
+          db.insert(events)
+            .values({ eventName: "tavily_extract", category: "usage", metadata: { url } })
+            .catch(() => {});
+          return raw.slice(0, PAGE_TEXT_MAX_CHARS);
+        }
+      }
+    } catch (err) {
+      console.warn(`[extract] Tavily extract failed for ${url}:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15_000);
+    const response = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; EzSay/1.0)" },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!response.ok) return null;
+    const html = await response.text();
+    const text = stripHtml(html);
+    return text.length > 200 ? text.slice(0, PAGE_TEXT_MAX_CHARS) : null;
+  } catch {
+    return null;
+  }
+}

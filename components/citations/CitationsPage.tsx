@@ -9,7 +9,16 @@ import {
   bucketOf,
   BUCKET_ORDER,
   proposedFixOf,
+  QUOTE_VERDICT_DISPLAY,
 } from "./types";
+
+const QUOTE_TONE_CLASSES: Record<string, string> = {
+  green: "bg-green-100 text-green-700",
+  amber: "bg-amber-100 text-amber-700",
+  red: "bg-red-100 text-red-700",
+  blue: "bg-blue-100 text-blue-700",
+  gray: "bg-gray-100 text-gray-500",
+};
 
 const FIELD_LABELS: { key: "author" | "year" | "title" | "source"; label: string }[] = [
   { key: "author", label: "Author" },
@@ -89,6 +98,8 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
   const [checking, setChecking] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [verifyProgress, setVerifyProgress] = useState<{ done: number; total: number } | null>(null);
+  const [quoteVerifying, setQuoteVerifying] = useState(false);
+  const [quoteProgress, setQuoteProgress] = useState<{ done: number; total: number } | null>(null);
   const [targetStyle, setTargetStyle] = useState<string>("");
   const [converting, setConverting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -149,6 +160,35 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
     }
     setVerifying(false);
     setVerifyProgress(null);
+  }
+
+  async function runQuoteVerification() {
+    setQuoteVerifying(true);
+    setQuoteProgress(null);
+    try {
+      let reset = true;
+      for (let guard = 0; guard < 60; guard++) {
+        const res = await fetch("/api/citations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "verify_quotes", documentId, reset }),
+        });
+        reset = false;
+        const json = await res.json();
+        if (!json.success) break;
+        const { remaining, total, score } = json.data;
+        setQuoteProgress({ done: total - remaining, total });
+        await loadCitations();
+        if (remaining === 0) {
+          if (score != null && onScoreUpdate) onScoreUpdate(score);
+          break;
+        }
+      }
+    } catch (err) {
+      console.error("Quote verification error:", err);
+    }
+    setQuoteVerifying(false);
+    setQuoteProgress(null);
   }
 
   async function handleResolve(citationId: string, userAction: string, correctedText?: string) {
@@ -225,8 +265,15 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
 
   // Reference-list entries vs document-wide findings (flagged in-text
   // citations and quotes). Legacy rows without entryType count as entries.
+  // All quotes are stored server-side as the quote-check queue, but a healthy
+  // quote with no verification result yet is noise — hide it.
   const refEntries = citations.filter((c) => !c.entryType || c.entryType === "reference_entry");
-  const docFindings = citations.filter((c) => c.entryType === "inline" || c.entryType === "quote");
+  const docFindings = citations.filter(
+    (c) =>
+      c.entryType === "inline" ||
+      (c.entryType === "quote" && (((c.structuralFlags?.length ?? 0) > 0) || c.verificationFlags != null)),
+  );
+  const quoteCount = citations.filter((c) => c.entryType === "quote").length;
 
   // Audit ordering: most severe first (fabricated → needs correction →
   // uncertain → unchecked → verified). The corrected list keeps the
@@ -272,10 +319,20 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
           {citations.length > 0 && (
             <button
               onClick={runVerification}
-              disabled={verifying || checking}
+              disabled={verifying || checking || quoteVerifying}
               className="rounded bg-purple-600 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-40"
             >
               {verifying ? "Verifying..." : "Verify All Sources"}
+            </button>
+          )}
+          {quoteCount > 0 && (
+            <button
+              onClick={runQuoteVerification}
+              disabled={verifying || checking || quoteVerifying}
+              title="Fetch each quote's source and check it is real and fairly used"
+              className="rounded bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+            >
+              {quoteVerifying ? "Checking quotes..." : `Verify Quotes (${quoteCount})`}
             </button>
           )}
         </div>
@@ -292,6 +349,24 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                 <div
                   className="h-full rounded-full bg-purple-500 transition-all"
                   style={{ width: `${Math.round((verifyProgress.done / verifyProgress.total) * 100)}%` }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+        {quoteVerifying && (
+          <div className="mt-1 space-y-1">
+            <div className="flex items-center gap-2 text-[10px] text-indigo-600">
+              <div className="h-3 w-3 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
+              {quoteProgress
+                ? `Checking quotes against sources… ${quoteProgress.done} of ${quoteProgress.total}`
+                : "Fetching sources to check each quote..."}
+            </div>
+            {quoteProgress && quoteProgress.total > 0 && (
+              <div className="h-1 w-48 overflow-hidden rounded-full bg-indigo-100">
+                <div
+                  className="h-full rounded-full bg-indigo-500 transition-all"
+                  style={{ width: `${Math.round((quoteProgress.done / quoteProgress.total) * 100)}%` }}
                 />
               </div>
             )}
@@ -401,12 +476,17 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
           {docFindings.map((c) => {
             const flags = c.structuralFlags ?? [];
             const resolvedOut = c.status !== "open";
+            const quoteCheck = c.entryType === "quote" ? c.verificationFlags : null;
+            const quoteDisplay = quoteCheck ? QUOTE_VERDICT_DISPLAY[quoteCheck.verdict] : null;
+            const isBadQuote =
+              quoteCheck?.verdict === "quote_not_found" || quoteCheck?.verdict === "quote_misrepresented";
             return (
               <div
                 key={c.id}
                 className={`rounded-lg border overflow-hidden ${
                   resolvedOut ? "border-gray-200 bg-gray-50 opacity-60" :
-                  flags.some((f) => f.severity === "error") ? "border-red-200 bg-red-50" :
+                  isBadQuote || flags.some((f) => f.severity === "error") ? "border-red-200 bg-red-50" :
+                  quoteCheck?.verdict === "quote_verified" && flags.length === 0 ? "border-green-200 bg-green-50" :
                   "border-amber-200 bg-amber-50"
                 }`}
               >
@@ -415,6 +495,11 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                     <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold bg-gray-100 text-gray-600">
                       {c.entryType === "quote" ? "quote" : "in-text citation"}
                     </span>
+                    {quoteDisplay && (
+                      <span className={`rounded px-1.5 py-0.5 text-[8px] font-semibold ${QUOTE_TONE_CLASSES[quoteDisplay.tone]}`}>
+                        {quoteDisplay.label}
+                      </span>
+                    )}
                     {resolvedOut && (
                       <span className="text-[9px] text-gray-400">
                         {c.status === "dismissed" ? "dismissed" : "resolved"}
@@ -440,6 +525,33 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                       </p>
                     ))}
                   </div>
+                  {/* Quote-check result: verdict explanation, the source's
+                      actual argument, a faithful rewrite, and the source link */}
+                  {quoteCheck && (
+                    <div className="mt-1.5 space-y-1 rounded border border-gray-200 bg-white/70 px-2 py-1.5">
+                      <p className="text-[10px] text-gray-600">{quoteCheck.explanation}</p>
+                      {quoteCheck.actualArgument && (
+                        <p className="text-[10px] text-gray-700">
+                          <span className="font-semibold">Source actually says:</span> {quoteCheck.actualArgument}
+                        </p>
+                      )}
+                      {quoteCheck.suggestedRewrite && (
+                        <p className="text-[10px] text-green-700">
+                          <span className="font-semibold">Faithful rewrite:</span> {quoteCheck.suggestedRewrite}
+                        </p>
+                      )}
+                      {quoteCheck.sourceUrl && (
+                        <a
+                          href={quoteCheck.sourceUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block truncate text-[9px] text-blue-600 hover:underline"
+                        >
+                          {quoteCheck.sourceUrl}
+                        </a>
+                      )}
+                    </div>
+                  )}
                   {c.status === "open" && (
                     <div className="mt-1.5 flex gap-1">
                       <button

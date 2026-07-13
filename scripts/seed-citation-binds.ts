@@ -62,6 +62,31 @@ EXPLANATION: [2-3 sentences about what you found or didn't find]
 CORRECT_CITATION: [the corrected citation text if wrong_details, otherwise "n/a"]
 SOURCE_URL: [URL of the matching source if found, otherwise "none"]`;
 
+const QUOTE_CHECK_SYSTEM = `You check whether a quotation is genuine and fairly used, given the source text.
+
+You receive: the quotation as used in the document, the writer's sentence around it (their claim), and an excerpt of the source.
+
+Assess two things INDEPENDENTLY:
+1. QUOTE_MATCH — is the quotation actually in the source?
+   - verbatim: the exact wording appears
+   - near: minor differences (punctuation, one or two words)
+   - paraphrase: the idea appears but the wording differs substantially
+   - not_found: nothing like it appears in the excerpt
+2. CONTEXT — does the writer's claim fairly represent what the source argues?
+   - faithful: the claim matches the source's meaning and context
+   - misrepresented: the claim distorts, inverts, or overstates what the source says
+   - unclear: cannot tell from the excerpt
+
+Be strict about CONTEXT: a quote can be word-for-word accurate and still be used to support a claim the source does not make.
+
+Respond in EXACTLY this format (one line each; SUGGESTED_REWRITE may be a full sentence):
+QUOTE_MATCH: [verbatim/near/paraphrase/not_found]
+CONTEXT: [faithful/misrepresented/unclear]
+CONFIDENCE: [0.0 to 1.0]
+ACTUAL_ARGUMENT: [one sentence: what the source actually says on this point, or "n/a"]
+SUGGESTED_REWRITE: [if misrepresented: a sentence the writer could use instead that is faithful to the source, or "n/a"]
+EXPLANATION: [2-3 sentences]`;
+
 const CONVERT_SYSTEM = `You convert citations from one academic style to another.
 
 Rules:
@@ -81,6 +106,7 @@ Style formats:
 const MODELS = [
   { name: "Gemini Flash — Citation Search Queries", openrouterModelId: "google/gemini-2.5-flash", temperature: 0.1, maxTokens: 2048, description: "Fast, cheap query generation for citation verification" },
   { name: "Claude Sonnet — Citation Converter", openrouterModelId: "anthropic/claude-sonnet-4", temperature: 0.2, maxTokens: 512, description: "Citation style conversion, low creativity" },
+  { name: "Claude Sonnet — Quote Checker", openrouterModelId: "anthropic/claude-sonnet-4", temperature: 0.2, maxTokens: 1024, description: "Quote verification: verbatim match + misrepresentation check against source text" },
   { name: "Gemini Pro — Fallback", openrouterModelId: "google/gemini-2.5-pro", temperature: 0.2, maxTokens: 1024, description: "Fallback model for citation activities" },
   { name: "GPT-4o — Fallback", openrouterModelId: "openai/gpt-4o", temperature: 0.2, maxTokens: 1024, description: "Second fallback model for citation activities" },
 ];
@@ -109,6 +135,12 @@ const PROMPTS = [
     description: "Converts a citation from one style to another",
     systemPrompt: CONVERT_SYSTEM,
     userPrompt: "Convert from [SOURCE_STYLE] to [TARGET_STYLE]:\n[CITATION]",
+  },
+  {
+    name: "Citation Quote Check",
+    description: "Verifies a quotation against fetched source text: verbatim match + faithful-use check",
+    systemPrompt: QUOTE_CHECK_SYSTEM,
+    userPrompt: 'DOCUMENT QUOTE:\n"[QUOTE]"\n\nWRITER\'S SENTENCE:\n[CLAIM]\n\nSOURCE EXCERPT:\n[EXCERPT]',
   },
 ];
 
@@ -139,6 +171,13 @@ const BINDS: {
     description: "Convert citations between academic styles",
     modelName: "Claude Sonnet — Citation Converter",
     promptName: "Citation Convert",
+  },
+  {
+    slug: "citation-quote-check",
+    name: "Citation Quote Check",
+    description: "Verify quotations against fetched source text",
+    modelName: "Claude Sonnet — Quote Checker",
+    promptName: "Citation Quote Check",
   },
 ];
 

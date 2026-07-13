@@ -12,6 +12,7 @@ import {
   cleanCitationArtifacts,
 } from "@/lib/citations/artifacts";
 import { verifyEntry } from "@/lib/citations/verify";
+import { verifyQuoteAgainstSource, findSourceForQuote } from "@/lib/citations/quotes";
 
 // Verification runs one small batch per request (client-driven loop, same
 // pattern as background suggestion generation) — fits the Vercel Hobby 60s cap.
@@ -83,6 +84,10 @@ export async function POST(request: NextRequest) {
 
     if (action === "verify_all" || action === "verify_batch") {
       return handleVerifyBatch(body, user.id);
+    }
+
+    if (action === "verify_quotes") {
+      return handleVerifyQuotes(body, user.id);
     }
 
     if (action === "convert_all") {
@@ -172,12 +177,14 @@ async function handleStructuralCheck(
         .returning()
     : [];
 
-  // In-text citations and quotes are stored only when they carry findings —
-  // healthy ones exist transiently in the graph and would only add noise.
+  // In-text citations are stored only when they carry findings — healthy ones
+  // exist transiently in the graph and would only add noise. Quotes are ALL
+  // stored (linked to their entry via the in-text citation) so that quote
+  // verification has a queue to work through; the UI hides healthy unverified
+  // quote rows.
   const flaggedInline = graph.inline.filter((c) => c.flags.length > 0);
-  const flaggedQuotes = graph.quotes.filter((q) => q.flags.length > 0);
 
-  const insertedFindings = flaggedInline.length + flaggedQuotes.length > 0
+  const insertedFindings = flaggedInline.length + graph.quotes.length > 0
     ? await db
         .insert(citations)
         .values([
@@ -193,16 +200,25 @@ async function handleStructuralCheck(
             verificationFlags: null,
             status: "open" as const,
           })),
-          ...flaggedQuotes.map((q) => ({
-            documentId,
-            rawText: q.text,
-            style: detectedStyle,
-            entryType: "quote",
-            contextSentence: q.contextSentence,
-            structuralFlags: q.flags,
-            verificationFlags: null,
-            status: "open" as const,
-          })),
+          ...graph.quotes.map((q) => {
+            const viaInText =
+              q.linkedInTextIndex !== null ? graph.inline[q.linkedInTextIndex] : null;
+            const entryRowId =
+              viaInText && viaInText.matchedEntryIndex !== null
+                ? insertedEntries[viaInText.matchedEntryIndex]?.id ?? null
+                : null;
+            return {
+              documentId,
+              rawText: q.text,
+              style: detectedStyle,
+              entryType: "quote",
+              linkedCitationId: entryRowId,
+              contextSentence: q.contextSentence,
+              structuralFlags: q.flags,
+              verificationFlags: null,
+              status: "open" as const,
+            };
+          }),
         ])
         .returning()
     : [];
@@ -612,10 +628,150 @@ async function handleVerifyBatch(
   });
 }
 
+// ── Quote verification ──────────────────────────────────────────────────────
+
+const QUOTE_CHECK_FALLBACK: CitationLLMFallback = {
+  system: `You check whether a quotation is genuine and fairly used, given the source text.
+
+You receive: the quotation as used in the document, the writer's sentence around it (their claim), and an excerpt of the source.
+
+Assess two things INDEPENDENTLY:
+1. QUOTE_MATCH — is the quotation actually in the source? [verbatim/near/paraphrase/not_found]
+2. CONTEXT — does the writer's claim fairly represent what the source argues? [faithful/misrepresented/unclear]
+
+Be strict about CONTEXT: a quote can be word-for-word accurate and still be used to support a claim the source does not make.
+
+Respond in EXACTLY this format (one line each):
+QUOTE_MATCH: [verbatim/near/paraphrase/not_found]
+CONTEXT: [faithful/misrepresented/unclear]
+CONFIDENCE: [0.0 to 1.0]
+ACTUAL_ARGUMENT: [one sentence: what the source actually says on this point, or "n/a"]
+SUGGESTED_REWRITE: [if misrepresented: a faithful replacement sentence, or "n/a"]
+EXPLANATION: [2-3 sentences]`,
+  user: 'DOCUMENT QUOTE:\n"[QUOTE]"\n\nWRITER\'S SENTENCE:\n[CLAIM]\n\nSOURCE EXCERPT:\n[EXCERPT]',
+  model: "anthropic/claude-sonnet-4",
+  fallbacks: ["google/gemini-2.5-pro", "openai/gpt-4o"],
+  temperature: 0.2,
+  maxTokens: 1024,
+};
+
+const QUOTE_BATCH_LIMIT = 3;
+
+/**
+ * Verifies a batch of quotes against their sources. Client-driven loop like
+ * verify_batch. Source resolution per quote:
+ *   1. linked reference entry's verified sourceUrl (from existence verification)
+ *   2. web search for the quote text itself (also handles orphan quotes —
+ *      finding a candidate source is itself the finding)
+ */
+async function handleVerifyQuotes(
+  body: { documentId: string; reset?: boolean; limit?: number },
+  userId: string
+) {
+  const { documentId, reset } = body;
+  const limit = Math.min(Math.max(body.limit ?? QUOTE_BATCH_LIMIT, 1), 5);
+
+  const [doc] = await db.select().from(documents).where(and(eq(documents.id, documentId), eq(documents.userId, userId))).limit(1);
+  if (!doc) return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
+
+  if (reset) {
+    await db
+      .update(citations)
+      .set({ verificationFlags: null })
+      .where(and(eq(citations.documentId, documentId), eq(citations.entryType, "quote")));
+  }
+
+  const allQuotes = await db
+    .select()
+    .from(citations)
+    .where(and(eq(citations.documentId, documentId), eq(citations.entryType, "quote")));
+
+  const pending = allQuotes.filter((c) => c.verificationFlags == null);
+  const total = allQuotes.length;
+
+  if (pending.length === 0) {
+    const score = await computeAndUpdateScore(documentId);
+    return NextResponse.json({ success: true, data: { processed: 0, remaining: 0, total, score } });
+  }
+
+  const cfg = await loadCitationConfig("citation-quote-check", QUOTE_CHECK_FALLBACK);
+  const started = Date.now();
+  let processed = 0;
+
+  for (const quote of pending.slice(0, limit)) {
+    if (processed > 0 && Date.now() - started > VERIFY_TIME_BUDGET_MS) break;
+
+    console.log(`[citations/quotes] "${quote.rawText.slice(0, 50)}..."`);
+    try {
+      // Resolve a source URL: linked entry's verified source first.
+      let sourceUrl: string | null = null;
+      if (quote.linkedCitationId) {
+        const [entry] = await db.select().from(citations).where(eq(citations.id, quote.linkedCitationId)).limit(1);
+        const entryVerify = entry?.verificationFlags as { sourceUrl?: string | null } | null;
+        sourceUrl = entryVerify?.sourceUrl ?? null;
+      }
+
+      const result = sourceUrl
+        ? await verifyQuoteAgainstSource(quote.rawText, quote.contextSentence ?? "", sourceUrl, cfg)
+        : await findSourceForQuote(quote.rawText, quote.contextSentence ?? undefined);
+
+      await db.update(citations).set({ verificationFlags: result }).where(eq(citations.id, quote.id));
+
+      if (result.modelUsed) {
+        await db.insert(llmCallLog).values({
+          activityType: "citation_quote_check",
+          modelUsed: result.modelUsed,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          latencyMs: result.latencyMs,
+          outcome: "pending",
+        });
+      }
+
+      console.log(`[citations/quotes] verdict=${result.verdict}`);
+    } catch (err) {
+      console.error(`[citations/quotes] Error:`, err);
+      await db.update(citations).set({
+        verificationFlags: {
+          verdict: "uncertain",
+          quoteMatch: "unknown",
+          contextVerdict: null,
+          confidence: 0,
+          explanation: "Quote check failed: " + (err instanceof Error ? err.message : "unknown error"),
+          actualArgument: null,
+          suggestedRewrite: null,
+          sourceUrl: null,
+          matchedExcerpt: null,
+        },
+      }).where(eq(citations.id, quote.id));
+    }
+    processed++;
+  }
+
+  const remaining = pending.length - processed;
+  const score = remaining === 0 ? await computeAndUpdateScore(documentId) : null;
+
+  return NextResponse.json({
+    success: true,
+    data: { processed, remaining, total, score },
+  });
+}
+
 // ── Score computation ─────────────────────────────────────────────────────
 
 async function computeAndUpdateScore(documentId: string): Promise<number> {
-  const docCitations = await db.select().from(citations).where(eq(citations.documentId, documentId));
+  const allRows = await db.select().from(citations).where(eq(citations.documentId, documentId));
+
+  // Score over rows that carry signal: reference entries always count;
+  // inline/quote rows count once they have flags or a verification verdict.
+  // Healthy, not-yet-verified quotes are stored (they're the quote-check
+  // queue) but must not pad the denominator.
+  const docCitations = allRows.filter(
+    (c) =>
+      c.entryType === "reference_entry" ||
+      ((c.structuralFlags as unknown[] | null)?.length ?? 0) > 0 ||
+      c.verificationFlags != null,
+  );
   if (docCitations.length === 0) return 100;
 
   const withIssues = docCitations.filter((c) => {
@@ -627,7 +783,9 @@ async function computeAndUpdateScore(documentId: string): Promise<number> {
     const hasVerifyIssue =
       verifyData?.verdict === "fabricated" ||
       verifyData?.verdict === "unverified" ||
-      verifyData?.verdict === "wrong_details";
+      verifyData?.verdict === "wrong_details" ||
+      verifyData?.verdict === "quote_not_found" ||
+      verifyData?.verdict === "quote_misrepresented";
     return hasStructIssue || hasVerifyIssue;
   }).length;
 

@@ -287,7 +287,16 @@ The Citations page presents results as an audit rather than a flat list (`compon
 - **BEFORE/AFTER cards:** an open entry with a proposed fix (verification's `correctCitation` wins over the structural `correctedText` — `proposedFixOf()`) shows red BEFORE / green AFTER blocks. The primary action is **Accept Fix**, which passes the proposed text through the resolve endpoint — the same explicit-user-action path as always (constraint #3, no silent corrections); Edit pre-fills with the proposed fix.
 - **Corrected Reference List** (collapsible, bottom): copy-paste-ready list in the document's original reference order. Final text per entry = accepted/edited `correctedText`, otherwise the original — suggestions the user has NOT accepted appear unchanged with an "unresolved" badge, and the header counts them. Copy-to-clipboard button.
 
-**Phase 4 (planned):** quote verification against fetched source text — verbatim match + misinterpretation warnings.
+### 10.4 Quote verification (added 2026-07-13, phase 4 of 4)
+
+`lib/citations/quotes.ts` + `fetchPageText` in `lib/search/tavily.ts` (Tavily Extract API → direct-fetch + HTML-strip fallback, 24k-char cap; **a failed fetch is always "uncertain", never "fake"** — paywalls must not read as fabrication).
+
+- **All quotes are stored** at structural-check time (linked to their reference entry via the in-text citation) as the quote-check queue; the UI hides healthy unverified quote rows, and the citations score only counts rows with flags or verdicts.
+- **Linked quotes:** fetch the entry's verified `sourceUrl` → local match first (normalized verbatim check, then sliding-window token containment; <0.35 containment → `quote_not_found` without an LLM call) → LLM assessment via the `citation-quote-check` bind returns QUOTE_MATCH (verbatim/near/paraphrase/not_found) and — independently — CONTEXT (faithful/**misrepresented**/unclear) with the source's ACTUAL_ARGUMENT and a faithful SUGGESTED_REWRITE. `contextVerdict: misrepresented` dominates the final verdict: a word-perfect quote used to support a claim the source doesn't make is `quote_misrepresented`.
+- **Orphan quotes:** web search for the quote text plus up to 3 proper nouns from its context sentence (bare short quotes match song lyrics; context disambiguates), social/lyrics domains excluded → `quote_source_found` with candidate URL, or `quote_not_found`.
+- **Execution:** `verify_quotes` batch action (3/request, same time guard and client loop as `verify_batch`); "Verify Quotes (N)" button on the Citations page — a deliberately separate, user-triggered action since it's the most expensive check. Quote cards show the verdict badge, explanation, "Source actually says", faithful rewrite, and source link.
+- Verdicts: `quote_verified` / `quote_near_match` / `quote_not_found` / `quote_misrepresented` / `quote_source_found` / `uncertain`; `quote_not_found` and `quote_misrepresented` count against the citations score.
+- Live-tested 2026-07-13 against the Fitz-Gibbon & Walklate Conversation article: genuine sentence → `quote_verified` (verbatim, faithful, 90%); invented "lets serious violence off the hook" quote with inverted claim → `quote_not_found` with actual-argument note; orphan "she was just walking home" with Everard context → `quote_source_found` (news coverage URL).
 
 ---
 
