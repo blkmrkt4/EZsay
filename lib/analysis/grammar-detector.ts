@@ -1,74 +1,82 @@
 import { executeActivity } from "@/lib/routing/openrouter";
 import type { GrammarFinding } from "./grammar-spelling-types";
-
-interface SectionInput {
-  id: string;
-  currentText: string;
-  isLocked: boolean;
-}
+import { batchSections, mapBatchesWithDeadline, type SectionInput } from "./detector-batching";
 
 interface GrammarContext {
   documentType: string;
   audience?: string;
+  /** Wall-clock deadline (epoch ms) — batches not started by then are skipped. */
+  deadlineAt?: number;
 }
+
+const CONCURRENCY = 3;
 
 /**
  * Detects grammar errors in document sections using LLM.
  * Strictness adapts to document type and audience.
- * Validates all character positions against actual text.
+ * Sections are batched into one LLM call per ~6k chars and processed
+ * concurrently under a deadline (see detector-batching.ts). Findings are
+ * attributed back to their section by searching each batch section's text.
  */
 export async function detectGrammarErrors(
   sections: SectionInput[],
   context?: GrammarContext,
 ): Promise<GrammarFinding[]> {
-  const findings: GrammarFinding[] = [];
   const docType = context?.documentType || "professional";
   const audience = context?.audience || "";
+  const deadlineAt = context?.deadlineAt ?? Date.now() + 40_000;
+  const batches = batchSections(sections);
 
-  for (const section of sections) {
-    if (section.isLocked) continue;
-    if (section.currentText.trim().length < 10) continue;
-
-    try {
+  const { results, skipped } = await mapBatchesWithDeadline(
+    batches,
+    CONCURRENCY,
+    deadlineAt,
+    async (batch) => {
       const result = await executeActivity("detect-grammar", {
-        SECTION_TEXT: section.currentText,
+        SECTION_TEXT: batch.map((s) => s.currentText).join("\n\n"),
         DOCUMENT_TYPE: docType,
         AUDIENCE: audience,
       });
 
       const parsed = parseJsonResponse(result.content);
-      if (!Array.isArray(parsed)) continue;
+      if (!Array.isArray(parsed)) return [] as GrammarFinding[];
 
+      const batchFindings: GrammarFinding[] = [];
       for (const item of parsed) {
         if (!item.originalText || !item.correctedText) continue;
 
-        // Validate position
-        const validated = validatePosition(
-          section.currentText,
-          item.originalText,
-          item.phraseStart,
-          item.phraseEnd
-        );
+        // Attribute the finding to the batch section containing the text.
+        for (const section of batch) {
+          const validated = validatePosition(
+            section.currentText,
+            item.originalText,
+            item.phraseStart,
+            item.phraseEnd
+          );
+          if (!validated) continue;
 
-        if (!validated) continue;
-
-        findings.push({
-          id: crypto.randomUUID(),
-          originalText: item.originalText,
-          correctedText: item.correctedText,
-          sectionId: section.id,
-          phraseStart: validated.start,
-          phraseEnd: validated.end,
-          ruleCategory: item.ruleCategory || "other",
-          explanation: item.explanation || "Grammar issue detected",
-        });
+          batchFindings.push({
+            id: crypto.randomUUID(),
+            originalText: item.originalText,
+            correctedText: item.correctedText,
+            sectionId: section.id,
+            phraseStart: validated.start,
+            phraseEnd: validated.end,
+            ruleCategory: item.ruleCategory || "other",
+            explanation: item.explanation || "Grammar issue detected",
+          });
+          break;
+        }
       }
-    } catch (err) {
-      console.error(`Grammar detection failed for section ${section.id}:`, err);
-    }
+      return batchFindings;
+    },
+  );
+
+  if (skipped > 0) {
+    console.warn(`[grammar-detector] deadline hit — ${skipped}/${batches.length} batches skipped`);
   }
 
-  return findings;
+  return results.flat();
 }
 
 function parseJsonResponse(content: string): unknown {

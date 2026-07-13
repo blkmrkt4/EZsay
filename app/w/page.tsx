@@ -366,7 +366,30 @@ export default function WorkspacePage() {
   // per-flag "generating…" indicator, separate from the lying "no options" check).
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
   // Scan-phase checklist shown in the Choices-panel status area.
-  const [scanPhases, setScanPhases] = useState<Record<string, "pending" | "running" | "done">>({});
+  const [scanPhases, setScanPhases] = useState<Record<string, "pending" | "running" | "done" | "stopped">>({});
+  const [scanError, setScanError] = useState<string | null>(null);
+  // Live scan activity feed — ticker-tape log of what the scan is doing right
+  // now, with elapsed time and a stop control (the status panel renders it).
+  const [scanLog, setScanLog] = useState<string[]>([]);
+  const [scanElapsedSec, setScanElapsedSec] = useState(0);
+  const scanStartAtRef = useRef<number>(0);
+  const scanStopRef = useRef<boolean>(false);
+
+  const logScan = useCallback((msg: string) => {
+    const sec = Math.max(0, Math.round((Date.now() - scanStartAtRef.current) / 1000));
+    const stamp = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+    setScanLog((prev) => [...prev.slice(-99), `[${stamp}] ${msg}`]);
+  }, []);
+
+  // Tick the elapsed counter once a second while any scan phase is active.
+  const scanActive = scanning || Object.values(scanPhases).some((s) => s === "running" || s === "pending");
+  useEffect(() => {
+    if (!scanActive) return;
+    const t = setInterval(() => {
+      setScanElapsedSec(Math.round((Date.now() - scanStartAtRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [scanActive]);
   // Guards the background generation loop so only one runs per tab.
   const genLoopRef = useRef(false);
 
@@ -555,64 +578,179 @@ export default function WorkspacePage() {
 
   // ── Scan ───────────────────────────────────────────────────────────────
 
+  /**
+   * Client-driven spelling/grammar loop: one batch (one LLM call) per request
+   * against /api/scan/detectors, with live ticker logging and a stop check
+   * between batches.
+   */
+  async function runDetectorLoop(detector: "spelling" | "grammar", docId: string) {
+    const label = detector === "spelling" ? "Spelling" : "Grammar";
+    const phaseKey = detector;
+    try {
+      const planRes = await fetch("/api/scan/detectors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentId: docId, detector }),
+      });
+      const plan = await planRes.json();
+      if (!plan.success) {
+        logScan(`${label}: could not start (${plan.error ?? "unknown error"})`);
+        setScanPhases((p) => ({ ...p, [phaseKey]: "done" }));
+        return;
+      }
+      const { batchCount, sectionCount } = plan.data;
+      if (batchCount === 0) {
+        logScan(`${label}: nothing to check`);
+        setScanPhases((p) => ({ ...p, [phaseKey]: "done" }));
+        return;
+      }
+      logScan(`${label}: document split into ${batchCount} batch${batchCount !== 1 ? "es" : ""} (${sectionCount} sections)`);
+
+      let total = 0;
+      for (let i = 0; i < batchCount; i++) {
+        if (scanStopRef.current) {
+          logScan(`${label}: stopped by user after ${i} of ${batchCount} batches`);
+          setScanPhases((p) => ({ ...p, [phaseKey]: "stopped" }));
+          return;
+        }
+        logScan(`${label}: checking batch ${i + 1} of ${batchCount}…`);
+        const res = await fetch("/api/scan/detectors", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ documentId: docId, detector, batch: i, reset: i === 0 }),
+        });
+        const json = await res.json();
+        if (!json.success) {
+          logScan(`${label}: batch ${i + 1} failed (${json.error ?? "error"}) — continuing`);
+          continue;
+        }
+        total = json.data.totalFindings;
+        logScan(`${label}: batch ${i + 1} done — ${json.data.batchFindings} issue${json.data.batchFindings !== 1 ? "s" : ""} found (${total} total)`);
+      }
+      logScan(`${label}: finished — ${total} issue${total !== 1 ? "s" : ""}`);
+      setScanPhases((p) => ({ ...p, [phaseKey]: "done" }));
+    } catch (err) {
+      logScan(`${label}: failed (${err instanceof Error ? err.message : "network error"})`);
+      setScanPhases((p) => ({ ...p, [phaseKey]: "done" }));
+    }
+  }
+
+  function handleStopScan() {
+    scanStopRef.current = true;
+    logScan("Stop requested — finishing the current step…");
+  }
+
   async function handleScan() {
     if (!activeDocId) return;
     setScanning(true);
+    setScanError(null);
+    scanStopRef.current = false;
+    scanStartAtRef.current = Date.now();
+    setScanElapsedSec(0);
+    setScanLog([]);
     setNav("workspace"); setWorkspaceMode("dashboard");
 
-    // Seed the scan-phase checklist. AI detection / artifacts / spelling / grammar
-    // resolve with the /api/scan call; plagiarism / tone / citations run after.
+    // Seed the scan-phase checklist. AI detection / artifacts resolve with the
+    // /api/scan call; spelling / grammar run as client-driven batch loops;
+    // plagiarism / tone / citations run after.
     const cats = scanConfig.categories;
-    const seededPhases: Record<string, "pending" | "running" | "done"> = {};
+    const seededPhases: Record<string, "pending" | "running" | "done" | "stopped"> = {};
     if (cats.aiDetection) seededPhases.aiDetection = "running";
     if (cats.aiArtifacts) seededPhases.aiArtifacts = "running";
-    if (cats.spelling) seededPhases.spelling = "running";
-    if (cats.grammar) seededPhases.grammar = "running";
+    if (cats.spelling) seededPhases.spelling = "pending";
+    if (cats.grammar) seededPhases.grammar = "pending";
     if (cats.plagiarism) seededPhases.plagiarism = "pending";
     if (cats.toneConsistency) seededPhases.tone = "pending";
     if (cats.citations) seededPhases.citations = "pending";
     setScanPhases(seededPhases);
+    logScan(`Scan started (${Object.keys(seededPhases).length} phases)`);
+    if (cats.aiDetection) logScan(`AI detection: analysing document (${scanConfig.aiDetectionDepth} depth)…`);
 
-    const res = await fetch("/api/scan", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        documentId: activeDocId,
-        categories: scanConfig.categories,
-        aiDetectionDepth: scanConfig.aiDetectionDepth,
-      }),
-    });
-    const json = await res.json();
+    // A killed function (timeout/504) or non-JSON error response must never
+    // leave the checklist spinning forever — catch, mark the in-flight phases
+    // failed, and surface the error.
+    let json: { success?: boolean; error?: string } = {};
+    try {
+      const res = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentId: activeDocId,
+          // Spelling/grammar run as client-driven batch loops below — the
+          // main scan call handles AI detection + artifacts only.
+          categories: { ...scanConfig.categories, spelling: false, grammar: false },
+          aiDetectionDepth: scanConfig.aiDetectionDepth,
+        }),
+      });
+      json = await res.json().catch(() => ({ success: false, error: `Scan failed (HTTP ${res.status})` }));
+    } catch {
+      json = { success: false, error: "The scan request failed or timed out." };
+    }
+    if (!json.success) {
+      setScanError(json.error || "Scan failed — please try again.");
+      logScan(`Scan failed: ${json.error ?? "unknown error"}`);
+      setScanPhases({});
+    }
     if (json.success) {
       await loadDocument(activeDocId);
       await loadDocs();
+      logScan("AI detection and artifact analysis complete");
 
-      // AI detection / artifacts / spelling / grammar all complete with the scan
-      // call. The background generation loop starts automatically (see the
-      // auto-resume effect) now that flags are loaded.
+      // AI detection / artifacts complete with the scan call. The background
+      // generation loop starts automatically (see the auto-resume effect) now
+      // that flags are loaded. Spelling/grammar loops run next; plagiarism /
+      // tone / citations start in parallel.
       setScanPhases((prev) => {
         const next = { ...prev };
-        for (const k of ["aiDetection", "aiArtifacts", "spelling", "grammar"]) if (next[k]) next[k] = "done";
+        for (const k of ["aiDetection", "aiArtifacts"]) if (next[k]) next[k] = "done";
         for (const k of ["plagiarism", "tone", "citations"]) if (next[k]) next[k] = "running";
         return next;
       });
 
       // Run plagiarism check in parallel if enabled
       if (scanConfig.categories.plagiarism) {
-        runPlagiarismCheck(activeDocId).finally(() => setScanPhases((p) => (p.plagiarism ? { ...p, plagiarism: "done" } : p)));
+        logScan("Plagiarism: searching the web for matching passages…");
+        runPlagiarismCheck(activeDocId).finally(() => {
+          logScan("Plagiarism: done");
+          setScanPhases((p) => (p.plagiarism ? { ...p, plagiarism: "done" } : p));
+        });
         trackEvent("feature_used", { feature: "plagiarism" });
       }
 
       // Run tone consistency check in parallel if enabled
       if (scanConfig.categories.toneConsistency) {
-        runToneConsistencyCheck(activeDocId).finally(() => setScanPhases((p) => (p.tone ? { ...p, tone: "done" } : p)));
+        logScan("Tone: checking voice consistency across sections…");
+        runToneConsistencyCheck(activeDocId).finally(() => {
+          logScan("Tone: done");
+          setScanPhases((p) => (p.tone ? { ...p, tone: "done" } : p));
+        });
         trackEvent("feature_used", { feature: "tone_consistency" });
       }
 
       // Run citation extraction and structural check if enabled
       if (scanConfig.categories.citations) {
-        runCitationCheck(activeDocId).finally(() => setScanPhases((p) => (p.citations ? { ...p, citations: "done" } : p)));
+        logScan("Citations: extracting and cross-referencing…");
+        runCitationCheck(activeDocId).finally(() => {
+          logScan("Citations: done");
+          setScanPhases((p) => (p.citations ? { ...p, citations: "done" } : p));
+        });
         trackEvent("feature_used", { feature: "citations" });
+      }
+
+      // Spelling and grammar: client-driven batch loops with live progress.
+      // Serial so the ticker reads clearly; each batch is one fast LLM call.
+      for (const detector of ["spelling", "grammar"] as const) {
+        if (!scanConfig.categories[detector]) continue;
+        if (scanStopRef.current) {
+          setScanPhases((p) => (p[detector] ? { ...p, [detector]: "stopped" } : p));
+          continue;
+        }
+        setScanPhases((p) => (p[detector] ? { ...p, [detector]: "running" } : p));
+        await runDetectorLoop(detector, activeDocId);
+      }
+      if (scanConfig.categories.spelling || scanConfig.categories.grammar) {
+        // Refresh so the panels pick up the stored spelling/grammar results.
+        await loadDocument(activeDocId);
       }
     }
     setScanning(false);
@@ -684,6 +822,10 @@ export default function WorkspacePage() {
       // verifies a few entries per request to fit the function time cap.
       let reset = true;
       for (let guard = 0; guard < 60; guard++) {
+        if (scanStopRef.current) {
+          logScan("Citations: verification stopped by user");
+          break;
+        }
         const verifyRes = await fetch("/api/citations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -692,7 +834,9 @@ export default function WorkspacePage() {
         reset = false;
         const verifyJson = await verifyRes.json();
         if (!verifyJson.success) break;
-        if (verifyJson.data.remaining === 0) {
+        const { remaining, total } = verifyJson.data;
+        if (total > 0) logScan(`Citations: verified ${total - remaining} of ${total} sources against the web…`);
+        if (remaining === 0) {
           if (verifyJson.data.score != null) {
             setActiveDoc((prev) => prev ? { ...prev, citationsScore: verifyJson.data.score } : prev);
           }
@@ -3016,9 +3160,34 @@ export default function WorkspacePage() {
                 Persistent scan + generation status. Checklist of what was
                 scanned, then the live "Creating options for N edits (X of N)"
                 line, then a ready-to-start confirmation once flag 1 is done. */}
-            {activeDoc && (Object.keys(scanPhases).length > 0 || suggestProgress.total > 0) && (
+            {activeDoc && (Object.keys(scanPhases).length > 0 || suggestProgress.total > 0 || scanError) && (
               <div className="mt-auto max-h-[30%] overflow-y-auto border-t border-gray-200 bg-white px-3 py-2.5 text-[10px]">
                 {/* Scan checklist */}
+                {scanError && (
+                  <div className="mb-1.5 flex items-center justify-between rounded border border-red-200 bg-red-50 px-2 py-1.5">
+                    <span className="text-red-700">{scanError}</span>
+                    <button onClick={handleScan} className="ml-2 shrink-0 font-semibold text-red-700 underline hover:text-red-900">
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {/* Elapsed time + stop control while the scan is active */}
+                {scanActive && (
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="font-medium text-gray-500">
+                      Scanning… {Math.floor(scanElapsedSec / 60)}:{String(scanElapsedSec % 60).padStart(2, "0")}
+                    </span>
+                    <button
+                      onClick={handleStopScan}
+                      disabled={scanStopRef.current}
+                      title="Stop the scan after the current step"
+                      className="flex items-center gap-1 rounded border border-red-200 bg-red-50 px-1.5 py-0.5 font-semibold text-red-600 hover:bg-red-100 disabled:opacity-50"
+                    >
+                      <svg className="h-2.5 w-2.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
+                      {scanStopRef.current ? "Stopping…" : "Stop"}
+                    </button>
+                  </div>
+                )}
                 <div className="space-y-1">
                   {SCAN_PHASE_ORDER.filter((p) => scanPhases[p.key]).map((p) => {
                     const st = scanPhases[p.key];
@@ -3026,18 +3195,36 @@ export default function WorkspacePage() {
                       <div key={p.key} className="flex items-center gap-1.5">
                         {st === "done" ? (
                           <svg className="h-3 w-3 shrink-0 text-green-600" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
+                        ) : st === "stopped" ? (
+                          <svg className="h-3 w-3 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636" /></svg>
                         ) : st === "running" ? (
                           <span className="h-2.5 w-2.5 shrink-0 animate-spin rounded-full border border-gray-300 border-t-gray-500" />
                         ) : (
                           <span className="h-2.5 w-2.5 shrink-0 rounded-full border border-gray-200" />
                         )}
                         <span className={st === "done" ? "text-gray-500" : st === "running" ? "text-gray-600" : "text-gray-400"}>
-                          {st === "done" ? "Scanned for " : st === "running" ? "Scanning for " : "Waiting to scan "}{p.label}
+                          {st === "done" ? "Scanned for " : st === "running" ? "Scanning for " : st === "stopped" ? "Stopped — " : "Waiting to scan "}{p.label}
                         </span>
                       </div>
                     );
                   })}
                 </div>
+
+                {/* Live activity ticker — the latest line always visible;
+                    expand for the full log of what the scan actually did */}
+                {scanLog.length > 0 && (
+                  <details className="mt-1.5 border-t border-gray-100 pt-1.5">
+                    <summary className="flex cursor-pointer select-none items-center gap-1 text-gray-500 hover:text-gray-700">
+                      <svg className="h-2.5 w-2.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+                      <span className="min-w-0 flex-1 truncate font-mono text-[9px]">{scanLog[scanLog.length - 1]}</span>
+                    </summary>
+                    <div className="mt-1 max-h-32 overflow-y-auto rounded border border-gray-100 bg-gray-50 p-1.5 font-mono text-[9px] leading-relaxed text-gray-600">
+                      {scanLog.map((line, i) => (
+                        <p key={i} className={i === scanLog.length - 1 ? "text-gray-800" : ""}>{line}</p>
+                      ))}
+                    </div>
+                  </details>
+                )}
 
                 {/* Generation line */}
                 {suggestProgress.total > 0 && (

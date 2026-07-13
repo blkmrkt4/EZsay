@@ -1,77 +1,85 @@
 import { executeActivity } from "@/lib/routing/openrouter";
 import type { SpellingFinding } from "./grammar-spelling-types";
-
-interface SectionInput {
-  id: string;
-  currentText: string;
-  isLocked: boolean;
-}
+import { batchSections, mapBatchesWithDeadline, type SectionInput } from "./detector-batching";
 
 interface SpellingContext {
   documentType: string;
+  /** Wall-clock deadline (epoch ms) — batches not started by then are skipped. */
+  deadlineAt?: number;
 }
+
+const CONCURRENCY = 3;
 
 /**
  * Detects spelling errors in document sections using LLM.
- * Validates all character positions against actual text.
+ * Sections are batched into one LLM call per ~6k chars and processed
+ * concurrently under a deadline (see detector-batching.ts). Findings are
+ * attributed back to their section by searching each batch section's text —
+ * character positions from the LLM were never trusted anyway.
  */
 export async function detectSpellingErrors(
   sections: SectionInput[],
   context?: SpellingContext,
 ): Promise<SpellingFinding[]> {
-  const findings: SpellingFinding[] = [];
   const docType = context?.documentType || "professional";
+  const deadlineAt = context?.deadlineAt ?? Date.now() + 40_000;
+  const batches = batchSections(sections);
 
-  for (const section of sections) {
-    if (section.isLocked) continue;
-    if (section.currentText.trim().length < 10) continue;
-
-    try {
+  const { results, skipped } = await mapBatchesWithDeadline(
+    batches,
+    CONCURRENCY,
+    deadlineAt,
+    async (batch) => {
       const result = await executeActivity("detect-spelling", {
-        SECTION_TEXT: section.currentText,
+        SECTION_TEXT: batch.map((s) => s.currentText).join("\n\n"),
         DOCUMENT_TYPE: docType,
       });
 
       const parsed = parseJsonResponse(result.content);
-      if (!Array.isArray(parsed)) continue;
+      if (!Array.isArray(parsed)) return [] as SpellingFinding[];
 
+      const batchFindings: SpellingFinding[] = [];
       for (const item of parsed) {
         if (!item.word || !item.correction) continue;
 
-        // Validate position — LLMs often hallucinate offsets
-        const validated = validatePosition(
-          section.currentText,
-          item.word,
-          item.phraseStart,
-          item.phraseEnd
-        );
+        // Attribute the finding to the batch section that contains the word.
+        for (const section of batch) {
+          const validated = validatePosition(
+            section.currentText,
+            item.word,
+            item.phraseStart,
+            item.phraseEnd
+          );
+          if (!validated) continue;
 
-        if (!validated) continue;
+          const contextBefore =
+            item.contextBefore || extractContext(section.currentText, validated.start, "before");
+          const contextAfter =
+            item.contextAfter || extractContext(section.currentText, validated.end, "after");
 
-        // Extract context if the LLM didn't provide it
-        const contextBefore =
-          item.contextBefore || extractContext(section.currentText, validated.start, "before");
-        const contextAfter =
-          item.contextAfter || extractContext(section.currentText, validated.end, "after");
-
-        findings.push({
-          id: crypto.randomUUID(),
-          word: item.word,
-          correction: item.correction,
-          contextBefore,
-          contextAfter,
-          sectionId: section.id,
-          phraseStart: validated.start,
-          phraseEnd: validated.end,
-          explanation: item.explanation || `Likely misspelling of "${item.correction}"`,
-        });
+          batchFindings.push({
+            id: crypto.randomUUID(),
+            word: item.word,
+            correction: item.correction,
+            contextBefore,
+            contextAfter,
+            sectionId: section.id,
+            phraseStart: validated.start,
+            phraseEnd: validated.end,
+            explanation: item.explanation || `Likely misspelling of "${item.correction}"`,
+          });
+          break;
+        }
       }
-    } catch (err) {
-      console.error(`Spelling detection failed for section ${section.id}:`, err);
-    }
+      return batchFindings;
+    },
+  );
+
+  if (skipped > 0) {
+    console.warn(`[spelling-detector] deadline hit — ${skipped}/${batches.length} batches skipped`);
   }
 
-  return findings;
+  return results.flat();
 }
 
 function parseJsonResponse(content: string): unknown {

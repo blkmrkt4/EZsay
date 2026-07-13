@@ -326,9 +326,24 @@ export async function POST(request: NextRequest) {
 
   const intake = (doc.intake as { audience?: string; purpose?: string } | null) ?? {};
 
-  if (categories.spelling) {
-    try {
-      const findings = await detectSpellingErrors(docSections, { documentType: doc.documentType });
+  // Spelling and grammar run in PARALLEL (they're independent) under a shared
+  // wall-clock deadline so the function returns partial results instead of
+  // being killed at the Vercel 60s cap on long documents. The detectors batch
+  // sections internally (~6k chars per LLM call, 3 concurrent).
+  if (categories.spelling || categories.grammar) {
+    const detectorDeadline = Date.now() + 40_000;
+
+    const [spellingOutcome, grammarOutcome] = await Promise.allSettled([
+      categories.spelling
+        ? detectSpellingErrors(docSections, { documentType: doc.documentType, deadlineAt: detectorDeadline })
+        : Promise.resolve(null),
+      categories.grammar
+        ? detectGrammarErrors(docSections, { documentType: doc.documentType, audience: intake.audience, deadlineAt: detectorDeadline })
+        : Promise.resolve(null),
+    ]);
+
+    if (spellingOutcome.status === "fulfilled" && spellingOutcome.value) {
+      const findings = spellingOutcome.value;
       spellingResults = findings;
       spellingScore = Math.max(0, 100 - findings.length * 5);
       if (findings.length === 0) {
@@ -339,15 +354,13 @@ export async function POST(request: NextRequest) {
           totalChars: unlocked.reduce((a, s) => a + s.currentText.length, 0),
         });
       }
-    } catch (err) {
-      console.error("Spelling check failed during scan:", err);
+    } else if (spellingOutcome.status === "rejected") {
+      console.error("Spelling check failed during scan:", spellingOutcome.reason);
       // Score stays null — AnalysisPanel will show "Not checked"
     }
-  }
 
-  if (categories.grammar) {
-    try {
-      const findings = await detectGrammarErrors(docSections, { documentType: doc.documentType, audience: intake.audience });
+    if (grammarOutcome.status === "fulfilled" && grammarOutcome.value) {
+      const findings = grammarOutcome.value;
       grammarResults = findings;
       grammarScore = Math.max(0, 100 - findings.length * 3);
       if (findings.length === 0) {
@@ -358,8 +371,8 @@ export async function POST(request: NextRequest) {
           totalChars: unlocked.reduce((a, s) => a + s.currentText.length, 0),
         });
       }
-    } catch (err) {
-      console.error("Grammar check failed during scan:", err);
+    } else if (grammarOutcome.status === "rejected") {
+      console.error("Grammar check failed during scan:", grammarOutcome.reason);
       // Score stays null — AnalysisPanel will show "Not checked"
     }
   }
