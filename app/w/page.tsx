@@ -1278,12 +1278,25 @@ export default function WorkspacePage() {
     [flags, sectionMap]
   );
 
-  // Compute artifact findings — only after a scan has been run
+  // Compute artifact findings — only after a scan has been run.
+  // NOTE: recomputed live from the CURRENT text, so artifacts introduced by
+  // accepted AI rewrites re-appear here automatically.
   const artifactFindings = useMemo(() => {
     if (!fullDocText || !hasScanned) return [];
     return detectArtifacts(fullDocText).findings;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullDocText, hasScanned]);
+
+  // Final-sweep count for the end-of-queue summary: artifact instances still
+  // in the document that the user hasn't chosen to keep — including ones
+  // re-introduced by accepted rewrites AFTER the artifact batch was processed.
+  const leftoverArtifactCount = useMemo(() => {
+    return artifactFindings.reduce((sum, f) => {
+      const processed = processedArtifacts[f.item];
+      if (processed?.action === "keep" || processed?.action === "ask") return sum;
+      return sum + f.count;
+    }, 0);
+  }, [artifactFindings, processedArtifacts]);
 
   // Writing quality advisories (sub-scores below 40)
   const writingQualityAdvisories = useMemo((): WritingQualityAdvisory[] => {
@@ -2283,6 +2296,11 @@ export default function WorkspacePage() {
                   flags={flags}
                   spellingRemaining={((activeDoc.spellingResults as import("@/lib/analysis/grammar-spelling-types").SpellingFinding[]) || []).length}
                   grammarRemaining={((activeDoc.grammarResults as import("@/lib/analysis/grammar-spelling-types").GrammarFinding[]) || []).length}
+                  artifactsRemaining={leftoverArtifactCount}
+                  onReviewArtifacts={() => {
+                    const idx = editQueue.findIndex((item) => item.type === "artifact_batch");
+                    if (idx !== -1) { setSelectedFlagIdx(idx); setSelectedOptionIdx(null); }
+                  }}
                   onSaveVersion={handleSaveVersion}
                   citationsPending={citationsNeedingReview}
                   onGoToCitations={() => { setNav("workspace"); setWorkspaceMode("citations"); }}
@@ -3867,10 +3885,12 @@ function EmptyPanel({ title, description, extra }: { title: string; description:
 
 // ── Edit session summary (shown when all flags are resolved) ─────────────
 
-function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, onSaveVersion, citationsPending, onGoToCitations }: {
+function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifactsRemaining, onReviewArtifacts, onSaveVersion, citationsPending, onGoToCitations }: {
   flags: { id: string; patternType: string; status: string }[];
   spellingRemaining: number;
   grammarRemaining: number;
+  artifactsRemaining: number;
+  onReviewArtifacts: () => void;
   onSaveVersion: () => void;
   citationsPending: number;
   onGoToCitations: () => void;
@@ -3884,7 +3904,7 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, onSave
   // Citations are a deliberate FINAL step (own tab), reached only once the edit
   // pass is done — so they are NOT counted as "remaining work" that blocks
   // completion. Edits first, citations last.
-  const hasRemainingEdits = unresolvedFlags > 0 || spellingRemaining > 0 || grammarRemaining > 0;
+  const hasRemainingEdits = unresolvedFlags > 0 || spellingRemaining > 0 || grammarRemaining > 0 || artifactsRemaining > 0;
 
   // Group accepted by category
   const categoryLabels: Record<string, string> = {
@@ -3929,6 +3949,9 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, onSave
               {grammarRemaining > 0 && (
                 <p className="text-yellow-700 font-medium">{grammarRemaining} grammar issue{grammarRemaining !== 1 ? "s" : ""}</p>
               )}
+              {artifactsRemaining > 0 && (
+                <p className="text-amber-700 font-medium">{artifactsRemaining} AI artifact{artifactsRemaining !== 1 ? "s" : ""}</p>
+              )}
             </div>
           ) : (
             <p className="mt-1 text-sm text-gray-500">
@@ -3936,6 +3959,29 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, onSave
             </p>
           )}
         </div>
+
+        {/* Final artifact sweep — accepted AI rewrites can re-introduce
+            typographic artifacts (em dashes, curly quotes). This count comes
+            from a live re-detection over the CURRENT text, so it catches
+            everything the edit session added, even after the artifact batch
+            was processed earlier in the queue. */}
+        {artifactsRemaining > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-left">
+            <p className="text-xs font-semibold text-amber-800">
+              Final sweep: {artifactsRemaining} AI artifact{artifactsRemaining !== 1 ? "s" : ""} in the document
+            </p>
+            <p className="mt-1 text-[11px] leading-relaxed text-gray-500">
+              Em dashes, curly quotes, and similar characters — some may have been introduced
+              by the rewrites you accepted. Review them so your final text is clean.
+            </p>
+            <button
+              onClick={onReviewArtifacts}
+              className="mt-2 w-full rounded-lg bg-amber-600 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
+            >
+              Review Artifacts ({artifactsRemaining})
+            </button>
+          </div>
+        )}
 
         {/* Citations — the final step, once edits are done. Kept separate from
             the edit pass on purpose: fixing citations earlier is wasted effort

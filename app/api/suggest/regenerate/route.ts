@@ -6,6 +6,7 @@ import { eq, and, isNull } from "drizzle-orm";
 import { loadBind, callOpenRouter } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { buildIntakeTokens } from "@/lib/prompts/intake-tokens";
+import { sanitizeGeneratedText, loadArtifactKeepSet } from "@/lib/analysis/sanitize-generated";
 
 const DIRECTION_INSTRUCTIONS: Record<string, string> = {
   more_casual:
@@ -202,14 +203,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Replace the old option: delete old, insert new
+    // Replace the old option: delete old, insert new — sanitized so the
+    // regenerated text never re-introduces typographic AI artifacts.
     await db.delete(flagOptions).where(eq(flagOptions.id, optionId));
 
     const [newOption] = await db
       .insert(flagOptions)
       .values({
         flagId: flag.id,
-        text: newText,
+        text: sanitizeGeneratedText(newText, await loadArtifactKeepSet(user.id)),
         modelId: result.modelUsed,
         isBlend: false,
       })

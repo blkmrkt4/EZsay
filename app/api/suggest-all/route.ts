@@ -7,6 +7,7 @@ import { executeActivity } from "@/lib/routing/openrouter";
 import { checkForCorruption } from "@/lib/analysis/corruption-checker";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { buildIntakeTokens } from "@/lib/prompts/intake-tokens";
+import { sanitizeGeneratedText, loadArtifactKeepSet } from "@/lib/analysis/sanitize-generated";
 
 // The client calls this one flag per request, so each invocation is a single LLM
 // call (aborts at 45s) — fits inside the Vercel Hobby 60s function cap.
@@ -88,6 +89,10 @@ export async function POST(request: NextRequest) {
 
   const intakeTokens = buildIntakeTokens(docType, doc.intake as Record<string, string> | null, stylePrefs);
 
+  // Artifacts the user wants kept (e.g. em dashes) are not sanitized out of
+  // generated options — everyone else's options come back artifact-free.
+  const artifactKeepSet = await loadArtifactKeepSet(user.id);
+
   // Generate suggestions with bounded concurrency (2 workers)
   type OptionRow = { id: string; flagId: string; text: string; isBlend: boolean };
   type FlagResult = { flagId: string; status: "success" | "failed"; optionCount: number; options?: OptionRow[]; explanation?: string; principle?: string; error?: string };
@@ -148,7 +153,9 @@ export async function POST(request: NextRequest) {
       const insertedOptions = await db.insert(flagOptions).values(
         cleanOptions.map((opt) => ({
           flagId: flag.id,
-          text: opt.text,
+          // Generated text must never re-introduce typographic AI artifacts
+          // (em dashes, curly quotes, …) into the document on accept.
+          text: sanitizeGeneratedText(opt.text, artifactKeepSet),
           modelId: result.modelUsed,
           isBlend: false,
         }))

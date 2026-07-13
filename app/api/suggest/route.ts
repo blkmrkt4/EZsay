@@ -6,6 +6,7 @@ import { eq, and, isNull } from "drizzle-orm";
 import { executeActivity } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { buildIntakeTokens } from "@/lib/prompts/intake-tokens";
+import { sanitizeGeneratedText, loadArtifactKeepSet } from "@/lib/analysis/sanitize-generated";
 
 // Vercel Hobby caps functions at 60s. One LLM call aborts at 45s
 // (REQUEST_TIMEOUT_MS), leaving room to return a response within the cap.
@@ -128,13 +129,15 @@ export async function POST(request: NextRequest) {
     const parsed = parseFullResponse(result.content, section.currentText);
     const options = parsed.options;
 
-    // Save options to DB
+    // Save options to DB — sanitized so generated text never re-introduces
+    // typographic AI artifacts (em dashes, curly quotes, …) on accept.
+    const artifactKeepSet = await loadArtifactKeepSet(user.id);
     const insertedOptions = await db
       .insert(flagOptions)
       .values(
         options.map((opt) => ({
           flagId: flag.id,
-          text: opt.text,
+          text: sanitizeGeneratedText(opt.text, artifactKeepSet),
           modelId: result.modelUsed,
           isBlend: false,
         }))
