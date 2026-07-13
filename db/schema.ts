@@ -536,6 +536,7 @@ export const events = pgTable("events", {
 export const plagiarismVerdictEnum = pgEnum("plagiarism_verdict", [
   "plagiarism",
   "close_match",
+  "cited",           // attributed paraphrase — proper academic practice, not an issue
   "common_knowledge",
   "coincidence",
   "quotation",

@@ -25,15 +25,18 @@ Return ONLY the JSON array.`;
 
 const ASSESS_SYSTEM = `You assess whether a passage from a student document matches web content found via search.
 
+Plagiarism is using someone else's WORDS or ideas WITHOUT attribution. A passage that names its source with an in-text citation — e.g. "(Christie, 1986)" or "Tuchman's (1978) concept of symbolic annihilation" — and paraphrases the cited ideas is CORRECT academic practice, not plagiarism, even when its phrasing resembles how that theory is normally described in scholarship. Describing a cited theory in standard academic terms is expected; do not flag it.
+
 Given the original passage and search results, determine:
-- "plagiarism" — the passage closely matches a source without attribution
-- "close_match" — the underlying idea is common knowledge or widely discussed, but the specific phrasing closely mirrors a source. The student should consider rephrasing in their own words. Use this when the CONCEPT is not unique but the WORDING is too close to a particular source to be coincidental.
-- "common_knowledge" — ONLY for basic, universally known facts (dates, definitions, widely documented events) that any informed person would state in nearly identical terms. If the passage uses specific phrasing, specific arguments, or domain-specific analysis — even on a well-known topic — it is NOT common knowledge. Err on the side of "close_match" when in doubt.
+- "plagiarism" — substantial verbatim or near-verbatim wording matches a source and the passage does NOT attribute that source
+- "close_match" — the specific WORDING (not just the concept) is near-verbatim to a particular source the passage does not attribute. Requires actual matching phrases visible in the search results — "sounds like academic discourse" or "mirrors how this is typically presented" is NOT sufficient. Never use close_match for a passage whose ideas are attributed with an in-text citation unless its wording is copied nearly word-for-word from a DIFFERENT, uncited source.
+- "cited" — the passage attributes its ideas to a source via in-text citation and paraphrases legitimately. This is proper academic writing; nothing to fix.
+- "common_knowledge" — basic, universally known facts (dates, definitions, widely documented events) that any informed person would state in nearly identical terms
 - "coincidence" — surface similarity but different meaning or context
-- "quotation" — the passage is a properly attributed quote
+- "quotation" — the passage is a properly attributed direct quote
 
 Respond in EXACTLY this format:
-VERDICT: [plagiarism/close_match/common_knowledge/coincidence/quotation]
+VERDICT: [plagiarism/close_match/cited/common_knowledge/coincidence/quotation]
 CONFIDENCE: [0.0 to 1.0]
 EXPLANATION: [2-3 sentences explaining your assessment]
 TOP_URL: [the most relevant matching URL, or "none"]
@@ -263,10 +266,19 @@ export async function POST(request: NextRequest) {
         .map((r, i) => `[${i + 1}] URL: ${r.url}\nTitle: ${r.title}\nSnippet: ${r.content}`)
         .join("\n\n");
 
+      // Surface the passage's own in-text citations so the assessor can't
+      // miss that the ideas are attributed (parenthetical + narrative forms).
+      const inTextCitations = para.text.match(
+        /\([A-Z][^()]{0,60}?(?:1[5-9]|20)\d{2}[a-z]?(?:[^()]{0,20})?\)|\b[A-Z][A-Za-zÀ-ÿ'’-]+(?:\s+(?:and|&)\s+[A-Z][A-Za-zÀ-ÿ'’-]+)?(?:'s)?\s*\((?:1[5-9]|20)\d{2}[a-z]?\)/g
+      );
+      const citationNote = inTextCitations?.length
+        ? `\n\nNOTE: this passage contains in-text citations: ${[...new Set(inTextCitations)].join("; ")}`
+        : "";
+
       const assessResult = await callOpenRouter(
         [
           { role: "system", content: ASSESS_SYSTEM },
-          { role: "user", content: `PASSAGE FROM DOCUMENT:\n"${para.text}"\n\nWEB SEARCH RESULTS:\n${searchContext}` },
+          { role: "user", content: `PASSAGE FROM DOCUMENT:\n"${para.text}"${citationNote}\n\nWEB SEARCH RESULTS:\n${searchContext}` },
         ],
         ASSESS_MODEL,
         ASSESS_FALLBACKS,
@@ -374,14 +386,14 @@ export async function POST(request: NextRequest) {
 }
 
 function parseAssessment(response: string): {
-  verdict: "plagiarism" | "close_match" | "common_knowledge" | "coincidence" | "quotation";
+  verdict: "plagiarism" | "close_match" | "cited" | "common_knowledge" | "coincidence" | "quotation";
   confidence: number;
   explanation: string;
   topUrl: string | null;
   topTitle: string | null;
   topSnippet: string | null;
 } {
-  const verdictMatch = response.match(/VERDICT:\s*(plagiarism|close_match|common_knowledge|coincidence|quotation)/i);
+  const verdictMatch = response.match(/VERDICT:\s*(plagiarism|close_match|cited|common_knowledge|coincidence|quotation)/i);
   const confMatch = response.match(/CONFIDENCE:\s*([\d.]+)/i);
   const explMatch = response.match(/EXPLANATION:\s*([\s\S]*?)(?=\nTOP_URL:|$)/i);
   const urlMatch = response.match(/TOP_URL:\s*(.+)/i);
@@ -393,7 +405,7 @@ function parseAssessment(response: string): {
   const topSnippet = snippetMatch?.[1]?.trim();
 
   return {
-    verdict: (verdictMatch?.[1]?.toLowerCase() as "plagiarism" | "close_match" | "common_knowledge" | "coincidence" | "quotation") ?? "coincidence",
+    verdict: (verdictMatch?.[1]?.toLowerCase() as "plagiarism" | "close_match" | "cited" | "common_knowledge" | "coincidence" | "quotation") ?? "coincidence",
     confidence: confMatch ? parseFloat(confMatch[1]) : 0.5,
     explanation: explMatch?.[1]?.trim() ?? response.trim(),
     topUrl: topUrl && topUrl !== "none" ? topUrl : null,

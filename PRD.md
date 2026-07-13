@@ -170,6 +170,10 @@ Penalty-based scoring across 44 formatting artifacts. Four indicativeness tiers:
 
 Every paragraph searched via web (DuckDuckGo or Tavily). LLM assesses each match. Only "plagiarism" verdicts count toward score (weighted by confidence). "Common knowledge" shown as informational, clearly labeled "not plagiarism." Detail panel shows all passages sorted by severity, clean passages collapsed.
 
+**Cited paraphrase is never flagged (added 2026-07-13).** A `cited` verdict marks passages that attribute their ideas with an in-text citation and paraphrase legitimately — proper academic practice, shown as informational ("Properly Cited"), never in the edit queue. The assess prompt requires `close_match` to point at actual near-verbatim wording from an **unattributed** source — "mirrors standard academic discourse" is explicitly insufficient — and the route detects the passage's own in-text citations (parenthetical + narrative) and lists them in the assess message so the model cannot miss the attribution. Added after cited passages (Christie 1986, Tuchman 1978, Fitz-Gibbon 2019 paraphrases) were flagged "Close Match — Consider Rephrasing", which would coach users into weakening correct citations.
+
+**Doc-panel follow for plagiarism items (fixed 2026-07-13):** the document panel's violet highlight, auto-scroll, and heatmap ticks previously keyed off AI-detection flags only — reviewing a plagiarism queue item left the doc panel unaligned and (since `close_match` produced no tick) the heatmap empty. Plagiarism items now highlight their passage in violet, scroll the doc panel to it, and both actionable verdicts produce heatmap ticks.
+
 ### 7.5 Citations (higher is better, weight: 15%)
 
 Two-step check: structural validation (formatting errors) + web verification (source exists). 8 styles supported: APA, MLA, Chicago, Harvard, Oxford, Bluebook, OSCOLA, Business. LLM-powered style conversion available.

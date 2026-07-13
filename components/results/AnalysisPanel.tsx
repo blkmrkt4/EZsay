@@ -378,7 +378,7 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
                       r.verdict === "plagiarism" ? "border-l-red-500 bg-red-50" :
                       r.verdict === "close_match" ? "border-l-orange-400 bg-orange-50" :
                       r.verdict === "common_knowledge" ? "border-l-yellow-400 bg-yellow-50" :
-                      r.verdict === "quotation" ? "border-l-blue-400 bg-blue-50" :
+                      r.verdict === "quotation" || r.verdict === "cited" ? "border-l-blue-400 bg-blue-50" :
                       "border-l-gray-300 bg-gray-50"
                     }`}>
                       <div className="flex items-center gap-2 mb-1">
@@ -386,12 +386,13 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
                           r.verdict === "plagiarism" ? "bg-red-100 text-red-700" :
                           r.verdict === "close_match" ? "bg-orange-100 text-orange-700" :
                           r.verdict === "common_knowledge" ? "bg-yellow-100 text-yellow-700" :
-                          r.verdict === "quotation" ? "bg-blue-100 text-blue-700" :
+                          r.verdict === "quotation" || r.verdict === "cited" ? "bg-blue-100 text-blue-700" :
                           "bg-gray-200 text-gray-600"
                         }`}>
                           {r.verdict === "plagiarism" ? "Plagiarism" :
                            r.verdict === "close_match" ? "Close Match" :
                            r.verdict === "common_knowledge" ? "Common Knowledge" :
+                           r.verdict === "cited" ? "Properly Cited" :
                            r.verdict === "quotation" ? "Quotation" : r.verdict}
                         </span>
                         {r.verdict === "close_match" && (

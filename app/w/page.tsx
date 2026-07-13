@@ -1333,8 +1333,10 @@ export default function WorkspacePage() {
         label: flag.flaggedPhrase,
       });
     }
+    // Both actionable plagiarism verdicts get ticks — mirrors the edit-queue
+    // filter (openPlagiarismResults), so every queue item has a mark.
     for (const result of plagiarismResults) {
-      if (result.verdict !== "plagiarism" || result.status !== "open" || !result.sectionId) continue;
+      if ((result.verdict !== "plagiarism" && result.verdict !== "close_match") || result.status !== "open" || !result.sectionId) continue;
       out.push({
         id: `plag-${result.id}`,
         sectionId: result.sectionId,
@@ -1469,6 +1471,13 @@ export default function WorkspacePage() {
   const currentFlag = currentQueueItem?.type === "ai_detection" || currentQueueItem?.type === "artifact_individual"
     ? currentQueueItem.flag
     : null;
+  // The passage the current NON-flag queue item is editing — drives the doc
+  // panel's violet highlight + auto-scroll for plagiarism items, exactly like
+  // currentFlag does for AI-detection flags.
+  const currentPassage =
+    currentQueueItem?.type === "plagiarism" && currentQueueItem.result.sectionId
+      ? { sectionId: currentQueueItem.result.sectionId, text: currentQueueItem.result.passageText }
+      : null;
   const currentSection = currentFlag ? sectionMap.get(currentFlag.sectionId) ?? null : null;
   const currentOptions = currentFlag ? flagOptions.filter((o) => o.flagId === currentFlag.id) : [];
 
@@ -1551,12 +1560,14 @@ export default function WorkspacePage() {
   // ── Auto-scroll Doc Panel to active section ─────────────────────────────
 
   useEffect(() => {
-    if (!currentFlag) return;
-    const el = document.querySelector(`[data-section-id="${currentFlag.sectionId}"]`);
+    const targetSectionId = currentFlag?.sectionId ?? currentPassage?.sectionId;
+    if (!targetSectionId) return;
+    const el = document.querySelector(`[data-section-id="${targetSectionId}"]`);
     if (el) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
-  }, [currentFlag]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFlag, currentPassage?.sectionId]);
 
   // ── Background suggestion generation: auto-start / auto-resume ───────────
   // Whenever a scanned doc has open flags still missing options and no loop is
@@ -2032,7 +2043,9 @@ export default function WorkspacePage() {
                   <div ref={docScrollRef} className="flex-1 overflow-auto p-3">
                     <div className="space-y-1">
                     {sections.map((section) => {
-                      const isActive = currentFlag && section.id === currentFlag.sectionId;
+                      const isActive =
+                        (currentFlag && section.id === currentFlag.sectionId) ||
+                        (currentPassage && section.id === currentPassage.sectionId);
                       const sectionFlags = flags.filter((f) => f.sectionId === section.id);
                       const hasFlags = sectionFlags.length > 0;
                       const allResolved = hasFlags && sectionFlags.every((f) => f.status !== "open" && f.status !== "generation_failed");
@@ -2065,6 +2078,24 @@ export default function WorkspacePage() {
                               {section.currentText.slice(cidx + highlightedCitationText.length)}
                             </>
                           );
+                        }
+                        // Plagiarism queue item: highlight the whole passage
+                        // being reviewed in violet — same "being edited" colour
+                        // as flag highlighting, so the doc panel always shows
+                        // what the centre panel is working on.
+                        if (currentPassage && section.id === currentPassage.sectionId) {
+                          const pidx = section.currentText.indexOf(currentPassage.text);
+                          if (pidx !== -1) {
+                            return (
+                              <>
+                                {section.currentText.slice(0, pidx)}
+                                <mark className="rounded bg-violet-100 px-0.5 text-gray-900 ring-1 ring-violet-400">{currentPassage.text}</mark>
+                                {section.currentText.slice(pidx + currentPassage.text.length)}
+                              </>
+                            );
+                          }
+                          // Passage text no longer matches (edited since scan) —
+                          // the violet section border still marks the location.
                         }
                         // Sentence + phrase highlighting for active flag
                         if (isActive && currentFlag && currentFlag.phraseStart >= 0 && currentFlag.phraseEnd > currentFlag.phraseStart) {
