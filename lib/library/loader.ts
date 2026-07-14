@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { libraryEntries } from "@/db/schema";
-import { eq, and, or, arrayContains, inArray } from "drizzle-orm";
+import { eq, ne, and, or, arrayContains, inArray } from "drizzle-orm";
 
 export type LoadedEntry = typeof libraryEntries.$inferSelect;
 
@@ -29,6 +29,10 @@ export async function loadActiveEntries(
     .where(
       and(
         eq(libraryEntries.status, "active"),
+        // citation_artifact patterns belong to the Citations pipeline ONLY —
+        // loading them into the prose scan flags reference entries as prose
+        // problems (constraint #1: citations are never flagged by the editor).
+        ne(libraryEntries.category, "citation_artifact"),
         inArray(libraryEntries.severity, severities as ("high" | "medium" | "low")[]),
         or(
           arrayContains(libraryEntries.documentTypes, ["all"]),

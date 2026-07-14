@@ -10,6 +10,7 @@ import { analyzeSemanticPatterns } from "@/lib/analysis/semantic-analyzer";
 import { calculateWritingQuality } from "@/lib/analysis/quality-scorer";
 import { detectSpellingErrors } from "@/lib/analysis/spelling-detector";
 import { detectGrammarErrors } from "@/lib/analysis/grammar-detector";
+import { classifyReferenceParagraphs } from "@/lib/citations/parser";
 import { checkAllLimits, recordScanUsage } from "@/lib/stripe/plan-limits";
 import { rateLimit } from "@/lib/rate-limit";
 import { trackEvent } from "@/lib/events/track";
@@ -142,6 +143,22 @@ export async function POST(request: NextRequest) {
     .from(sections)
     .where(eq(sections.documentId, documentId))
     .orderBy(sections.index);
+
+  // Citation lock repair (constraint #1). Documents parsed before the header
+  // state machine (e.g. "References – Part A" headings, which the old exact
+  // matcher missed) can carry UNLOCKED reference sections — which then get
+  // flagged and "rewritten" by the editing engine. Re-classify here and heal
+  // both the DB rows and this scan's in-memory copies.
+  {
+    const lockedFlags = classifyReferenceParagraphs(docSections.map((s) => s.currentText));
+    for (let i = 0; i < docSections.length; i++) {
+      if (lockedFlags[i] && !docSections[i].isLocked) {
+        docSections[i].isLocked = true;
+        await db.update(sections).set({ isLocked: true }).where(eq(sections.id, docSections[i].id));
+        console.log(`[scan] lock repair: section ${docSections[i].index} is citation content — locked`);
+      }
+    }
+  }
 
   // Clear all previous flags before re-scanning (bulk delete).
   // Resolved flags are already captured in style_profiles and llm_call_log.

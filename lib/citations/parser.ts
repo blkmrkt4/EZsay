@@ -17,6 +17,8 @@ export interface ParsedDocument {
   citations: CitationSpan[];
 }
 
+import { looksLikeReferenceEntry } from "./graph";
+
 // Reference section headers — case insensitive
 const REFERENCE_HEADERS = [
   "references",
@@ -28,6 +30,46 @@ const REFERENCE_HEADERS = [
   "sources",
   "reference list",
 ];
+
+// A header line may carry a suffix: "References – Part A", "References: Essay 1".
+// Real documents (multi-part portfolios) also have MULTIPLE reference sections
+// with body text in between, so header matching must be per-line, not
+// "first header → end of document".
+const REF_HEADER_LINE = new RegExp(
+  `^(?:${REFERENCE_HEADERS.join("|")})(?:\\s*[–—:\\-].{0,60})?$`,
+  "i",
+);
+
+/** Whether a line is a reference-section heading (with optional suffix). */
+export function isReferenceHeader(line: string): boolean {
+  return REF_HEADER_LINE.test(line.trim());
+}
+
+/**
+ * Walks paragraphs with a small state machine and returns which are citation
+ * content: a reference header starts a locked run; paragraphs that look like
+ * bibliography entries stay locked; the first paragraph that doesn't ends the
+ * run (handles "References – Part A" followed by the Part B essay).
+ */
+export function classifyReferenceParagraphs(paragraphs: string[]): boolean[] {
+  const locked: boolean[] = [];
+  let inRefs = false;
+  for (const para of paragraphs) {
+    const trimmed = para.trim();
+    if (isReferenceHeader(trimmed)) {
+      inRefs = true;
+      locked.push(true);
+      continue;
+    }
+    if (inRefs && looksLikeReferenceEntry(trimmed)) {
+      locked.push(true);
+      continue;
+    }
+    if (inRefs) inRefs = false;
+    locked.push(false);
+  }
+  return locked;
+}
 
 /**
  * Identifies inline citations in text.
@@ -83,8 +125,7 @@ function findReferenceSections(text: string): CitationSpan[] {
   let refStart = -1;
 
   for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim().toLowerCase();
-    if (REFERENCE_HEADERS.includes(trimmed)) {
+    if (isReferenceHeader(lines[i])) {
       // Found a reference section header — everything from here to end is citation content
       refStart = text.indexOf(lines[i]);
       break;
@@ -105,53 +146,35 @@ function findReferenceSections(text: string): CitationSpan[] {
 
 /**
  * Splits text into sections by paragraph, respecting headings.
- * Locks citation sections.
+ * Locks citation sections — per paragraph, via the reference state machine,
+ * so multi-part documents ("References – Part A" mid-document, more essay,
+ * then "References – Part B") lock exactly the citation content and nothing
+ * else. Constraint #1: locked content is never flagged or modified.
  */
 export function parseAndSplit(rawText: string): ParsedDocument {
   const inlineCitations = findInlineCitations(rawText);
   const refSections = findReferenceSections(rawText);
   const allCitations = [...inlineCitations, ...refSections];
 
-  // Find the reference section start (if any) — everything after is locked
-  const refStart = refSections.length > 0 ? refSections[0].start : rawText.length;
+  // Split the whole document by paragraph breaks, then normalize each.
+  const rawParagraphs = rawText.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
 
-  // Split the non-reference text into sections
-  const mainText = rawText.slice(0, refStart);
+  const normalized = rawParagraphs.map((para) =>
+    para
+      .trim()
+      // Normalize internal whitespace artifacts from PDF extraction:
+      // unwrap soft line breaks (PDF line-wrap, not real paragraph breaks)
+      // and collapse multiple spaces from justified layouts.
+      .replace(/([^\n])\n(?!\n)/g, "$1 ")
+      .replace(/[ \t]{2,}/g, " "),
+  );
 
-  // Split by double newlines (paragraph breaks) or headings
-  const rawParagraphs = mainText.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
+  const lockedFlags = classifyReferenceParagraphs(normalized);
 
-  const sections: { text: string; isLocked: boolean }[] = [];
-
-  for (const para of rawParagraphs) {
-    const trimmed = para.trim();
-    if (trimmed.length === 0) continue;
-
-    // Normalize internal whitespace artifacts from PDF extraction:
-    // 1. Unwrap soft line breaks (single \n not preceded by sentence-ending punctuation)
-    //    into spaces — these are PDF line-wrap artifacts, not real paragraph breaks.
-    // 2. Collapse multiple spaces into one — artifacts from justified text layout.
-    // 3. Preserve leading indentation per line (re-applied after normalization).
-    const normalized = trimmed
-      .replace(/([^\n])\n(?!\n)/g, "$1 ")  // unwrap soft line breaks
-      .replace(/[ \t]{2,}/g, " ");          // collapse multiple spaces/tabs
-
-    // Check if this paragraph is just a citation reference
-    const isCitation = REFERENCE_HEADERS.includes(normalized.toLowerCase());
-
-    sections.push({
-      text: normalized,
-      isLocked: isCitation,
-    });
-  }
-
-  // Add the reference section as a locked section if it exists
-  if (refStart < rawText.length) {
-    sections.push({
-      text: rawText.slice(refStart).trim(),
-      isLocked: true,
-    });
-  }
+  const sections: { text: string; isLocked: boolean }[] = normalized.map((text, i) => ({
+    text,
+    isLocked: lockedFlags[i],
+  }));
 
   return { sections, citations: allCitations };
 }
