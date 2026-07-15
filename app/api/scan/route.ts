@@ -10,6 +10,7 @@ import { analyzeSemanticPatterns } from "@/lib/analysis/semantic-analyzer";
 import { calculateWritingQuality } from "@/lib/analysis/quality-scorer";
 import { detectSpellingErrors } from "@/lib/analysis/spelling-detector";
 import { detectGrammarErrors } from "@/lib/analysis/grammar-detector";
+import { resolveEnglishVariant } from "@/lib/style/english-variant";
 import { classifyReferenceParagraphs } from "@/lib/citations/parser";
 import { checkAllLimits, recordScanUsage } from "@/lib/stripe/plan-limits";
 import { rateLimit } from "@/lib/rate-limit";
@@ -350,12 +351,14 @@ export async function POST(request: NextRequest) {
   if (categories.spelling || categories.grammar) {
     const detectorDeadline = Date.now() + 40_000;
 
+    const targetVariant = resolveEnglishVariant(doc.intake as Record<string, unknown> | null, userPrefs);
+
     const [spellingOutcome, grammarOutcome] = await Promise.allSettled([
       categories.spelling
-        ? detectSpellingErrors(docSections, { documentType: doc.documentType, deadlineAt: detectorDeadline })
+        ? detectSpellingErrors(docSections, { documentType: doc.documentType, deadlineAt: detectorDeadline, variant: targetVariant })
         : Promise.resolve(null),
       categories.grammar
-        ? detectGrammarErrors(docSections, { documentType: doc.documentType, audience: intake.audience, deadlineAt: detectorDeadline, keepItems: skipArtifactItems })
+        ? detectGrammarErrors(docSections, { documentType: doc.documentType, audience: intake.audience, deadlineAt: detectorDeadline, keepItems: skipArtifactItems, variant: targetVariant })
         : Promise.resolve(null),
     ]);
 

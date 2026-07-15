@@ -59,10 +59,13 @@ Rules:
 - ruleCategory should be a short label like "subject-verb agreement", "pronoun error", "run-on sentence", etc.
 - NEVER suggest introducing em dashes (—), en dashes (–), curly/smart quotes, or unicode ellipsis (…). These typographic characters are treated as AI-writing artifacts elsewhere in this product and will be stripped. A spaced hyphen, straight quotes, or three dots are always acceptable — do not flag them, and do not use these typographic characters in correctedText.
 - Only flag genuine grammar ERRORS — never stylistic punctuation preferences (e.g. "em dash preferred in formal writing" is NOT an error)
+- English variant: the user message states this document's variant rule. All correctedText must use the target variant's spellings and conventions. Variant-specific grammar constructions (e.g. collective-noun agreement, "have got" vs "have gotten") are errors only when a target variant is set and they break it — use ruleCategory "variant" for those. Pure spelling differences (colour vs color) belong to the spelling checker — do not duplicate them here. NEVER flag variant issues inside quotation marks: quoted material keeps its source's conventions.
 - Return an empty array [] only if the text is genuinely error-free
 
 Respond with ONLY a JSON array. No explanation, no markdown, no wrapping.`,
     userPrompt: `Find every grammar error in this text. Return a JSON array.
+
+English variant rule for this document: [SPELLING_VARIANT]
 
 Text:
 ---
@@ -99,16 +102,19 @@ You MUST check for:
 3. **Missing letters** — "dont" → "don't", "cant" → "can't"
 4. **Transposed letters** — "teh" → "the", "recieve" → "receive"
 5. **Double letters** — "accomodate" → "accommodate", "occurence" → "occurrence"
-6. **British vs American** — do NOT flag these (both are valid)
+6. **English variant conformance** — the user message states this document's variant rule. When a target variant is set (e.g. British English), correctly-spelled words from a DIFFERENT variant (e.g. "color", "organize" in a British document) are errors: report each with "category": "variant" and the target-variant spelling as the correction. When no target variant is set, do NOT flag British vs American differences — both are valid. NEVER flag a word inside quotation marks for variant reasons: quoted material keeps its source's spelling.
 
 Rules:
 - Find EVERY misspelled word. Be thorough.
 - The "word" field must contain the EXACT misspelled word as it appears in the text
 - phraseStart and phraseEnd are character offsets from the start of the text (0-indexed)
+- "category" is "variant" for wrong-variant words, "spelling" for ordinary misspellings
 - Return an empty array [] only if there are genuinely no spelling errors
 
 Respond with ONLY a JSON array. No explanation, no markdown, no wrapping.`,
     userPrompt: `Find every spelling error in this text. Return a JSON array.
+
+English variant rule for this document: [SPELLING_VARIANT]
 
 Text:
 ---
@@ -122,6 +128,7 @@ JSON format per error:
     "correction": "misspelled",
     "phraseStart": 0,
     "phraseEnd": 9,
+    "category": "spelling",
     "explanation": "Missing letter 'l'"
   }
 ]

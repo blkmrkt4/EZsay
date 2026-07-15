@@ -8,7 +8,7 @@ description: How to build, launch, and drive EzSay locally to verify changes end
 ## Build / launch
 
 - `npx tsc --noEmit` and `npm run build` for static checks (strict TS).
-- `npm run dev` → http://localhost:3000 (ready in <1s). Uses `.env.local`.
+- `npm run dev` → usually http://localhost:3000 (ready in <1s). Uses `.env.local`. **Port 3000 is often occupied by the user's HippoOS dev server** — Next.js then picks 3001; read the "Local:" line from the dev log for the real port (localhost cookies are port-agnostic, the session carries over). **Never `pkill -f "next dev"`** — it kills HippoOS too; kill the EzSay server by PID (`lsof -nP -iTCP:<port>`) or use the tracked background task.
 - **The local dev server shares the PRODUCTION Supabase database** (single project for dev+prod). Anything you resolve, dismiss, or edit mutates real rows. Use a designated test document (e.g. "Intelligence Essay Calum 1"), never a user's real essay.
 - A dev session is already authenticated in the browser; `DEV_BYPASS_AUTH=false` in `.env.local` and login still works via the existing session cookie.
 

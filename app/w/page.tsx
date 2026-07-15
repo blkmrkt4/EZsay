@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import AnalysisPanel from "@/components/results/AnalysisPanel";
 import { detectArtifacts, type ArtifactFinding } from "@/lib/analysis/artifact-detector";
 import { calculateWritingQuality, findComplexSentences } from "@/lib/analysis/quality-scorer";
+import { detectEnglishVariant } from "@/lib/style/english-variant";
 import { getRemovalDescription } from "@/lib/analysis/artifact-removals";
 import CitationsPage from "@/components/citations/CitationsPage";
 import CommandCapsule from "@/components/editor/CommandCapsule";
@@ -184,6 +185,20 @@ const INTAKE_QUESTIONS = [
       { value: "article", label: "Article / Blog post" },
       { value: "email", label: "Email / Letter" },
       { value: "presentation", label: "Presentation / Deck" },
+    ],
+  },
+  {
+    key: "english_variant" as const,
+    title: "Which English should this document follow?",
+    subtitle: "Markers and readers notice mixed spelling. We'll flag words that don't conform — except inside quotes, which keep their source's spelling.",
+    options: [
+      { value: "british", label: "British English" },
+      { value: "american", label: "American English" },
+      { value: "canadian", label: "Canadian English" },
+      { value: "australian", label: "Australian English" },
+      { value: "irish", label: "Irish English" },
+      { value: "south_african", label: "South African English" },
+      { value: "", label: "No preference" },
     ],
   },
   {
@@ -458,9 +473,13 @@ export default function WorkspacePage() {
   const [intakeAnswers, setIntakeAnswers] = useState({
     audience: "",
     purpose: "",
+    english_variant: "",
     aiUsage: "",
     discipline: "",
   });
+  // Pre-selection for the English-variant intake question: the user's saved
+  // style preference wins, else a marker-word guess from the document text.
+  const [variantPrefill, setVariantPrefill] = useState<{ value: string; source: "style" | "detected" } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1057,13 +1076,52 @@ export default function WorkspacePage() {
       setShowUpload(false);
       // Navigate to intake questionnaire flow
       setIntakeStep(0);
-      setIntakeAnswers({ audience: "", purpose: "", aiUsage: "", discipline: "" });
+      setIntakeAnswers({ audience: "", purpose: "", english_variant: "", aiUsage: "", discipline: "" });
+      setVariantPrefill(null);
       setNav("intake");
     }
     setUploading(false);
   }
 
   // ── Intake questionnaire ────────────────────────────────────────────────
+
+  // Pre-select the English-variant question: saved style preference first,
+  // else a marker-word guess from the document text. Runs once per intake.
+  useEffect(() => {
+    if (nav !== "intake" || !activeDoc || intakeAnswers.english_variant) return;
+    let cancelled = false;
+    (async () => {
+      let value = "";
+      let source: "style" | "detected" | null = null;
+      try {
+        const json = await fetch(`/api/style-preferences?documentType=${activeDoc.documentType}`).then((r) => r.json());
+        const prefs = json?.data?.preferences ?? {};
+        if (typeof prefs.english_variant === "string" && prefs.english_variant) {
+          value = prefs.english_variant;
+          source = "style";
+        } else if (prefs.british_spelling === true) {
+          value = "british";
+          source = "style";
+        }
+      } catch {}
+      if (!value) {
+        const docText = sections.filter((s) => !s.isLocked).map((s) => s.currentText).join("\n\n");
+        const detected = detectEnglishVariant(docText);
+        if (detected) {
+          value = detected;
+          source = "detected";
+        }
+      }
+      if (!cancelled && value && source) {
+        setVariantPrefill({ value, source });
+        setIntakeAnswers((prev) => (prev.english_variant ? prev : { ...prev, english_variant: value }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav, activeDoc?.id, sections.length]);
 
   const activeIntakeQuestions = INTAKE_QUESTIONS.filter(
     (q) => !q.academicOnly || activeDoc?.documentType === "academic"
@@ -3413,6 +3471,13 @@ export default function WorkspacePage() {
                   </div>
 
                   <div className="flex-1 p-2 space-y-1.5">
+                    {currentIntakeQ.key === "english_variant" && variantPrefill && (
+                      <p className="rounded bg-blue-50 px-2 py-1 text-[10px] text-blue-600">
+                        {variantPrefill.source === "style"
+                          ? "Pre-selected from your Style Rules — change it if this document differs."
+                          : "We detected this from the document's spelling — change it if that's wrong."}
+                      </p>
+                    )}
                     {currentIntakeQ.options.map((opt) => {
                       const isSelected = intakeAnswers[currentIntakeQ.key] === opt.value;
                       return (
@@ -4515,6 +4580,14 @@ function SpellingView({ findings, checked, onToggle, onCheckAll, onUncheckAll, a
               <span className="text-gray-400"> {f.contextAfter}...</span>
               <span className="mx-2 text-gray-300">&rarr;</span>
               <span className="rounded bg-green-100 px-1 font-medium text-green-700">{f.correction}</span>
+              {f.category === "variant" && (
+                <span
+                  className="ml-2 inline-block rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-600"
+                  title="Correct spelling, but in a different English variant than this document follows"
+                >
+                  variant
+                </span>
+              )}
             </span>
           </label>
         ))}

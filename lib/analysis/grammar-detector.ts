@@ -2,6 +2,8 @@ import { executeActivity } from "@/lib/routing/openrouter";
 import type { GrammarFinding } from "./grammar-spelling-types";
 import { batchSections, mapBatchesWithDeadline, type SectionInput } from "./detector-batching";
 import { sanitizeGeneratedText } from "./sanitize-generated";
+import { variantToken, type EnglishVariant } from "@/lib/style/english-variant";
+import { findQuotedRanges, isInsideQuote } from "./quote-ranges";
 
 interface GrammarContext {
   documentType: string;
@@ -10,6 +12,8 @@ interface GrammarContext {
   deadlineAt?: number;
   /** Artifact items the user has set to "always keep" — exempt from correction sanitizing. */
   keepItems?: Set<string>;
+  /** Target English variant — null/absent = no variant enforcement. */
+  variant?: EnglishVariant | null;
 }
 
 const CONCURRENCY = 3;
@@ -39,14 +43,31 @@ export async function detectGrammarErrors(
         SECTION_TEXT: batch.map((s) => s.currentText).join("\n\n"),
         DOCUMENT_TYPE: docType,
         AUDIENCE: audience,
+        SPELLING_VARIANT: variantToken(context?.variant ?? null),
       });
 
       const parsed = parseJsonResponse(result.content);
       if (!Array.isArray(parsed)) return [] as GrammarFinding[];
 
+      // Variant-conformance findings inside quotation marks are dropped —
+      // quoted material keeps its source variant (backstop for the same
+      // instruction in the prompt).
+      const quoteRanges = new Map(batch.map((s) => [s.id, findQuotedRanges(s.currentText)]));
+
       const batchFindings: GrammarFinding[] = [];
       for (const item of parsed) {
         if (!item.originalText || !item.correctedText) continue;
+
+        // Single-word variant corrections (organize → organise) are the
+        // spelling checker's job — despite the prompt, the model still emits
+        // them here, which would double-list every wrong-variant word. Only
+        // multi-word variant CONSTRUCTIONS are grammar findings.
+        if (
+          (item.ruleCategory || "").toLowerCase().includes("variant") &&
+          !String(item.originalText).trim().includes(" ")
+        ) {
+          continue;
+        }
 
         // A correction must never introduce typographic AI artifacts (em
         // dashes, curly quotes, …) — the artifact sweep flags exactly those
@@ -65,6 +86,11 @@ export async function detectGrammarErrors(
             item.phraseEnd
           );
           if (!validated) continue;
+
+          const isVariantFinding = (item.ruleCategory || "").toLowerCase().includes("variant");
+          if (isVariantFinding && isInsideQuote(quoteRanges.get(section.id) ?? [], validated.start, validated.end)) {
+            break; // quoted material keeps its source variant
+          }
 
           batchFindings.push({
             id: crypto.randomUUID(),

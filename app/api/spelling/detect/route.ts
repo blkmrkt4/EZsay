@@ -4,6 +4,8 @@ import { db } from "@/db";
 import { documents, sections } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { detectSpellingErrors } from "@/lib/analysis/spelling-detector";
+import { loadMergedStylePreferences } from "@/lib/style/load-prefs";
+import { resolveEnglishVariant } from "@/lib/style/english-variant";
 
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
@@ -37,7 +39,11 @@ export async function POST(request: NextRequest) {
     .orderBy(sections.index);
 
   try {
-    const findings = await detectSpellingErrors(docSections);
+    const stylePrefs = await loadMergedStylePreferences(user.id, doc.documentType);
+    const findings = await detectSpellingErrors(docSections, {
+      documentType: doc.documentType,
+      variant: resolveEnglishVariant(doc.intake as Record<string, unknown> | null, stylePrefs),
+    });
     const score = Math.max(0, 100 - findings.length * 5);
 
     await db

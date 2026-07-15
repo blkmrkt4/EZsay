@@ -5,6 +5,8 @@ import { documents, sections, flags, llmCallLog } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { callOpenRouter } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
+import { loadMergedStylePreferences } from "@/lib/style/load-prefs";
+import { resolveEnglishVariant, VARIANT_LABELS } from "@/lib/style/english-variant";
 import { rateLimit } from "@/lib/rate-limit";
 
 const SYSTEM_PROMPT = `You are a writing consistency analyser. You check for tone and voice consistency ONLY — not grammar, spelling, or sentence correctness.
@@ -17,7 +19,7 @@ Examine the document for:
 
 2. **Voice inconsistencies** — switches between first person ("I argue"), third person ("the author argues"), and passive voice ("it is argued") within the same section. Some mixing is natural, but abrupt switches are a problem.
 
-3. **Register changes** — academic jargon in one paragraph, then plain language in the next. Or British spelling ("colour") mixed with American ("color"). Again, only flag CHANGES, not a consistently informal register.
+3. **Register changes** — academic jargon in one paragraph, then plain language in the next. Or British spelling ("colour") mixed with American ("color"). Again, only flag CHANGES, not a consistently informal register. If the user message specifies a target English variant, spelling from a DIFFERENT variant in unquoted text is a register_change issue even when used consistently — but NEVER flag text inside quotation marks; quoted material keeps its source's spelling.
 
 4. **Contradictions** — where the document makes a claim in one place that conflicts with another claim elsewhere.
 
@@ -145,10 +147,15 @@ export async function POST(request: NextRequest) {
 
   try {
     const startTime = Date.now();
+    const stylePrefs = await loadMergedStylePreferences(user.id, doc.documentType);
+    const targetVariant = resolveEnglishVariant(doc.intake as Record<string, unknown> | null, stylePrefs);
+    const variantLine = targetVariant
+      ? `\nTarget English variant: ${VARIANT_LABELS[targetVariant]}. Unquoted passages that drift into a different variant are register_change issues; text inside quotation marks is exempt.\n`
+      : "";
     const result = await callOpenRouter(
       [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `Document type: ${doc.documentType}\n\n---\n${fullText}\n---` },
+        { role: "user", content: `Document type: ${doc.documentType}\n${variantLine}\n---\n${fullText}\n---` },
       ],
       MODEL,
       FALLBACKS,

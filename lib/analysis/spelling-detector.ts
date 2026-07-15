@@ -1,11 +1,15 @@
 import { executeActivity } from "@/lib/routing/openrouter";
 import type { SpellingFinding } from "./grammar-spelling-types";
 import { batchSections, mapBatchesWithDeadline, type SectionInput } from "./detector-batching";
+import { variantToken, type EnglishVariant } from "@/lib/style/english-variant";
+import { findQuotedRanges, isInsideQuote } from "./quote-ranges";
 
 interface SpellingContext {
   documentType: string;
   /** Wall-clock deadline (epoch ms) — batches not started by then are skipped. */
   deadlineAt?: number;
+  /** Target English variant — null/absent = no variant enforcement. */
+  variant?: EnglishVariant | null;
 }
 
 const CONCURRENCY = 3;
@@ -33,14 +37,21 @@ export async function detectSpellingErrors(
       const result = await executeActivity("detect-spelling", {
         SECTION_TEXT: batch.map((s) => s.currentText).join("\n\n"),
         DOCUMENT_TYPE: docType,
+        SPELLING_VARIANT: variantToken(context?.variant ?? null),
       });
 
       const parsed = parseJsonResponse(result.content);
       if (!Array.isArray(parsed)) return [] as SpellingFinding[];
 
+      // Quoted ranges per section — variant findings inside quotes are
+      // dropped (quoted material keeps its source variant). Backstop for the
+      // same instruction in the prompt.
+      const quoteRanges = new Map(batch.map((s) => [s.id, findQuotedRanges(s.currentText)]));
+
       const batchFindings: SpellingFinding[] = [];
       for (const item of parsed) {
         if (!item.word || !item.correction) continue;
+        const category: "spelling" | "variant" = item.category === "variant" ? "variant" : "spelling";
 
         // Attribute the finding to the batch section that contains the word.
         for (const section of batch) {
@@ -51,6 +62,10 @@ export async function detectSpellingErrors(
             item.phraseEnd
           );
           if (!validated) continue;
+
+          if (category === "variant" && isInsideQuote(quoteRanges.get(section.id) ?? [], validated.start, validated.end)) {
+            break; // quoted material keeps its source variant
+          }
 
           const contextBefore =
             item.contextBefore || extractContext(section.currentText, validated.start, "before");
@@ -67,6 +82,7 @@ export async function detectSpellingErrors(
             phraseStart: validated.start,
             phraseEnd: validated.end,
             explanation: item.explanation || `Likely misspelling of "${item.correction}"`,
+            category,
           });
           break;
         }

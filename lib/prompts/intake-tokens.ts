@@ -3,11 +3,15 @@
  * Falls back to sensible defaults when answers are missing.
  */
 
+import { resolveEnglishVariant, variantToken } from "@/lib/style/english-variant";
+
 interface Intake {
   audience?: string;
   purpose?: string;
   aiUsage?: string;
   discipline?: string;
+  /** Target English variant chosen at intake — wins over style preferences. */
+  english_variant?: string;
 }
 
 const AUDIENCE_LABELS: Record<string, string> = {
@@ -79,22 +83,13 @@ export function buildIntakeTokens(
     ...defaults,
   };
 
+  // English variant: intake answer wins over style prefs; ALWAYS emitted
+  // (even when no variant is set) because executeActivity leaves unmatched
+  // [PLACEHOLDER]s literally in the prompt text.
+  tokens.SPELLING_VARIANT = variantToken(resolveEnglishVariant(intake as Record<string, unknown> | null, stylePrefs));
+
   // Apply style preferences as prompt tokens
   if (stylePrefs) {
-    if (typeof stylePrefs.english_variant === "string" && stylePrefs.english_variant !== "american") {
-      const variants: Record<string, string> = {
-        british: "British English spelling and conventions (e.g. organised, colour, analyse, -ise endings).",
-        australian: "Australian English spelling and conventions (follows British spelling: organised, colour, but with local idiom).",
-        canadian: "Canadian English spelling and conventions (e.g. colour, centre, but -ize endings like American English).",
-        irish: "Irish English spelling and conventions (follows British spelling conventions).",
-        south_african: "South African English spelling and conventions (follows British spelling conventions).",
-      };
-      tokens.SPELLING_VARIANT = variants[stylePrefs.english_variant] || "";
-    }
-    // Backwards compatibility: support old british_spelling boolean
-    if (stylePrefs.british_spelling === true && !stylePrefs.english_variant) {
-      tokens.SPELLING_VARIANT = "British English spelling and conventions (e.g. organised, colour, analyse, -ise endings).";
-    }
     if (stylePrefs.oxford_comma === false) {
       tokens.OXFORD_COMMA = "Do not use the Oxford comma (no comma before 'and' in lists).";
     } else if (stylePrefs.oxford_comma === true) {

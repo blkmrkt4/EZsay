@@ -7,6 +7,8 @@ import { detectSpellingErrors } from "@/lib/analysis/spelling-detector";
 import { detectGrammarErrors } from "@/lib/analysis/grammar-detector";
 import { batchSections } from "@/lib/analysis/detector-batching";
 import { loadArtifactKeepSet } from "@/lib/analysis/sanitize-generated";
+import { loadMergedStylePreferences } from "@/lib/style/load-prefs";
+import { resolveEnglishVariant } from "@/lib/style/english-variant";
 
 // One batch (one LLM call) per request — client-driven loop, same pattern as
 // suggestion generation. Fits the Vercel Hobby 60s cap with room to spare.
@@ -81,15 +83,18 @@ export async function POST(request: NextRequest) {
     const batchSectionsInput = batches[batch];
     const intake = (doc.intake as { audience?: string } | null) ?? {};
     const deadlineAt = Date.now() + 50_000;
+    const stylePrefs = await loadMergedStylePreferences(user.id, doc.documentType);
+    const targetVariant = resolveEnglishVariant(doc.intake as Record<string, unknown> | null, stylePrefs);
 
     const findings =
       detector === "spelling"
-        ? await detectSpellingErrors(batchSectionsInput, { documentType: doc.documentType, deadlineAt })
+        ? await detectSpellingErrors(batchSectionsInput, { documentType: doc.documentType, deadlineAt, variant: targetVariant })
         : await detectGrammarErrors(batchSectionsInput, {
             documentType: doc.documentType,
             audience: intake.audience,
             deadlineAt,
             keepItems: await loadArtifactKeepSet(user.id),
+            variant: targetVariant,
           });
 
     // Merge into the stored results: start fresh on reset, otherwise drop any

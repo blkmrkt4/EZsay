@@ -14,7 +14,7 @@ Rules:
   - Proper nouns, names, or brand names
   - Technical terms, abbreviations, or acronyms
   - Intentional stylistic choices
-  - Regional spelling variants (British vs American English) — both are valid
+  - Regional spelling variants — ONLY when no target English variant is set for the document. When the [SPELLING_VARIANT] rule in the user message names a target variant, correctly-spelled words from a different variant ARE errors: report them with "category": "variant" and the target-variant spelling as the correction. Never flag words inside quotation marks for variant reasons — quoted material keeps its source's spelling.
 - Be precise with phraseStart and phraseEnd — they must match the exact position of the word in the text.
 - If no spelling errors are found, return an empty array: []
 

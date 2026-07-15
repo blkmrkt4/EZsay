@@ -148,6 +148,22 @@ The scan dialog shows context about the previous scan:
 - Same depth below max: blue suggestion to upgrade
 - Downgrading: amber warning
 
+### 6.4 English-variant conformance (added 2026-07-15)
+
+A British academic paper full of American spellings previously passed every check — the spelling prompt said "British vs American — both valid", and the `SPELLING_VARIANT` token built by `buildIntakeTokens` had no consumer in any prompt.
+
+**Resolution order (per document):** `documents.intake.english_variant` (intake answer) → `userStylePreferences.english_variant` / legacy `british_spelling` (Style Rules UI or a parsed style guide) → null = no enforcement. An explicit "american" choice IS a target ("colour" gets flagged); only total absence means the legacy both-are-valid behaviour. Implemented in `lib/style/english-variant.ts` (`resolveEnglishVariant`, `variantToken`, `detectEnglishVariant`).
+
+**Intake:** the questionnaire now has 5 questions for ALL document types — "Which English should this document follow?" (6 variants + No preference) sits between purpose and aiUsage. The answer is pre-selected from the user's saved style preference, else from `detectEnglishVariant` (marker-word counter over the section text: colour/color, -ise/-ize, centre/center, …; returns null under 3 markers or below a 70% majority — can only distinguish british vs american). A hint line shows where the pre-selection came from.
+
+**Token rule:** `buildIntakeTokens` now ALWAYS emits `SPELLING_VARIANT` — `executeActivity` leaves unmatched `[PLACEHOLDER]`s literally in the prompt (`lib/routing/openrouter.ts:233-237`), so `variantToken(null)` supplies the neutral "no target variant, both valid" instruction. Any prompt gaining a new token must follow this always-emit rule.
+
+**Consumers:** `[SPELLING_VARIANT]` now appears in the user prompts of `detect-spelling`, `detect-grammar` (seeded via `scripts/seed-grammar-spelling-binds.ts`), and `suggest-rewrite` / `suggest-academic` / `suggest-tone` / `evaluate-rewrite` (appended via `scripts/add-variant-to-prompts.ts`, idempotent, resolves prompts through `activityBinds`). Spelling reports wrong-variant words with `category: "variant"` (new optional field on `SpellingFinding`, blue VARIANT badge in `SpellingView`); grammar uses `ruleCategory: "variant"` and must write corrections in the target variant; tone-consistency (direct `callOpenRouter`, still hardcoded — constraint-#7 migration debt) gets a target-variant line in its user message and treats unquoted off-variant spelling as a register_change.
+
+**Quote exemption:** quoted material keeps its source's spelling (a verbatim US quote in a British paper stays American). Enforced in every prompt AND by a code backstop: `lib/analysis/quote-ranges.ts` (`findQuotedRanges` — straight doubles, curly doubles, curly single pairs; straight singles skipped for apostrophe ambiguity; 600-char span cap against unbalanced quotes) — the spelling/grammar detectors drop variant-category findings whose span intersects a quoted range.
+
+**Shared prefs loader:** `lib/style/load-prefs.ts` `loadMergedStylePreferences(userId, docType)` extracts the universal+type-specific merge previously inlined in every route; used by the detector routes (`scan`, `scan/detectors`, `spelling/detect`, `grammar/detect`, `tone-consistency`). The suggest/evaluate routes still carry inline copies (cleanup candidate).
+
 ---
 
 ## 7. Six score spectrums
