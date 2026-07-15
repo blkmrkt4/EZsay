@@ -1167,8 +1167,9 @@ export default function WorkspacePage() {
   );
   const currentIntakeQ = activeIntakeQuestions[intakeStep] ?? null;
 
-  async function saveIntake() {
-    if (!activeDocId) return;
+  /** PATCH the current (non-empty) intake answers without leaving the flow. */
+  async function persistIntakeAnswers(): Promise<number> {
+    if (!activeDocId) return 0;
     const filled = Object.fromEntries(
       Object.entries(intakeAnswers).filter(([, v]) => v !== "")
     );
@@ -1178,11 +1179,29 @@ export default function WorkspacePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ intake: filled }),
       });
-      trackEvent("intake_completed", { answersCount: Object.keys(filled).length });
+    }
+    return Object.keys(filled).length;
+  }
+
+  async function saveIntake() {
+    if (!activeDocId) return;
+    const saved = await persistIntakeAnswers();
+    if (saved > 0) {
+      trackEvent("intake_completed", { answersCount: saved });
     } else {
       trackEvent("intake_skipped");
     }
     setNav("workspace"); setWorkspaceMode("dashboard");
+  }
+
+  /**
+   * Leave the intake for Style Rules (style-guide setup) without losing the
+   * answers given so far — they're saved silently; the user can finish the
+   * rest later via "Edit context" on the document.
+   */
+  async function goToStyleRulesFromIntake() {
+    await persistIntakeAnswers();
+    setNav("style-rules");
   }
 
   function advanceIntake() {
@@ -3235,17 +3254,27 @@ export default function WorkspacePage() {
                           (English variant, citation style, Oxford comma, and more).
                         </p>
                         <button
-                          onClick={() => setNav("style-rules")}
+                          onClick={goToStyleRulesFromIntake}
                           className="mt-2 rounded bg-amber-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-amber-700"
                         >
                           Open Style Rules
                         </button>
                       </div>
                     )}
+                    {/* No "skip and scan" escape hatch while style rules are
+                        missing — a scan without them misses what the user is
+                        actually looking for. Recommend the style guide
+                        instead (answers so far are saved on the way out). */}
                     <div className="text-center">
-                      <button onClick={saveIntake} className="text-xs text-gray-400 hover:text-gray-600 underline">
-                        Skip and start scanning
-                      </button>
+                      {hasStyleRules === false ? (
+                        <button onClick={goToStyleRulesFromIntake} className="text-xs font-semibold text-amber-700 hover:text-amber-800 underline">
+                          Highly recommended: go through the style guide first
+                        </button>
+                      ) : (
+                        <button onClick={saveIntake} className="text-xs text-gray-400 hover:text-gray-600 underline">
+                          Skip and start scanning
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
