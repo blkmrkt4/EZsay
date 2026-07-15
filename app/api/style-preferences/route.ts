@@ -67,6 +67,12 @@ export async function GET(request: NextRequest) {
     .map((r) => r.updatedAt)
     .filter((d): d is Date => d != null)
     .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+  // Latest FULL wizard completion across rows — a deliberate pass through the
+  // style-guide questions (single-rule tweaks don't set this).
+  const wizardCompletedLatest = allRows
+    .map((r) => r.wizardCompletedAt)
+    .filter((d): d is Date => d != null)
+    .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
 
   return NextResponse.json({
     success: true,
@@ -76,6 +82,7 @@ export async function GET(request: NextRequest) {
       styleGuideParsedAt,
       hasAnyPreferences,
       styleRulesTouchedAt,
+      wizardCompletedLatest,
     },
   });
 }

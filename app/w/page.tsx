@@ -481,13 +481,13 @@ export default function WorkspacePage() {
   // Pre-selection for the English-variant intake question: the user's saved
   // style preference wins, else a marker-word guess from the document text.
   const [variantPrefill, setVariantPrefill] = useState<{ value: string; source: "style" | "detected" } | null>(null);
-  // Whether the user has ENGAGED with their style guide — drives the "set up
-  // your style guide" nudges at intake and in the scan dialog. Engagement =
-  // an uploaded/parsed style guide, or any Style Rules save AFTER the nudge
-  // feature shipped (every save stamps updatedAt; preferences from the old
-  // pre-nudge wizard don't count — the point is that the user has gone in and
-  // done something deliberately). Refetched on nav changes so acting on the
-  // nudge clears it immediately.
+  // Whether the user has GONE THROUGH their style guide — drives the "set up
+  // your style guide" nudges at intake and in the scan dialog. Counts only a
+  // deliberate, complete act: an uploaded/parsed style guide, or a full
+  // wizard run-through AFTER the nudge feature shipped. Toggling a single
+  // rule (or pre-nudge wizard answers) does NOT count — the nudge keeps
+  // showing until the guide has actually been gone through. Refetched on nav
+  // changes so acting on the nudge clears it immediately.
   const STYLE_RULES_ENGAGEMENT_EPOCH = new Date("2026-07-15T00:00:00Z").getTime();
   const [hasStyleRules, setHasStyleRules] = useState<boolean | null>(null);
   useEffect(() => {
@@ -495,8 +495,8 @@ export default function WorkspacePage() {
       .then((r) => r.json())
       .then((json) => {
         if (json.success) {
-          const touched = json.data.styleRulesTouchedAt ? new Date(json.data.styleRulesTouchedAt).getTime() : 0;
-          setHasStyleRules(Boolean(json.data.styleGuideParsedAt) || touched > STYLE_RULES_ENGAGEMENT_EPOCH);
+          const wizard = json.data.wizardCompletedLatest ? new Date(json.data.wizardCompletedLatest).getTime() : 0;
+          setHasStyleRules(Boolean(json.data.styleGuideParsedAt) || wizard > STYLE_RULES_ENGAGEMENT_EPOCH);
         }
       })
       .catch(() => {});
@@ -927,15 +927,23 @@ export default function WorkspacePage() {
   async function handleArtifactBatchProcess() {
     if (!activeDocId) return;
 
-    const removeItems = Object.entries(artifactBatchChoices)
+    // Every finding gets an effective choice — untouched items default to
+    // REMOVE (the fastest path to a clean document; previously untouched
+    // items were silently skipped, so "Process Choices" often did nothing).
+    const effectiveChoices: Record<string, "remove" | "keep" | "ask"> = {};
+    for (const f of artifactFindings) {
+      effectiveChoices[f.item] = artifactBatchChoices[f.item] ?? "remove";
+    }
+
+    const removeItems = Object.entries(effectiveChoices)
       .filter(([, choice]) => choice === "remove")
       .map(([item]) => item);
 
-    const keepItems = Object.entries(artifactBatchChoices)
+    const keepItems = Object.entries(effectiveChoices)
       .filter(([, choice]) => choice === "keep")
       .map(([item]) => item);
 
-    const askItems = Object.entries(artifactBatchChoices)
+    const askItems = Object.entries(effectiveChoices)
       .filter(([, choice]) => choice === "ask")
       .map(([item]) => item);
 
@@ -2643,7 +2651,14 @@ export default function WorkspacePage() {
                     </div>
                   )}
                   {currentQueueItem.findings.length > 0 && (
-                  <p className="text-xs text-gray-500">Choose how to handle each artifact type. "Remove" auto-processes all instances. "Ask" lets you review each one individually.</p>
+                  <>
+                  <div className="rounded border border-blue-200 bg-blue-50 px-3 py-2">
+                    <p className="text-[11px] text-blue-700">
+                      <span className="font-semibold">All artifact types are set to Remove</span> — set preferences in Style Rules if you don't want it this way, or change any item below before processing.
+                    </p>
+                  </div>
+                  <p className="text-xs text-gray-500">"Remove" auto-processes all instances. "Keep" leaves them untouched. "Ask" lets you review each one individually.</p>
+                  </>
                   )}
                   <div className="space-y-1.5">
                     {currentQueueItem.findings.map((f) => (
@@ -2659,7 +2674,7 @@ export default function WorkspacePage() {
                                 key={choice}
                                 onClick={() => setArtifactBatchChoices((prev) => ({ ...prev, [f.item]: choice }))}
                                 className={`rounded px-2 py-0.5 text-[10px] font-medium ${
-                                  (artifactBatchChoices[f.item] ?? "ask") === choice
+                                  (artifactBatchChoices[f.item] ?? "remove") === choice
                                     ? choice === "remove" ? "bg-red-100 text-red-700" : choice === "keep" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"
                                     : "bg-gray-100 text-gray-500 hover:bg-gray-200"
                                 }`}
@@ -4029,10 +4044,11 @@ function ScanConfigDialog({ config, setConfig, lastScan, showStyleGuideNudge, on
               </label>
             </div>
 
-            {/* Style Training notice */}
+            {/* Style Training notice — artifacts default to Remove until the
+                user sets their own preferences */}
             {categories.aiArtifacts && styleStats && styleStats.remove === 0 && styleStats.ask === styleStats.remove + styleStats.ask + styleStats.keep && (
-              <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] text-amber-600">
-                All AI artifact items are set to &quot;Ask Each Time&quot;. <button onClick={onCancel} className="underline font-medium">Set preferences</button> to reduce questions.
+              <div className="mt-2 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] text-blue-700">
+                All AI artifact items are set to <span className="font-semibold">Remove</span>. <button onClick={onGoToStyleRules} className="underline font-medium">Set preferences</button> if you don&apos;t want it this way.
               </div>
             )}
           </div>
