@@ -1836,6 +1836,33 @@ export default function WorkspacePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFlag, currentPassage?.sectionId]);
 
+  // ── Auto-enter the first edit when it's ready ───────────────────────────
+  // The status panel says "Ready — you can start editing" as soon as the
+  // first edit is prepared — don't make the user find the Edit tab
+  // themselves; take them straight to the first edit. Only fires from the
+  // Analysis view (never yanks them out of citations/review/etc.), and once
+  // per generation run.
+  const autoEnteredEditRef = useRef(false);
+  useEffect(() => {
+    // Re-arm whenever a fresh generation run starts from zero.
+    if (suggestProgress.generating && suggestProgress.current === 0) {
+      autoEnteredEditRef.current = false;
+    }
+    if (
+      !autoEnteredEditRef.current &&
+      suggestProgress.current >= 1 &&
+      hasScanned &&
+      nav === "workspace" &&
+      workspaceMode === "dashboard"
+    ) {
+      autoEnteredEditRef.current = true;
+      setSelectedFlagIdx(0);
+      setSelectedOptionIdx(null);
+      setWorkspaceMode("edit");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestProgress.current, suggestProgress.generating, nav, workspaceMode, hasScanned]);
+
   // ── Background suggestion generation: auto-start / auto-resume ───────────
   // Whenever a scanned doc has open flags still missing options and no loop is
   // running, (re)start the loop. Covers both "right after scan" and "reopened a
