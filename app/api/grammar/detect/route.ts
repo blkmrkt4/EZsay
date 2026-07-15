@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { documents, sections } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { detectGrammarErrors } from "@/lib/analysis/grammar-detector";
+import { loadArtifactKeepSet } from "@/lib/analysis/sanitize-generated";
 
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
@@ -37,7 +38,10 @@ export async function POST(request: NextRequest) {
     .orderBy(sections.index);
 
   try {
-    const findings = await detectGrammarErrors(docSections);
+    const findings = await detectGrammarErrors(docSections, {
+      documentType: doc.documentType,
+      keepItems: await loadArtifactKeepSet(user.id),
+    });
     const score = Math.max(0, 100 - findings.length * 3);
 
     await db

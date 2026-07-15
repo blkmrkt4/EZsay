@@ -91,6 +91,19 @@ export function sanitizeGeneratedText(text: string, keepItems?: Set<string>): st
     }
   }
 
+  // Character-level typographic pass — the detector skips very short texts
+  // (<20 chars), but generated text of ANY length (e.g. a grammar correction
+  // phrase) must not introduce these characters. Mirrors ARTIFACT_REPLACEMENTS
+  // for the same items.
+  if (!keepItems?.has("Em dashes")) result = result.replace(/\s*—\s*/g, " - ");
+  if (!keepItems?.has("En dashes (used as separators)")) result = result.replace(/–/g, " - ");
+  if (!keepItems?.has("Unicode ellipsis")) result = result.replace(/…/g, "...");
+  if (!keepItems?.has("Curly/smart double quotes")) result = result.replace(/[“”]/g, '"');
+  if (!keepItems?.has("Curly apostrophes mid-word")) result = result.replace(/(?<=\w)’(?=\w)/g, "'");
+  if (!keepItems?.has("Curly/smart single quotes")) result = result.replace(/[‘’]/g, "'");
+  if (!keepItems?.has("Non-breaking spaces")) result = result.replace(/\u00A0/g, " ");
+  if (!keepItems?.has("Hair spaces / thin spaces")) result = result.replace(/[\u200A\u2009\u2008]/g, " ");
+
   // Markdown pass: the detector's thresholds are tuned for whole documents
   // (e.g. bold flagged only above 2 occurrences) — in a short generated
   // replacement, even a single marker is an artifact. Prose options carry no

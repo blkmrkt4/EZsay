@@ -220,10 +220,11 @@ export function calculateWritingQuality(text: string, skipArtifactItems?: Set<st
  * Returns the N longest sentences from the text, useful as examples
  * for readability advisories.
  */
+// Returns FULL sentences (no truncation) — the advisory edit mode uses them
+// verbatim for find-and-replace in the document. Truncate at display time.
 export function findComplexSentences(text: string, count: number = 3): string[] {
   return splitSentences(text)
     .filter((s) => s.split(/\s+/).length >= 5)
     .sort((a, b) => b.split(/\s+/).length - a.split(/\s+/).length)
-    .slice(0, count)
-    .map((s) => s.length > 150 ? s.slice(0, 147) + "..." : s);
+    .slice(0, count);
 }

@@ -355,7 +355,7 @@ export async function POST(request: NextRequest) {
         ? detectSpellingErrors(docSections, { documentType: doc.documentType, deadlineAt: detectorDeadline })
         : Promise.resolve(null),
       categories.grammar
-        ? detectGrammarErrors(docSections, { documentType: doc.documentType, audience: intake.audience, deadlineAt: detectorDeadline })
+        ? detectGrammarErrors(docSections, { documentType: doc.documentType, audience: intake.audience, deadlineAt: detectorDeadline, keepItems: skipArtifactItems })
         : Promise.resolve(null),
     ]);
 

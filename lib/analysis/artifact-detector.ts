@@ -106,7 +106,9 @@ export function detectArtifacts(text: string, skipItems?: Set<string>): Artifact
   const hairSpaces = matchAll(text, /[\u200A\u2009\u2008]/g);
   add("Hair spaces / thin spaces", "Punctuation", hairSpaces, Math.min(6, Math.round(hairSpaces.length / 2)), `${hairSpaces.length} hair/thin spaces`);
 
-  const doubleSpaces = matchAll(text, /\.\s{2,}/g);
+  // Spaces/tabs only — \s would match ".\n\n" at paragraph joins, producing
+  // phantom instances when sections are joined with "\n\n" for detection.
+  const doubleSpaces = matchAll(text, /\.[ \t]{2,}/g);
   add("Double spaces after periods", "Punctuation", doubleSpaces, Math.min(4, Math.round(doubleSpaces.length / 2)), `${doubleSpaces.length} double spaces`);
 
   // Trailing whitespace — line-level, instances track line positions

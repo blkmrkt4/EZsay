@@ -6,6 +6,7 @@ import { eq, and } from "drizzle-orm";
 import { detectSpellingErrors } from "@/lib/analysis/spelling-detector";
 import { detectGrammarErrors } from "@/lib/analysis/grammar-detector";
 import { batchSections } from "@/lib/analysis/detector-batching";
+import { loadArtifactKeepSet } from "@/lib/analysis/sanitize-generated";
 
 // One batch (one LLM call) per request — client-driven loop, same pattern as
 // suggestion generation. Fits the Vercel Hobby 60s cap with room to spare.
@@ -88,6 +89,7 @@ export async function POST(request: NextRequest) {
             documentType: doc.documentType,
             audience: intake.audience,
             deadlineAt,
+            keepItems: await loadArtifactKeepSet(user.id),
           });
 
     // Merge into the stored results: start fresh on reset, otherwise drop any

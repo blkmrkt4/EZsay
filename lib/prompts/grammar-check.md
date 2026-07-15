@@ -16,8 +16,11 @@ Flag these error types whenever you see them:
 
 If you are unsure whether something is an error, include it. False negatives are worse than false positives — a human reviews every flag before it changes the document, but a missed error is invisible.
 
-The only thing you should NOT flag:
+Things you should NOT flag:
 - Regional spelling variants (British vs American English are both valid)
+- Stylistic punctuation preferences (e.g. "an em dash is preferred over a spaced hyphen in formal writing" is NOT an error)
+
+NEVER suggest introducing em dashes (—), en dashes (–), curly/smart quotes, or unicode ellipsis (…) in "correctedText". These typographic characters are treated as AI-writing artifacts elsewhere in this product and will be stripped. A spaced hyphen, straight quotes, or three dots are always acceptable.
 
 Return a JSON array of objects with these fields:
 - "originalText": the problematic phrase or clause exactly as it appears in the text (preserve quotes, dashes, and capitalization verbatim)

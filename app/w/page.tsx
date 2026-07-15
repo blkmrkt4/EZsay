@@ -307,6 +307,20 @@ export default function WorkspacePage() {
   const [artifactBatchChoices, setArtifactBatchChoices] = useState<Record<string, "remove" | "keep" | "ask">>({});
   const [processedArtifacts, setProcessedArtifacts] = useState<Record<string, { action: "remove" | "keep" | "ask"; count: number }>>({});
   const [skipAllWritingQuality, setSkipAllWritingQuality] = useState(false);
+  // Artifact items the user has set to "always keep" — the client-side final
+  // sweep must skip these, matching the scan endpoint's behaviour.
+  const [artifactKeepSet, setArtifactKeepSet] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    fetch("/api/style-preferences/artifact-overrides")
+      .then((r) => r.json())
+      .then((json) => {
+        if (json.success) {
+          const items = json.data as { item: string; preference: string }[];
+          setArtifactKeepSet(new Set(items.filter((i) => i.preference === "always_keep").map((i) => i.item)));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Spelling & grammar state
   const [spellingChecked, setSpellingChecked] = useState<Set<string>>(new Set());
@@ -336,6 +350,25 @@ export default function WorkspacePage() {
   const [selectedFlagIdx, setSelectedFlagIdx] = useState(0);
   const [selectedOptionIdx, setSelectedOptionIdx] = useState<number | null>(null);
   const [manualEditText, setManualEditText] = useState("");
+
+  // Plagiarism item interaction state — a successful "Add Citation" holds the
+  // item on screen with a confirmation (instead of silently advancing), and
+  // failures surface an inline error instead of vanishing the item.
+  const [plagiarismConfirmation, setPlagiarismConfirmation] = useState<{ resultId: string; citation: string } | null>(null);
+  const [plagiarismError, setPlagiarismError] = useState<string | null>(null);
+  const [plagiarismResolving, setPlagiarismResolving] = useState(false);
+  const [showPlagiarismExplanation, setShowPlagiarismExplanation] = useState(false);
+
+  // Writing-quality advisory "Edit" mode — per-example-sentence drafts,
+  // keyed by the original sentence text (examples recompute after each save).
+  const [wqDrafts, setWqDrafts] = useState<Record<string, string>>({});
+  const [wqSavingKey, setWqSavingKey] = useState<string | null>(null);
+  const [wqEditError, setWqEditError] = useState<string | null>(null);
+  const [wqSavedCount, setWqSavedCount] = useState(0);
+  useEffect(() => {
+    setWqEditError(null);
+    setWqSavedCount(0);
+  }, [selectedFlagIdx]);
 
   // Panel visibility — four panels: Library, Doc, Edit, Choices
   // Library shows when no doc loaded; Doc replaces it once a doc is selected
@@ -906,19 +939,94 @@ export default function WorkspacePage() {
   // ── Plagiarism resolution ─────────────────────────────────────────────
 
   async function handlePlagiarismResolved(resultId: string, action: "rewrite" | "cite" | "dismiss", replacementText?: string) {
-    await fetch("/api/plagiarism/resolve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ plagiarismResultId: resultId, action, replacementText }),
-    });
+    setPlagiarismError(null);
+    setPlagiarismResolving(true);
+    let json: { success?: boolean; error?: string; data?: { citation?: string } } | null = null;
+    try {
+      const res = await fetch("/api/plagiarism/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plagiarismResultId: resultId, action, replacementText }),
+      });
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    setPlagiarismResolving(false);
 
+    // A failed resolve must NOT silently advance — the document was not
+    // changed, so stay on the item and show what went wrong.
+    if (!json?.success) {
+      setPlagiarismError(json?.error || "Something went wrong — the passage was not changed. Please try again.");
+      return;
+    }
+
+    if (action === "cite") {
+      // The citation is in the document. Hold the item on screen with a
+      // green confirmation until the user presses Continue — silently
+      // jumping to the next flag left users unsure anything happened.
+      setPlagiarismConfirmation({ resultId, citation: json.data?.citation ?? "" });
+      return;
+    }
+
+    // rewrite / dismiss: the item resolves and leaves the queue — the next
+    // item slides into the same index, so do NOT increment selectedFlagIdx.
     setPlagiarismResults((prev) =>
       prev.map((r) => r.id === resultId ? { ...r, status: "acknowledged" } : r)
     );
     if (activeDocId) await loadDocument(activeDocId);
-    setSelectedFlagIdx((prev) => prev + 1);
     setSelectedOptionIdx(null);
     setManualEditText("");
+    setShowPlagiarismExplanation(false);
+  }
+
+  /** Save one rewritten example sentence from a writing-quality advisory. */
+  async function handleAdvisorySentenceSave(sentence: string) {
+    const draft = (wqDrafts[sentence] ?? "").trim();
+    if (!draft || draft === sentence) return;
+    const target = unlockedSections.find((s) => s.currentText.includes(sentence));
+    if (!target) {
+      setWqEditError("Could not locate this sentence in the document — it may have been changed by an earlier edit.");
+      return;
+    }
+    setWqEditError(null);
+    setWqSavingKey(sentence);
+    try {
+      const res = await fetch("/api/sections/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sectionId: target.id, originalSentence: sentence, replacementText: draft }),
+      });
+      const json = await res.json();
+      if (!json.success) {
+        setWqEditError(json.error || "Save failed — please try again.");
+      } else {
+        setWqDrafts((prev) => {
+          const next = { ...prev };
+          delete next[sentence];
+          return next;
+        });
+        setWqSavedCount((c) => c + 1);
+        // Reload so the doc panel, advisory score, and example list all
+        // recompute from the updated text.
+        if (activeDocId) await loadDocument(activeDocId);
+      }
+    } catch {
+      setWqEditError("Save failed — please try again.");
+    }
+    setWqSavingKey(null);
+  }
+
+  /** "Continue" after a successful Add Citation — releases the held item. */
+  async function handlePlagiarismContinue(resultId: string) {
+    setPlagiarismConfirmation(null);
+    setPlagiarismResults((prev) =>
+      prev.map((r) => r.id === resultId ? { ...r, status: "acknowledged" } : r)
+    );
+    if (activeDocId) await loadDocument(activeDocId);
+    setSelectedOptionIdx(null);
+    setManualEditText("");
+    setShowPlagiarismExplanation(false);
   }
 
   // ── Citation fix resolution ──────────────────────────────────────────
@@ -1004,7 +1112,9 @@ export default function WorkspacePage() {
     setManualEditText("");
     // Reload document to reflect text changes from accepted replacements
     if (activeDocId && action === "accepted") await loadDocument(activeDocId);
-    if (selectedFlagIdx < editQueue.length - 1) setSelectedFlagIdx(selectedFlagIdx + 1);
+    // Every resolution (accepted/rejected/skipped) removes this flag from the
+    // queue, so the next item slides into the same index — advancing here
+    // would skip an item and eventually strand past the end of the queue.
   }
 
   // ── Rename document ─────────────────────────────────────────────────────
@@ -1219,7 +1329,14 @@ export default function WorkspacePage() {
         return;
       }
       if (nav !== "workspace" || workspaceMode !== "edit") return;
-      if (key >= "1" && key <= "9") { setSelectedOptionIdx(parseInt(key) - 1); return; }
+      // Digit selection only applies to items with numbered options —
+      // for other item types selectedOptionIdx has special meanings
+      // (e.g. 0 = writing-quality edit mode).
+      if (key >= "1" && key <= "9") {
+        const itemType = editQueue[selectedFlagIdx]?.type;
+        if (itemType === "ai_detection" || itemType === "artifact_individual") setSelectedOptionIdx(parseInt(key) - 1);
+        return;
+      }
       if (key === "enter") { e.preventDefault(); if (selectedOptionIdx !== null) handleFlagResolved("accepted", currentOptions[selectedOptionIdx]?.id); return; }
       if (key === "s") { handleFlagResolved("skipped"); return; }
       if (key === "r") { handleFlagResolved("rejected"); return; }
@@ -1283,9 +1400,9 @@ export default function WorkspacePage() {
   // accepted AI rewrites re-appear here automatically.
   const artifactFindings = useMemo(() => {
     if (!fullDocText || !hasScanned) return [];
-    return detectArtifacts(fullDocText).findings;
+    return detectArtifacts(fullDocText, artifactKeepSet).findings;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fullDocText, hasScanned]);
+  }, [fullDocText, hasScanned, artifactKeepSet]);
 
   // Final-sweep count for the end-of-queue summary: artifact instances still
   // in the document that the user hasn't chosen to keep — including ones
@@ -1481,6 +1598,13 @@ export default function WorkspacePage() {
 
   // Current queue item
   const currentQueueItem = editQueue[selectedFlagIdx] ?? null;
+
+  // Resolved items leave the queue and everything slides left — clamp the
+  // index so repeated resolutions can't strand it past the end (which showed
+  // the "done" summary while items were still pending).
+  useEffect(() => {
+    if (selectedFlagIdx > editQueue.length) setSelectedFlagIdx(editQueue.length);
+  }, [editQueue.length, selectedFlagIdx]);
   const currentFlag = currentQueueItem?.type === "ai_detection" || currentQueueItem?.type === "artifact_individual"
     ? currentQueueItem.flag
     : null;
@@ -2297,6 +2421,7 @@ export default function WorkspacePage() {
                   spellingRemaining={((activeDoc.spellingResults as import("@/lib/analysis/grammar-spelling-types").SpellingFinding[]) || []).length}
                   grammarRemaining={((activeDoc.grammarResults as import("@/lib/analysis/grammar-spelling-types").GrammarFinding[]) || []).length}
                   artifactsRemaining={leftoverArtifactCount}
+                  artifactsProcessed={Object.keys(processedArtifacts).length > 0}
                   onReviewArtifacts={() => {
                     const idx = editQueue.findIndex((item) => item.type === "artifact_batch");
                     if (idx !== -1) { setSelectedFlagIdx(idx); setSelectedOptionIdx(null); }
@@ -2324,7 +2449,7 @@ export default function WorkspacePage() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <button
-                        onClick={() => { if (selectedFlagIdx > 0) { setSelectedFlagIdx(selectedFlagIdx - 1); setSelectedOptionIdx(null); setManualEditText(""); } }}
+                        onClick={() => { if (selectedFlagIdx > 0) { setSelectedFlagIdx(selectedFlagIdx - 1); setSelectedOptionIdx(null); setManualEditText(""); setPlagiarismError(null); setShowPlagiarismExplanation(false); } }}
                         disabled={selectedFlagIdx === 0}
                         className="flex h-8 w-8 items-center justify-center rounded-lg border-2 border-gray-300 bg-white text-gray-600 shadow-sm hover:bg-gray-50 hover:border-gray-400 disabled:opacity-30 disabled:shadow-none transition-colors"
                       >
@@ -2332,7 +2457,7 @@ export default function WorkspacePage() {
                       </button>
                       <p className="text-sm font-semibold text-gray-700">{selectedFlagIdx + 1} <span className="text-gray-400 font-normal">of</span> {editQueue.length}</p>
                       <button
-                        onClick={() => { if (selectedFlagIdx < editQueue.length - 1) { setSelectedFlagIdx(selectedFlagIdx + 1); setSelectedOptionIdx(null); setManualEditText(""); } }}
+                        onClick={() => { if (selectedFlagIdx < editQueue.length - 1) { setSelectedFlagIdx(selectedFlagIdx + 1); setSelectedOptionIdx(null); setManualEditText(""); setPlagiarismError(null); setShowPlagiarismExplanation(false); } }}
                         disabled={selectedFlagIdx >= editQueue.length - 1}
                         className="flex h-8 w-8 items-center justify-center rounded-lg border-2 border-gray-300 bg-white text-gray-600 shadow-sm hover:bg-gray-50 hover:border-gray-400 disabled:opacity-30 disabled:shadow-none transition-colors"
                       >
@@ -2362,7 +2487,7 @@ export default function WorkspacePage() {
                        currentQueueItem.type === "grammar_batch" ? "Grammar Issues" :
                        currentQueueItem.type === "plagiarism" ? (
                          currentQueueItem.result.verdict === "plagiarism" ? "Plagiarism" :
-                         currentQueueItem.result.verdict === "close_match" ? "Close Match" :
+                         currentQueueItem.result.verdict === "close_match" ? "Plagiarism: Close Match" :
                          currentQueueItem.result.verdict === "common_knowledge" ? "Common Knowledge" :
                          currentQueueItem.result.verdict === "quotation" ? "Quotation" :
                          "Plagiarism Check"
@@ -2377,9 +2502,19 @@ export default function WorkspacePage() {
                 <div className="p-4 space-y-4">
                   <div className="flex items-center gap-2">
                     <span className="rounded bg-purple-100 px-2 py-0.5 text-[10px] font-semibold text-purple-700">AI Artifacts</span>
-                    <span className="text-xs text-gray-500">{currentQueueItem.findings.reduce((s, f) => s + f.count, 0)} instances across {currentQueueItem.findings.length} categories</span>
+                    {currentQueueItem.findings.length > 0 && (
+                      <span className="text-xs text-gray-500">{currentQueueItem.findings.reduce((s, f) => s + f.count, 0)} instances across {currentQueueItem.findings.length} categories</span>
+                    )}
                   </div>
+                  {currentQueueItem.findings.length === 0 && Object.keys(processedArtifacts).length > 0 && (
+                    <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+                      <p className="text-xs font-semibold text-green-700">&#10003; All artifact types processed</p>
+                      <p className="mt-1 text-[11px] text-gray-500">Your choices below have been applied — no artifacts remain in the document.</p>
+                    </div>
+                  )}
+                  {currentQueueItem.findings.length > 0 && (
                   <p className="text-xs text-gray-500">Choose how to handle each artifact type. "Remove" auto-processes all instances. "Ask" lets you review each one individually.</p>
+                  )}
                   <div className="space-y-1.5">
                     {currentQueueItem.findings.map((f) => (
                       <details key={f.item} className="rounded-lg border border-gray-200 overflow-hidden">
@@ -2440,7 +2575,11 @@ export default function WorkspacePage() {
               )}
 
               {/* ── Writing Quality Advisory ─────────────────────────── */}
-              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "writing_quality" && (
+              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "writing_quality" && (() => {
+                const advisory = currentQueueItem.advisory;
+                const examples = advisory.examples ?? [];
+                const editing = selectedOptionIdx === 0 && examples.length > 0;
+                return (
                 <div className="p-4 space-y-4">
                   <div className="flex items-center gap-2">
                     <span className="rounded bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">Writing Quality</span>
@@ -2448,63 +2587,164 @@ export default function WorkspacePage() {
                   </div>
                   <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-semibold text-gray-700">{currentQueueItem.advisory.label}</span>
-                      <span className={`text-lg font-bold ${currentQueueItem.advisory.score >= 40 ? "text-amber-600" : "text-red-500"}`}>{currentQueueItem.advisory.score}/100</span>
+                      <span className="text-sm font-semibold text-gray-700">{advisory.label}</span>
+                      <span className={`text-lg font-bold ${advisory.score >= 40 ? "text-amber-600" : "text-red-500"}`}>{advisory.score}/100</span>
                     </div>
-                    <p className="text-xs text-gray-600">{currentQueueItem.advisory.description}</p>
-                    <p className="mt-2 text-xs text-blue-700 font-medium">{currentQueueItem.advisory.suggestion}</p>
-                    {currentQueueItem.advisory.examples && currentQueueItem.advisory.examples.length > 0 && (
+                    <p className="text-xs text-gray-600">{advisory.description}</p>
+                    <p className="mt-2 text-xs text-blue-700 font-medium">{advisory.suggestion}</p>
+                    {!editing && examples.length > 0 && (
                       <div className="mt-3 space-y-1.5">
                         <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">For example:</p>
-                        {currentQueueItem.advisory.examples.map((ex, i) => (
-                          <p key={i} className="text-xs text-gray-600 italic border-l-2 border-gray-300 pl-2">&ldquo;{ex}&rdquo;</p>
+                        {examples.map((ex, i) => (
+                          <p key={i} className="text-xs text-gray-600 italic border-l-2 border-gray-300 pl-2">&ldquo;{ex.length > 150 ? ex.slice(0, 147) + "..." : ex}&rdquo;</p>
                         ))}
                       </div>
                     )}
                   </div>
+                  {wqSavedCount > 0 && (
+                    <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2">
+                      <p className="text-xs font-medium text-green-700">&#10003; {wqSavedCount} sentence{wqSavedCount !== 1 ? "s" : ""} updated — the score and examples above reflect your changes.</p>
+                    </div>
+                  )}
+                  {wqEditError && (
+                    <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2">
+                      <p className="text-xs text-red-600">{wqEditError}</p>
+                    </div>
+                  )}
+                  {editing && (
+                    <div className="space-y-3">
+                      <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Rewrite these sentences in your own words:</p>
+                      {examples.map((sentence) => {
+                        const draft = wqDrafts[sentence] ?? sentence;
+                        const changed = draft.trim() !== sentence && draft.trim().length > 0;
+                        const saving = wqSavingKey === sentence;
+                        return (
+                          <div key={sentence} className="rounded-lg border border-gray-300 bg-white p-3">
+                            <textarea
+                              value={draft}
+                              onChange={(e) => setWqDrafts((prev) => ({ ...prev, [sentence]: e.target.value }))}
+                              rows={3}
+                              className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-gray-700 focus:border-blue-400 focus:outline-none"
+                            />
+                            <div className="mt-1.5 flex items-center justify-end gap-2">
+                              {changed && !saving && (
+                                <button
+                                  onClick={() => setWqDrafts((prev) => ({ ...prev, [sentence]: sentence }))}
+                                  className="rounded px-2 py-1 text-[10px] text-gray-500 hover:bg-gray-100"
+                                >
+                                  Reset
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleAdvisorySentenceSave(sentence)}
+                                disabled={!changed || saving}
+                                className="rounded bg-blue-600 px-2.5 py-1 text-[10px] font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+                              >
+                                {saving ? "Saving…" : "Save"}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <p className="text-[10px] text-gray-400">Each save updates the document immediately. Press Skip when you're done.</p>
+                    </div>
+                  )}
                 </div>
-              )}
+                );
+              })()}
 
               {/* ── Plagiarism Flag ──────────────────────────────────── */}
-              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "plagiarism" && (
+              {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "plagiarism" && (() => {
+                const result = currentQueueItem.result;
+                const confirming = plagiarismConfirmation?.resultId === result.id;
+                const badgeLabel =
+                  result.verdict === "plagiarism" ? "Plagiarism: Match Found" :
+                  result.verdict === "close_match" ? "Plagiarism: Close Match" :
+                  result.verdict === "common_knowledge" ? "Common Knowledge" :
+                  result.verdict === "quotation" ? "Quotation" :
+                  result.verdict;
+                const badge = (
+                  <span className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
+                    result.verdict === "plagiarism" ? "bg-red-100 text-red-700" :
+                    result.verdict === "close_match" ? "bg-orange-100 text-orange-700" :
+                    result.verdict === "common_knowledge" ? "bg-yellow-100 text-yellow-700" :
+                    result.verdict === "quotation" ? "bg-blue-100 text-blue-700" :
+                    "bg-gray-100 text-gray-600"
+                  }`}>
+                    {badgeLabel}
+                  </span>
+                );
+
+                if (confirming) {
+                  // Post-"Add Citation" confirmation — the citation IS in the
+                  // document; show it and wait for Continue.
+                  const citation = plagiarismConfirmation.citation;
+                  const p = result.passageText;
+                  const citedPassage = p.endsWith(".") ? p.slice(0, -1) + citation + "." : p + citation;
+                  return (
+                    <div className="p-4 space-y-4">
+                      <div className="flex items-center gap-2">{badge}</div>
+                      <div className="rounded-lg border border-green-300 bg-green-50 p-4">
+                        <p className="text-sm font-semibold text-green-700">&#10003; Citation added</p>
+                        <p className="mt-1 text-xs text-gray-600">
+                          The citation <span className="font-medium text-gray-800">{citation.trim()}</span> was inserted at the end of the passage:
+                        </p>
+                        <p className="mt-2 rounded border border-green-200 bg-white p-2 text-xs text-gray-700 leading-relaxed italic">
+                          "{citedPassage}"
+                        </p>
+                      </div>
+                      <p className="text-[11px] text-gray-400">Press Continue to move on to the next item.</p>
+                    </div>
+                  );
+                }
+
+                return (
                 <div className="p-4 space-y-4">
                   <div className="flex items-center gap-2">
-                    <span className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
-                      currentQueueItem.result.verdict === "plagiarism" ? "bg-red-100 text-red-700" :
-                      currentQueueItem.result.verdict === "close_match" ? "bg-orange-100 text-orange-700" :
-                      currentQueueItem.result.verdict === "common_knowledge" ? "bg-yellow-100 text-yellow-700" :
-                      currentQueueItem.result.verdict === "quotation" ? "bg-blue-100 text-blue-700" :
-                      "bg-gray-100 text-gray-600"
-                    }`}>
-                      {currentQueueItem.result.verdict === "plagiarism" ? "Plagiarism Match" :
-                       currentQueueItem.result.verdict === "close_match" ? "Close Match — Consider Rephrasing" :
-                       currentQueueItem.result.verdict === "common_knowledge" ? "Common Knowledge" :
-                       currentQueueItem.result.verdict === "quotation" ? "Quotation" :
-                       currentQueueItem.result.verdict}
-                    </span>
-                    {currentQueueItem.result.confidence != null && (
-                      <span className="text-[10px] text-gray-400">{Math.round(currentQueueItem.result.confidence * 100)}% confidence</span>
+                    {badge}
+                    {(result.verdict === "plagiarism" || result.verdict === "close_match") && (
+                      <span className="text-[10px] font-medium text-gray-600">Consider rephrasing or add a citation</span>
+                    )}
+                    {result.confidence != null && (
+                      <span className="text-[10px] text-gray-400">{Math.round(result.confidence * 100)}% confidence</span>
+                    )}
+                    {result.explanation && (
+                      <button
+                        onClick={() => setShowPlagiarismExplanation((v) => !v)}
+                        title={showPlagiarismExplanation ? "Hide details" : "Why was this flagged?"}
+                        className={`flex h-4 w-4 items-center justify-center rounded-full border text-[9px] font-semibold ${
+                          showPlagiarismExplanation ? "border-blue-400 bg-blue-100 text-blue-700" : "border-gray-300 text-gray-400 hover:border-blue-400 hover:text-blue-600"
+                        }`}
+                      >
+                        i
+                      </button>
                     )}
                   </div>
+                  {plagiarismError && (
+                    <div className="rounded-lg border border-red-300 bg-red-50 p-3">
+                      <p className="text-xs font-semibold text-red-700">That didn't work</p>
+                      <p className="mt-0.5 text-[11px] text-red-600">{plagiarismError}</p>
+                    </div>
+                  )}
                   <div className={`rounded-lg border p-4 ${
-                    currentQueueItem.result.verdict === "plagiarism" ? "border-red-200 bg-red-50" :
-                    currentQueueItem.result.verdict === "close_match" ? "border-orange-200 bg-orange-50" :
-                    currentQueueItem.result.verdict === "common_knowledge" ? "border-yellow-200 bg-yellow-50" :
+                    result.verdict === "plagiarism" ? "border-red-200 bg-red-50" :
+                    result.verdict === "close_match" ? "border-orange-200 bg-orange-50" :
+                    result.verdict === "common_knowledge" ? "border-yellow-200 bg-yellow-50" :
                     "border-blue-200 bg-blue-50"
                   }`}>
-                    <p className="text-sm text-gray-800 leading-relaxed italic">"{currentQueueItem.result.passageText}"</p>
+                    <p className="text-sm text-gray-800 leading-relaxed italic">"{result.passageText}"</p>
                   </div>
-                  {currentQueueItem.result.explanation && (
-                    <p className="text-xs text-gray-500">{currentQueueItem.result.explanation}</p>
+                  {result.explanation && showPlagiarismExplanation && (
+                    <p className="text-xs text-gray-500">{result.explanation}</p>
                   )}
-                  {currentQueueItem.result.topMatchUrl && (
-                    <div className="rounded border border-gray-200 bg-white p-3">
-                      <p className="text-[10px] text-gray-500 mb-1">Matching source:</p>
-                      <a href={currentQueueItem.result.topMatchUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">
-                        {currentQueueItem.result.topMatchTitle || currentQueueItem.result.topMatchUrl}
+                  {result.topMatchUrl && (
+                    <div className="rounded border border-red-200 bg-red-50/50 p-3">
+                      <p className="text-[10px] font-semibold text-red-600 mb-1">Matching source:</p>
+                      <a href={result.topMatchUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">
+                        {result.topMatchTitle || result.topMatchUrl}
                       </a>
-                      {currentQueueItem.result.topMatchSnippet && (
-                        <p className="mt-1 text-[10px] text-gray-400">{currentQueueItem.result.topMatchSnippet}</p>
+                      {result.topMatchSnippet && (
+                        <p className="mt-1 text-[10px] text-gray-400">{result.topMatchSnippet}</p>
                       )}
                     </div>
                   )}
@@ -2512,14 +2752,15 @@ export default function WorkspacePage() {
                   <div className="rounded-lg border border-gray-300 bg-white p-3">
                     <label className="text-[10px] font-medium text-gray-600 mb-1 block">Rewrite this passage:</label>
                     <textarea
-                      value={manualEditText || currentQueueItem.result.passageText}
+                      value={manualEditText || result.passageText}
                       onChange={(e) => setManualEditText(e.target.value)}
                       rows={4}
                       className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs text-gray-700 focus:border-blue-400 focus:outline-none"
                     />
                   </div>
                 </div>
-              )}
+                );
+              })()}
 
               {/* ── Spelling Batch ──────────────────────────────────── */}
               {nav === "workspace" && workspaceMode === "edit" && currentQueueItem?.type === "spelling_batch" && (
@@ -2533,10 +2774,14 @@ export default function WorkspacePage() {
                   onApply={async () => {
                     if (!activeDocId || spellingChecked.size === 0) return;
                     setSpellingApplying(true);
+                    // If every finding was fixed, the batch item leaves the
+                    // queue and the next item slides into this index — only
+                    // advance when the (partially fixed) item survives.
+                    const allFixed = spellingChecked.size >= currentQueueItem.findings.length;
                     try {
                       const res = await fetch("/api/spelling/bulk-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ documentId: activeDocId, fixIds: [...spellingChecked] }) });
                       const json = await res.json();
-                      if (json.success) { await loadDocument(activeDocId); setSpellingChecked(new Set()); setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }
+                      if (json.success) { await loadDocument(activeDocId); setSpellingChecked(new Set()); if (!allFixed) setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }
                     } catch (err) { console.error("Spelling fix failed:", err); }
                     setSpellingApplying(false);
                   }}
@@ -2555,10 +2800,12 @@ export default function WorkspacePage() {
                   onApply={async () => {
                     if (!activeDocId || grammarChecked.size === 0) return;
                     setGrammarApplying(true);
+                    // Same sliding-queue rule as the spelling batch above.
+                    const allFixed = grammarChecked.size >= currentQueueItem.findings.length;
                     try {
                       const res = await fetch("/api/grammar/bulk-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ documentId: activeDocId, fixIds: [...grammarChecked] }) });
                       const json = await res.json();
-                      if (json.success) { await loadDocument(activeDocId); setGrammarChecked(new Set()); setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }
+                      if (json.success) { await loadDocument(activeDocId); setGrammarChecked(new Set()); if (!allFixed) setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }
                     } catch (err) { console.error("Grammar fix failed:", err); }
                     setGrammarApplying(false);
                   }}
@@ -3058,22 +3305,38 @@ export default function WorkspacePage() {
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">2</span>
                           <span>Skip All Writing Quality</span>
                         </button>
-                        <button
-                          onClick={() => { setManualEditText(""); setSelectedOptionIdx(0); }}
-                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-blue-50 hover:text-blue-700"
-                        >
-                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">3</span>
-                          <span>Edit</span>
-                        </button>
+                        {/* Edit only exists when the advisory has example
+                            sentences — advisories without them (paragraph
+                            variation etc.) have no concrete edit target. */}
+                        {(currentQueueItem.advisory.examples?.length ?? 0) > 0 && (
+                          <button
+                            onClick={() => setSelectedOptionIdx(selectedOptionIdx === 0 ? null : 0)}
+                            className={`flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs ${
+                              selectedOptionIdx === 0 ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                            }`}
+                          >
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">3</span>
+                            <span>{selectedOptionIdx === 0 ? "Done Editing" : "Edit"}</span>
+                          </button>
+                        )}
                       </>
                     )}
 
                     {/* ── Plagiarism choices ──────────────────────────── */}
-                    {currentQueueItem.type === "plagiarism" && (
+                    {currentQueueItem.type === "plagiarism" && plagiarismConfirmation?.resultId === currentQueueItem.result.id && (
+                      <button
+                        onClick={() => handlePlagiarismContinue(currentQueueItem.result.id)}
+                        className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-white bg-green-600 hover:bg-green-700"
+                      >
+                        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white text-[9px] font-bold text-green-600">1</span>
+                        <span>Continue</span>
+                      </button>
+                    )}
+                    {currentQueueItem.type === "plagiarism" && plagiarismConfirmation?.resultId !== currentQueueItem.result.id && (
                       <>
                         <button
                           onClick={() => handlePlagiarismResolved(currentQueueItem.result.id, "rewrite", manualEditText)}
-                          disabled={!manualEditText || manualEditText === currentQueueItem.result.passageText}
+                          disabled={plagiarismResolving || !manualEditText || manualEditText === currentQueueItem.result.passageText}
                           className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40"
                         >
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white text-[9px] font-bold text-blue-600">1</span>
@@ -3081,14 +3344,16 @@ export default function WorkspacePage() {
                         </button>
                         <button
                           onClick={() => handlePlagiarismResolved(currentQueueItem.result.id, "cite")}
-                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                          disabled={plagiarismResolving}
+                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-40"
                         >
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">2</span>
-                          <span>Add Citation</span>
+                          <span>{plagiarismResolving ? "Working…" : "Add Citation"}</span>
                         </button>
                         <button
                           onClick={() => handlePlagiarismResolved(currentQueueItem.result.id, "dismiss")}
-                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-500 hover:bg-gray-100"
+                          disabled={plagiarismResolving}
+                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-40"
                         >
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">3</span>
                           <span>Dismiss</span>
@@ -3885,11 +4150,12 @@ function EmptyPanel({ title, description, extra }: { title: string; description:
 
 // ── Edit session summary (shown when all flags are resolved) ─────────────
 
-function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifactsRemaining, onReviewArtifacts, onSaveVersion, citationsPending, onGoToCitations }: {
+function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifactsRemaining, artifactsProcessed, onReviewArtifacts, onSaveVersion, citationsPending, onGoToCitations }: {
   flags: { id: string; patternType: string; status: string }[];
   spellingRemaining: number;
   grammarRemaining: number;
   artifactsRemaining: number;
+  artifactsProcessed: boolean;
   onReviewArtifacts: () => void;
   onSaveVersion: () => void;
   citationsPending: number;
@@ -3980,6 +4246,18 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifa
             >
               Review Artifacts ({artifactsRemaining})
             </button>
+          </div>
+        )}
+
+        {/* Positive confirmation once the artifact sweep comes back clean —
+            without this, users who processed artifacts can't tell whether
+            their choices were actually applied. */}
+        {artifactsRemaining === 0 && artifactsProcessed && (
+          <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-left">
+            <p className="text-xs font-semibold text-green-700">&#10003; All AI artifacts cleaned</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-gray-500">
+              Every artifact you chose to remove has been applied — none remain in the document.
+            </p>
           </div>
         )}
 

@@ -1,12 +1,15 @@
 import { executeActivity } from "@/lib/routing/openrouter";
 import type { GrammarFinding } from "./grammar-spelling-types";
 import { batchSections, mapBatchesWithDeadline, type SectionInput } from "./detector-batching";
+import { sanitizeGeneratedText } from "./sanitize-generated";
 
 interface GrammarContext {
   documentType: string;
   audience?: string;
   /** Wall-clock deadline (epoch ms) — batches not started by then are skipped. */
   deadlineAt?: number;
+  /** Artifact items the user has set to "always keep" — exempt from correction sanitizing. */
+  keepItems?: Set<string>;
 }
 
 const CONCURRENCY = 3;
@@ -45,6 +48,14 @@ export async function detectGrammarErrors(
       for (const item of parsed) {
         if (!item.originalText || !item.correctedText) continue;
 
+        // A correction must never introduce typographic AI artifacts (em
+        // dashes, curly quotes, …) — the artifact sweep flags exactly those
+        // for removal, so the two features would give contradictory advice.
+        // Sanitize the correction; if nothing survives but the artifact
+        // insertion, the "error" was purely stylistic — drop the finding.
+        const correctedText = sanitizeGeneratedText(item.correctedText, context?.keepItems);
+        if (normalizeWs(correctedText) === normalizeWs(item.originalText)) continue;
+
         // Attribute the finding to the batch section containing the text.
         for (const section of batch) {
           const validated = validatePosition(
@@ -58,7 +69,7 @@ export async function detectGrammarErrors(
           batchFindings.push({
             id: crypto.randomUUID(),
             originalText: item.originalText,
-            correctedText: item.correctedText,
+            correctedText,
             sectionId: section.id,
             phraseStart: validated.start,
             phraseEnd: validated.end,
@@ -77,6 +88,10 @@ export async function detectGrammarErrors(
   }
 
   return results.flat();
+}
+
+function normalizeWs(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function parseJsonResponse(content: string): unknown {

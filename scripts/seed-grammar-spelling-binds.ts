@@ -57,6 +57,8 @@ Rules:
 - phraseStart and phraseEnd are character offsets from the start of the text (0-indexed)
 - correctedText must show the minimal fix — don't rewrite the whole sentence unless necessary
 - ruleCategory should be a short label like "subject-verb agreement", "pronoun error", "run-on sentence", etc.
+- NEVER suggest introducing em dashes (—), en dashes (–), curly/smart quotes, or unicode ellipsis (…). These typographic characters are treated as AI-writing artifacts elsewhere in this product and will be stripped. A spaced hyphen, straight quotes, or three dots are always acceptable — do not flag them, and do not use these typographic characters in correctedText.
+- Only flag genuine grammar ERRORS — never stylistic punctuation preferences (e.g. "em dash preferred in formal writing" is NOT an error)
 - Return an empty array [] only if the text is genuinely error-free
 
 Respond with ONLY a JSON array. No explanation, no markdown, no wrapping.`,
