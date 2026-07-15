@@ -46,11 +46,28 @@ export async function GET(request: NextRequest) {
     ...((typeSpecific?.preferences as Record<string, unknown>) ?? {}),
   };
 
+  // Style-guide status across ALL of the user's rows (any document type) —
+  // drives the "have you filled out your style guide?" nudges in the
+  // intake flow and the scan dialog.
+  const allRows = await db
+    .select()
+    .from(userStylePreferences)
+    .where(eq(userStylePreferences.userId, user.id));
+  const styleGuideParsedAt = allRows
+    .map((r) => r.styleGuideParsedAt)
+    .filter((d): d is Date => d != null)
+    .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+  const hasAnyPreferences = allRows.some(
+    (r) => Object.keys((r.preferences as Record<string, unknown>) ?? {}).length > 0,
+  );
+
   return NextResponse.json({
     success: true,
     data: {
       preferences: merged,
       wizardCompletedAt: typeSpecific?.wizardCompletedAt ?? universal?.wizardCompletedAt ?? null,
+      styleGuideParsedAt,
+      hasAnyPreferences,
     },
   });
 }

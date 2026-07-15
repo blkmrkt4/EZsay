@@ -54,6 +54,7 @@ interface Document {
   versionCount: number;
   firstVersionDate: string | null;
   lastVersionDate: string | null;
+  intake?: Record<string, string> | null;
 }
 
 interface Section {
@@ -480,6 +481,21 @@ export default function WorkspacePage() {
   // Pre-selection for the English-variant intake question: the user's saved
   // style preference wins, else a marker-word guess from the document text.
   const [variantPrefill, setVariantPrefill] = useState<{ value: string; source: "style" | "detected" } | null>(null);
+  // Whether the user has ever filled out their style rules / uploaded a style
+  // guide — drives the "fill out your style guide first" nudges at intake and
+  // in the scan dialog. Refetched on nav changes so uploading a guide in
+  // Style Rules clears the nudge immediately.
+  const [hasStyleRules, setHasStyleRules] = useState<boolean | null>(null);
+  useEffect(() => {
+    fetch("/api/style-preferences")
+      .then((r) => r.json())
+      .then((json) => {
+        if (json.success) {
+          setHasStyleRules(Boolean(json.data.styleGuideParsedAt || json.data.hasAnyPreferences));
+        }
+      })
+      .catch(() => {});
+  }, [nav]);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1084,6 +1100,29 @@ export default function WorkspacePage() {
   }
 
   // ── Intake questionnaire ────────────────────────────────────────────────
+
+  /**
+   * Re-open the intake questionnaire for an EXISTING document ("Edit context"
+   * in the document menu). Intake normally runs once, right after upload —
+   * this is how older documents get to answer new questions (e.g. English
+   * variant) or change earlier answers. Answers are pre-filled from the
+   * document's saved intake.
+   */
+  function openDocumentContext(doc: Document) {
+    const intake = (doc.intake ?? {}) as Record<string, string>;
+    if (activeDocId !== doc.id) selectDocument(doc.id);
+    setIntakeAnswers({
+      audience: intake.audience ?? "",
+      purpose: intake.purpose ?? "",
+      english_variant: intake.english_variant ?? "",
+      aiUsage: intake.aiUsage ?? "",
+      discipline: intake.discipline ?? "",
+    });
+    setVariantPrefill(null);
+    setIntakeStep(0);
+    setDocMenuId(null);
+    setNav("intake");
+  }
 
   // Pre-select the English-variant question: saved style preference first,
   // else a marker-word guess from the document text. Runs once per intake.
@@ -2176,6 +2215,14 @@ export default function WorkspacePage() {
                               Open
                             </button>
                             <button
+                              onClick={() => openDocumentContext(doc)}
+                              title="Answer or change the context questions (audience, English variant, …) for this document"
+                              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-50"
+                            >
+                              <svg className="h-3.5 w-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z" /></svg>
+                              Edit context
+                            </button>
+                            <button
                               onClick={() => handleDeleteDocument(doc.id, doc.title)}
                               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-red-600 hover:bg-red-50"
                             >
@@ -3176,6 +3223,25 @@ export default function WorkspacePage() {
                       <p className="mt-2 text-sm text-gray-500">{currentIntakeQ.subtitle}</p>
                       <style>{`@keyframes intake-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
                     </div>
+                    {/* Style-guide nudge — shown until the user has any style
+                        rules saved. The scan finds what THEIR institution
+                        requires only when it knows the rules. */}
+                    {hasStyleRules === false && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-left">
+                        <p className="text-xs font-semibold text-amber-800">Do you have a style guide?</p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-gray-600">
+                          If your university or company issues one, upload it in Style Rules before scanning —
+                          we'll read it and check your document against what it actually requires
+                          (English variant, citation style, Oxford comma, and more).
+                        </p>
+                        <button
+                          onClick={() => setNav("style-rules")}
+                          className="mt-2 rounded bg-amber-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-amber-700"
+                        >
+                          Open Style Rules
+                        </button>
+                      </div>
+                    )}
                     <div className="text-center">
                       <button onClick={saveIntake} className="text-xs text-gray-400 hover:text-gray-600 underline">
                         Skip and start scanning
@@ -3660,6 +3726,8 @@ export default function WorkspacePage() {
           config={scanConfig}
           setConfig={setScanConfig}
           lastScan={activeDoc ? { level: activeDoc.lastScanLevel, at: activeDoc.lastScanAt } : null}
+          showStyleGuideNudge={hasStyleRules === false}
+          onGoToStyleRules={() => { setShowScanDialog(false); setNav("style-rules"); }}
           onCancel={() => setShowScanDialog(false)}
           onConfirm={() => { setShowScanDialog(false); handleScan(); }}
         />
@@ -3788,10 +3856,12 @@ export default function WorkspacePage() {
 
 // ── Scan config dialog ───────────────────────────────────────────────────
 
-function ScanConfigDialog({ config, setConfig, lastScan, onCancel, onConfirm }: {
+function ScanConfigDialog({ config, setConfig, lastScan, showStyleGuideNudge, onGoToStyleRules, onCancel, onConfirm }: {
   config: { categories: { aiDetection: boolean; writingQuality: boolean; aiArtifacts: boolean; plagiarism: boolean; citations: boolean; toneConsistency: boolean; spelling: boolean; grammar: boolean }; aiDetectionDepth: "surface" | "deep" | "comprehensive" };
   setConfig: (c: typeof config) => void;
   lastScan: { level: string | null; at: string | null } | null;
+  showStyleGuideNudge: boolean;
+  onGoToStyleRules: () => void;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -3999,11 +4069,31 @@ function ScanConfigDialog({ config, setConfig, lastScan, onCancel, onConfirm }: 
 
         </div>
 
+        {/* Style-guide nudge — the scan can only check what YOUR institution
+            requires (English variant, citation style, …) if the rules exist.
+            Never blocks the scan. */}
+        {showStyleGuideNudge && (
+          <div className="border-t border-amber-200 bg-amber-50 px-5 py-3 shrink-0">
+            <p className="text-xs font-semibold text-amber-800">Sure, I'll scan — but have you filled out your style guide?</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-gray-600">
+              You haven't set any style rules yet. Upload your university or company style guide (or answer a few
+              questions) in Style Rules, and the scan will check exactly what your institution requires —
+              English variant, citation style, Oxford comma, and more.
+            </p>
+            <button
+              onClick={onGoToStyleRules}
+              className="mt-2 rounded border border-amber-600 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-100"
+            >
+              Open Style Rules first
+            </button>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="border-t border-gray-200 px-5 py-3 flex justify-end gap-2 shrink-0">
           <button onClick={onCancel} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
           <button onClick={onConfirm} className="rounded-lg px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700">
-            Run Scan
+            {showStyleGuideNudge ? "Scan anyway" : "Run Scan"}
           </button>
         </div>
       </div>
