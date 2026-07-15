@@ -367,6 +367,11 @@ export default function WorkspacePage() {
   const [selectedFlagIdx, setSelectedFlagIdx] = useState(0);
   const [selectedOptionIdx, setSelectedOptionIdx] = useState<number | null>(null);
   const [manualEditText, setManualEditText] = useState("");
+  // Items resolved this editing session. Resolved items leave editQueue, so
+  // without this the counter would RE-NUMBER after every fix ("1 of 6" →
+  // "1 of 5"). Displayed position/total = resolvedThisSession + queue values,
+  // so fixing item 3 of 17 advances to "4 of 17" instead of resetting.
+  const [resolvedThisSession, setResolvedThisSession] = useState(0);
 
   // Plagiarism item interaction state — a successful "Add Citation" holds the
   // item on screen with a confirmation (instead of silently advancing), and
@@ -639,6 +644,7 @@ export default function WorkspacePage() {
     setVersionSavedSinceScan(true);
     setProcessedArtifacts({});
     setArtifactBatchChoices({});
+    setResolvedThisSession(0);
     setGeneratingIds(new Set());
     setScanPhases({});
     setSuggestProgress({ generating: false, current: 0, total: 0 });
@@ -834,6 +840,7 @@ export default function WorkspacePage() {
     setVersionSavedSinceScan(false);
     setProcessedArtifacts({});
     setArtifactBatchChoices({});
+    setResolvedThisSession(0);
     fetchUsageWarnings();
   }
 
@@ -1024,6 +1031,7 @@ export default function WorkspacePage() {
     setPlagiarismResults((prev) =>
       prev.map((r) => r.id === resultId ? { ...r, status: "acknowledged" } : r)
     );
+    setResolvedThisSession((c) => c + 1);
     if (activeDocId) await loadDocument(activeDocId);
     setSelectedOptionIdx(null);
     setManualEditText("");
@@ -1073,6 +1081,7 @@ export default function WorkspacePage() {
     setPlagiarismResults((prev) =>
       prev.map((r) => r.id === resultId ? { ...r, status: "acknowledged" } : r)
     );
+    setResolvedThisSession((c) => c + 1);
     if (activeDocId) await loadDocument(activeDocId);
     setSelectedOptionIdx(null);
     setManualEditText("");
@@ -1241,6 +1250,7 @@ export default function WorkspacePage() {
     setFlags((prev) => prev.map((f) => (f.id === flag.id ? { ...f, status: action } : f)));
     setSelectedOptionIdx(null);
     setManualEditText("");
+    setResolvedThisSession((c) => c + 1);
     // Reload document to reflect text changes from accepted replacements
     if (activeDocId && action === "accepted") await loadDocument(activeDocId);
     // Every resolution (accepted/rejected/skipped) removes this flag from the
@@ -2609,7 +2619,7 @@ export default function WorkspacePage() {
                       >
                         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                       </button>
-                      <p className="text-sm font-semibold text-gray-700">{selectedFlagIdx + 1} <span className="text-gray-400 font-normal">of</span> {editQueue.length}</p>
+                      <p className="text-sm font-semibold text-gray-700">{resolvedThisSession + selectedFlagIdx + 1} <span className="text-gray-400 font-normal">of</span> {resolvedThisSession + editQueue.length}</p>
                       <button
                         onClick={() => { if (selectedFlagIdx < editQueue.length - 1) { setSelectedFlagIdx(selectedFlagIdx + 1); setSelectedOptionIdx(null); setManualEditText(""); setPlagiarismError(null); setShowPlagiarismExplanation(false); } }}
                         disabled={selectedFlagIdx >= editQueue.length - 1}
@@ -2942,7 +2952,7 @@ export default function WorkspacePage() {
                     try {
                       const res = await fetch("/api/spelling/bulk-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ documentId: activeDocId, fixIds: [...spellingChecked] }) });
                       const json = await res.json();
-                      if (json.success) { await loadDocument(activeDocId); setSpellingChecked(new Set()); if (!allFixed) setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }
+                      if (json.success) { await loadDocument(activeDocId); setSpellingChecked(new Set()); if (allFixed) setResolvedThisSession((c) => c + 1); else setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }
                     } catch (err) { console.error("Spelling fix failed:", err); }
                     setSpellingApplying(false);
                   }}
@@ -2966,7 +2976,7 @@ export default function WorkspacePage() {
                     try {
                       const res = await fetch("/api/grammar/bulk-fix", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ documentId: activeDocId, fixIds: [...grammarChecked] }) });
                       const json = await res.json();
-                      if (json.success) { await loadDocument(activeDocId); setGrammarChecked(new Set()); if (!allFixed) setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }
+                      if (json.success) { await loadDocument(activeDocId); setGrammarChecked(new Set()); if (allFixed) setResolvedThisSession((c) => c + 1); else setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }
                     } catch (err) { console.error("Grammar fix failed:", err); }
                     setGrammarApplying(false);
                   }}
@@ -3105,13 +3115,13 @@ export default function WorkspacePage() {
                     }
                     if (state === "failed") {
                       return (
-                        <div className="flex items-center justify-between gap-2 rounded border border-red-200 bg-red-50 px-3 py-2">
-                          <p className="text-xs text-red-700">Couldn&apos;t generate suggestions for this edit.</p>
+                        <div className="flex items-center justify-between gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2">
+                          <p className="text-xs text-gray-600">No suggestions generated for this edit. Want me to try again?</p>
                           <button
                             onClick={() => retryFlag(currentFlag.id)}
-                            className="shrink-0 rounded bg-red-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-red-700"
+                            className="shrink-0 rounded bg-blue-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-blue-700"
                           >
-                            Retry
+                            Try again
                           </button>
                         </div>
                       );
@@ -3383,7 +3393,7 @@ export default function WorkspacePage() {
                 <div className="flex h-full flex-col">
                   {/* Top controls */}
                   <div className="border-b border-gray-200 px-2 py-1.5">
-                    <p className="text-[10px] text-gray-400">{selectedFlagIdx + 1} of {editQueue.length} items{currentQueueItem.type === "writing_quality" ? " (advisory)" : ""}</p>
+                    <p className="text-[10px] text-gray-400">{resolvedThisSession + selectedFlagIdx + 1} of {resolvedThisSession + editQueue.length} items{currentQueueItem.type === "writing_quality" ? " (advisory)" : ""}</p>
                   </div>
 
                   <div className="flex-1 p-2 space-y-1">
@@ -3489,7 +3499,14 @@ export default function WorkspacePage() {
                           <span>Skip</span>
                         </button>
                         <button
-                          onClick={() => { setSkipAllWritingQuality(true); setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }}
+                          onClick={() => {
+                            // All advisory items leave the queue at once —
+                            // count them so the session total holds steady.
+                            const advisoryCount = editQueue.filter((i) => i.type === "writing_quality").length;
+                            setResolvedThisSession((c) => c + advisoryCount);
+                            setSkipAllWritingQuality(true);
+                            setSelectedOptionIdx(null);
+                          }}
                           className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100"
                         >
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[9px] font-bold text-gray-600">2</span>
