@@ -481,20 +481,26 @@ export default function WorkspacePage() {
   // Pre-selection for the English-variant intake question: the user's saved
   // style preference wins, else a marker-word guess from the document text.
   const [variantPrefill, setVariantPrefill] = useState<{ value: string; source: "style" | "detected" } | null>(null);
-  // Whether the user has ever filled out their style rules / uploaded a style
-  // guide — drives the "fill out your style guide first" nudges at intake and
-  // in the scan dialog. Refetched on nav changes so uploading a guide in
-  // Style Rules clears the nudge immediately.
+  // Whether the user has ENGAGED with their style guide — drives the "set up
+  // your style guide" nudges at intake and in the scan dialog. Engagement =
+  // an uploaded/parsed style guide, or any Style Rules save AFTER the nudge
+  // feature shipped (every save stamps updatedAt; preferences from the old
+  // pre-nudge wizard don't count — the point is that the user has gone in and
+  // done something deliberately). Refetched on nav changes so acting on the
+  // nudge clears it immediately.
+  const STYLE_RULES_ENGAGEMENT_EPOCH = new Date("2026-07-15T00:00:00Z").getTime();
   const [hasStyleRules, setHasStyleRules] = useState<boolean | null>(null);
   useEffect(() => {
     fetch("/api/style-preferences")
       .then((r) => r.json())
       .then((json) => {
         if (json.success) {
-          setHasStyleRules(Boolean(json.data.styleGuideParsedAt || json.data.hasAnyPreferences));
+          const touched = json.data.styleRulesTouchedAt ? new Date(json.data.styleRulesTouchedAt).getTime() : 0;
+          setHasStyleRules(Boolean(json.data.styleGuideParsedAt) || touched > STYLE_RULES_ENGAGEMENT_EPOCH);
         }
       })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav]);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -3268,7 +3274,7 @@ export default function WorkspacePage() {
                     <div className="text-center">
                       {hasStyleRules === false ? (
                         <button onClick={goToStyleRulesFromIntake} className="text-xs font-semibold text-amber-700 hover:text-amber-800 underline">
-                          Highly recommended: go through the style guide first
+                          Highly recommended: set up your style guide to adjust what gets scanned
                         </button>
                       ) : (
                         <button onClick={saveIntake} className="text-xs text-gray-400 hover:text-gray-600 underline">

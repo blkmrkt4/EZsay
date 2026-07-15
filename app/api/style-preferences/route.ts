@@ -60,6 +60,13 @@ export async function GET(request: NextRequest) {
   const hasAnyPreferences = allRows.some(
     (r) => Object.keys((r.preferences as Record<string, unknown>) ?? {}).length > 0,
   );
+  // Most recent time the user saved ANYTHING in Style Rules (every PATCH and
+  // guide-parse stamps updatedAt) — the "has engaged with the style guide"
+  // signal for the intake/scan nudges.
+  const styleRulesTouchedAt = allRows
+    .map((r) => r.updatedAt)
+    .filter((d): d is Date => d != null)
+    .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
 
   return NextResponse.json({
     success: true,
@@ -68,6 +75,7 @@ export async function GET(request: NextRequest) {
       wizardCompletedAt: typeSpecific?.wizardCompletedAt ?? universal?.wizardCompletedAt ?? null,
       styleGuideParsedAt,
       hasAnyPreferences,
+      styleRulesTouchedAt,
     },
   });
 }
