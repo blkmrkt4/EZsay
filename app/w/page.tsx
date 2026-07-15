@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import AnalysisPanel from "@/components/results/AnalysisPanel";
 import { detectArtifacts, type ArtifactFinding } from "@/lib/analysis/artifact-detector";
 import { calculateWritingQuality, findComplexSentences } from "@/lib/analysis/quality-scorer";
+import { computeAuditorScore } from "@/lib/analysis/auditor-score";
 import { detectEnglishVariant } from "@/lib/style/english-variant";
 import { getRemovalDescription } from "@/lib/analysis/artifact-removals";
 import CitationsPage from "@/components/citations/CitationsPage";
@@ -1781,47 +1782,35 @@ export default function WorkspacePage() {
       return null;
     }
 
-    // Normalize all scores to "higher = better" (0-100)
-    const scores: { key: string; value: number | null; weight: number }[] = [
-      { key: "aiDetectability", value: activeDoc.aiRiskScore != null ? 100 - activeDoc.aiRiskScore : null, weight: 25 },
-      { key: "aiArtifacts", value: activeDoc.aiArtifactScore ?? null, weight: 12 }, // stored as 100=clean, already correct direction
-      { key: "writingQuality", value: activeDoc.writingQualityScore ?? null, weight: 10 },
-      { key: "plagiarism", value: activeDoc.plagiarismScore != null
-        ? 100 - activeDoc.plagiarismScore
-        : plagiarismResults.length > 0
-          ? (() => {
-              // Fallback: calculate from results for docs scanned before plagiarismScore was persisted
-              const plagOnly = plagiarismResults.filter((r) => r.verdict === "plagiarism");
-              const closeOnly = plagiarismResults.filter((r) => r.verdict === "close_match");
-              const checked = plagiarismResults.filter((r) => r.verdict !== "error").length;
-              if (checked === 0) return null;
-              const plagW = plagOnly.reduce((s, r) => s + (r.confidence ?? 0.5), 0);
-              const closeW = closeOnly.reduce((s, r) => s + (r.confidence ?? 0.5) * 0.15, 0);
-              const rawPlag = Math.round(((plagW + closeW) / checked) * 100);
-              return 100 - rawPlag;
-            })()
-          : null, weight: 30 },
-      { key: "citations", value: activeDoc.citationsScore ?? null, weight: 15 },
-      { key: "toneConsistency", value: activeDoc.toneConsistencyScore ?? null, weight: 8 },
-    ];
+    // Normalize plagiarism to "higher = better"; fall back to computing from
+    // results for docs scanned before plagiarismScore was persisted.
+    const plagiarism = activeDoc.plagiarismScore != null
+      ? 100 - activeDoc.plagiarismScore
+      : plagiarismResults.length > 0
+        ? (() => {
+            const plagOnly = plagiarismResults.filter((r) => r.verdict === "plagiarism");
+            const closeOnly = plagiarismResults.filter((r) => r.verdict === "close_match");
+            const checked = plagiarismResults.filter((r) => r.verdict !== "error").length;
+            if (checked === 0) return null;
+            const plagW = plagOnly.reduce((s, r) => s + (r.confidence ?? 0.5), 0);
+            const closeW = closeOnly.reduce((s, r) => s + (r.confidence ?? 0.5) * 0.15, 0);
+            return 100 - Math.round(((plagW + closeW) / checked) * 100);
+          })()
+        : null;
 
-    // Filter to only computed scores
-    const active = scores.filter((s) => s.value !== null) as { key: string; value: number; weight: number }[];
-    if (active.length === 0) return null;
-
-    // Redistribute weights
-    const totalWeight = active.reduce((sum, s) => sum + s.weight, 0);
-    const weightedSum = active.reduce((sum, s) => sum + s.value * (s.weight / totalWeight), 0);
-
-    let composite = weightedSum;
-
-    // Floor penalties for deal-breakers
-    const normPlag = scores.find((s) => s.key === "plagiarism")?.value;
-    const normAI = scores.find((s) => s.key === "aiDetectability")?.value;
-    if (normPlag !== null && normPlag !== undefined && normPlag < 50) composite = Math.min(composite, 30);
-    if (normAI !== null && normAI !== undefined && normAI < 30) composite = Math.min(composite, 40);
-
-    return Math.round(composite);
+    return computeAuditorScore({
+      aiDetectability: activeDoc.aiRiskScore != null ? 100 - activeDoc.aiRiskScore : null,
+      aiArtifacts: activeDoc.aiArtifactScore ?? null,
+      writingQuality: activeDoc.writingQualityScore ?? null,
+      plagiarism,
+      citations: activeDoc.citationsScore ?? null,
+      toneConsistency: activeDoc.toneConsistencyScore ?? null,
+      spelling: activeDoc.spellingScore ?? null,
+      grammar: activeDoc.grammarScore ?? null,
+      // Resolving/dismissing a match lifts the cap — only OPEN confirmed
+      // matches are fatal.
+      hasConfirmedPlagiarismMatch: plagiarismResults.some((r) => r.verdict === "plagiarism" && r.status === "open"),
+    });
   }, [activeDoc, plagiarismResults]);
 
   // ── Auto-scroll Doc Panel to active section ─────────────────────────────

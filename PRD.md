@@ -208,11 +208,11 @@ LLM analysis for tone shifts, voice inconsistencies, register changes, contradic
 
 ## 8. Auditor Score
 
-Composite 0-100 displayed in toolbar header (blue pill). Higher = better document.
+Composite 0-100 displayed in toolbar header (blue pill). Higher = better document. Weights and caps live in ONE place — `lib/analysis/auditor-score.ts` (`computeAuditorScore`) — shared by the workspace (`objectiveAuditorScore` in `app/w/page.tsx`) and the free-scan funnel (`app/scan/page.tsx`).
 
-**Weights:** Plagiarism 30%, AI Detectability 25%, Citations 15%, AI Artifacts 12%, Writing Quality 10%, Tone Consistency 8%.
+**Weights (revised 2026-07-15):** Plagiarism 30%, AI Detectability 25%, Citations 12%, AI Artifacts 10%, Writing Quality 9%, Spelling 5%, Grammar 5%, Tone Consistency 4%. (Previously spelling and grammar carried NO weight and tone carried 8% — inverted from what a marker cares about. Plagiarism and AI detectability are the fatal-flaw categories: top weights AND hard caps.)
 
-**Missing scores** redistribute weight proportionally. **Floor penalties:** heavy plagiarism caps composite at 30; very detectable AI caps at 40.
+**Missing scores** redistribute weight proportionally. **Fatal-flaw caps:** any OPEN confirmed plagiarism match caps the composite at 25 (resolving/dismissing the match lifts the cap); plagiarism score (normalized) below 50 caps at 30; AI risk above 60 caps at 35 (was: risk above 70 → cap 40).
 
 **Labels:** 90-100 Excellent, 70-89 Good, 50-69 Needs Work, 30-49 Poor, 0-29 Critical.
 

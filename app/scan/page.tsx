@@ -7,6 +7,7 @@ import LandingNav from "@/components/landing/LandingNav";
 import ScoreSpectrum from "@/components/ui/ScoreSpectrum";
 import AuditorScoreRing from "@/components/editor/AuditorScoreRing";
 import { createClient } from "@/lib/supabase/client";
+import { computeAuditorScore as computeSharedAuditorScore } from "@/lib/analysis/auditor-score";
 
 const DOC_TYPES = [
   { value: "academic", label: "Academic" },
@@ -191,21 +192,13 @@ function FreeScanInner() {
   }
 
   function computeAuditorScore(r: ScanResult): number | null {
-    const scores: { value: number | null; weight: number }[] = [
-      { value: r.aiRiskScore != null ? 100 - r.aiRiskScore : null, weight: 25 },
-      { value: r.aiArtifactScore, weight: 12 },
-      { value: r.writingQualityScore, weight: 10 },
-      { value: r.toneConsistencyScore, weight: 8 },
-    ];
-    let totalWeight = 0;
-    let totalScore = 0;
-    for (const s of scores) {
-      if (s.value != null) {
-        totalWeight += s.weight;
-        totalScore += s.value * s.weight;
-      }
-    }
-    return totalWeight > 0 ? Math.round(totalScore / totalWeight) : null;
+    // Shared weights + fatal-flaw caps live in lib/analysis/auditor-score.ts
+    return computeSharedAuditorScore({
+      aiDetectability: r.aiRiskScore != null ? 100 - r.aiRiskScore : null,
+      aiArtifacts: r.aiArtifactScore,
+      writingQuality: r.writingQualityScore,
+      toneConsistency: r.toneConsistencyScore,
+    });
   }
 
   /** Make sure we have a Supabase session before calling the upload/scan APIs. */
