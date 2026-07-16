@@ -2598,12 +2598,37 @@ export default function WorkspacePage() {
 
               {nav === "workspace" && workspaceMode === "edit" && activeDoc && !currentQueueItem && !hasScanned && (
                 <div className="flex h-full items-center justify-center p-8">
-                  <div className="text-center max-w-sm">
-                    <p className="text-3xl font-bold text-gray-300">Ready to scan</p>
-                    <p className="mt-4 text-sm text-gray-500">Your document is loaded. The next step is to scan it for issues.</p>
-                    <p className="mt-6 text-base font-semibold text-blue-600 animate-[intake-pulse_0.6s_ease-in-out_3]">Click the Scan button in the top-right corner</p>
-                    <p className="mt-2 text-xs text-gray-400">You can choose which checks to run and how thorough to be.</p>
-                  </div>
+                  {/* Status-aware empty state: a previously scanned document with
+                      nothing queued means the edits are done and saved — point at
+                      what actually remains instead of prompting another scan. */}
+                  {!activeDoc.lastScanAt ? (
+                    <div className="text-center max-w-sm">
+                      <p className="text-3xl font-bold text-gray-300">Ready to scan</p>
+                      <p className="mt-4 text-sm text-gray-500">Your document is loaded. The next step is to scan it for issues.</p>
+                      <p className="mt-6 text-base font-semibold text-blue-600 animate-[intake-pulse_0.6s_ease-in-out_3]">Click the Scan button in the top-right corner</p>
+                      <p className="mt-2 text-xs text-gray-400">You can choose which checks to run and how thorough to be.</p>
+                    </div>
+                  ) : citationsNeedingReview > 0 ? (
+                    <div className="text-center max-w-sm">
+                      <p className="text-3xl font-bold text-gray-300">Edits done — citations next</p>
+                      <p className="mt-4 text-sm text-gray-500">
+                        All your edits are saved. <strong>{citationsNeedingReview}</strong> citation{citationsNeedingReview !== 1 ? "s" : ""} still need{citationsNeedingReview === 1 ? "s" : ""} your review.
+                      </p>
+                      <button
+                        onClick={() => { setNav("workspace"); setWorkspaceMode("citations"); }}
+                        className="mt-6 rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                      >
+                        Go to Citations
+                      </button>
+                      <p className="mt-4 text-xs text-gray-400">Or click Re-scan in the top-right corner to check the edited text for new issues.</p>
+                    </div>
+                  ) : (
+                    <div className="text-center max-w-sm">
+                      <p className="text-3xl font-bold text-gray-300">All caught up</p>
+                      <p className="mt-4 text-sm text-gray-500">All your edits are saved and nothing is waiting for review.</p>
+                      <p className="mt-6 text-xs text-gray-400">Click Re-scan in the top-right corner to check the edited text for new issues, or save a version and download the edited file.</p>
+                    </div>
+                  )}
                 </div>
               )}
 

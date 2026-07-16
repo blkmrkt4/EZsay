@@ -286,6 +286,8 @@ Citations are **never** part of the edit queue (see section 10) and are **not co
 
 "Citations needing review" mirrors the server score rule at `app/api/citations/route.ts`: a citation counts when its `status === 'open'` AND it has structural flags OR a verification verdict of `unverified` / `wrong_details`. The parent `app/w/page.tsx` fetches `/api/citations?documentId=...` when the doc is active and `hasScanned`, and refetches on `nav` changes into edit/analysis views so the count stays accurate after the user returns from the Citations tab.
 
+4. **Status-aware Edit-tab empty state (2026-07-16).** `hasScanned` is session-local, so reloading a document whose edits are already done used to show "Ready to scan — click the Scan button", steering users toward a pointless re-scan when the real next step was citations. The empty state now branches on the persisted `lastScanAt`: never scanned → the original "Ready to scan" prompt; scanned before with pending citations → **"Edits done — citations next"** with a Go to Citations primary button (Re-scan mentioned as secondary); scanned before and nothing pending → **"All caught up"** pointing at Re-scan / save version / download.
+
 ---
 
 ## 10. Citations page
