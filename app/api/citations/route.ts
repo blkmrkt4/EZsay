@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
 import { citations, documents, sections, llmCallLog, libraryEntries } from "@/db/schema";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, asc, sql } from "drizzle-orm";
 import { callOpenRouter, loadBind } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { buildCitationGraph, type GraphFlag } from "@/lib/citations/graph";
@@ -123,9 +123,21 @@ async function handleStructuralCheck(
     return NextResponse.json({ success: false, error: "Document not found" }, { status: 404 });
   }
 
+  // Analyze the document as it currently stands: editing-flow rewrites live in
+  // sections.currentText and never touch documents.rawText. Locked sections
+  // are included — they hold the reference list itself.
+  const docSections = await db
+    .select()
+    .from(sections)
+    .where(eq(sections.documentId, documentId))
+    .orderBy(asc(sections.index));
+  const currentDocText = docSections.length > 0
+    ? docSections.map((s) => s.currentText).join("\n\n")
+    : doc.rawText;
+
   // Build the document-wide citation graph: reference entries, in-text
   // citations, quotes — linked, with reconciliation findings attached.
-  const graph = buildCitationGraph(doc.rawText);
+  const graph = buildCitationGraph(currentDocText);
   const artifactPatterns = await loadCitationArtifacts();
 
   if (graph.entries.length === 0 && graph.inline.length === 0) {
@@ -155,6 +167,25 @@ async function handleStructuralCheck(
     return { entry, structuralFlags, correctedText };
   });
 
+  // Re-checks must not destroy work: web-verification verdicts and the user's
+  // accept/edit/verify/dismiss decisions are carried over to the fresh rows by
+  // matching on text. A citation the user corrected now appears in the
+  // document as its correctedText, so old rows are keyed on both.
+  const previousRows = await db
+    .select()
+    .from(citations)
+    .where(eq(citations.documentId, documentId));
+  const normText = (t: string) => t.replace(/\s+/g, " ").trim();
+  const previousByText = new Map<string, (typeof previousRows)[number]>();
+  for (const row of previousRows) {
+    previousByText.set(`${row.entryType}::${normText(row.rawText)}`, row);
+    if (row.correctedText) {
+      previousByText.set(`${row.entryType}::${normText(row.correctedText)}`, row);
+    }
+  }
+  const previousFor = (entryType: string, text: string) =>
+    previousByText.get(`${entryType}::${normText(text)}`);
+
   // Clear previous citations, then insert reference entries first so inline
   // and quote rows can point at their entry's row id.
   await db.delete(citations).where(eq(citations.documentId, documentId));
@@ -163,16 +194,22 @@ async function handleStructuralCheck(
     ? await db
         .insert(citations)
         .values(
-          entryRecords.map((r) => ({
-            documentId,
-            rawText: r.entry.text,
-            style: detectedStyle,
-            entryType: "reference_entry",
-            structuralFlags: r.structuralFlags,
-            verificationFlags: null,
-            correctedText: r.correctedText,
-            status: r.structuralFlags.length > 0 ? ("open" as const) : ("resolved" as const),
-          }))
+          entryRecords.map((r) => {
+            const prev = previousFor("reference_entry", r.entry.text);
+            return {
+              documentId,
+              rawText: r.entry.text,
+              style: detectedStyle,
+              entryType: "reference_entry",
+              structuralFlags: r.structuralFlags,
+              verificationFlags: prev?.verificationFlags ?? null,
+              correctedText: prev?.userAction ? prev.correctedText : r.correctedText,
+              status: prev && prev.status !== "open"
+                ? prev.status
+                : r.structuralFlags.length > 0 ? ("open" as const) : ("resolved" as const),
+              userAction: prev?.userAction ?? null,
+            };
+          })
         )
         .returning()
     : [];
@@ -188,18 +225,23 @@ async function handleStructuralCheck(
     ? await db
         .insert(citations)
         .values([
-          ...flaggedInline.map((c) => ({
-            documentId,
-            rawText: c.text,
-            style: detectedStyle,
-            entryType: "inline",
-            linkedCitationId:
-              c.matchedEntryIndex !== null ? insertedEntries[c.matchedEntryIndex]?.id ?? null : null,
-            contextSentence: c.contextSentence,
-            structuralFlags: c.flags,
-            verificationFlags: null,
-            status: "open" as const,
-          })),
+          ...flaggedInline.map((c) => {
+            const prev = previousFor("inline", c.text);
+            return {
+              documentId,
+              rawText: c.text,
+              style: detectedStyle,
+              entryType: "inline",
+              linkedCitationId:
+                c.matchedEntryIndex !== null ? insertedEntries[c.matchedEntryIndex]?.id ?? null : null,
+              contextSentence: c.contextSentence,
+              structuralFlags: c.flags,
+              verificationFlags: prev?.verificationFlags ?? null,
+              status: prev && prev.status !== "open" ? prev.status : ("open" as const),
+              userAction: prev?.userAction ?? null,
+              correctedText: prev?.userAction ? prev.correctedText : null,
+            };
+          }),
           ...graph.quotes.map((q) => {
             const viaInText =
               q.linkedInTextIndex !== null ? graph.inline[q.linkedInTextIndex] : null;
@@ -207,6 +249,7 @@ async function handleStructuralCheck(
               viaInText && viaInText.matchedEntryIndex !== null
                 ? insertedEntries[viaInText.matchedEntryIndex]?.id ?? null
                 : null;
+            const prev = previousFor("quote", q.text);
             return {
               documentId,
               rawText: q.text,
@@ -215,8 +258,10 @@ async function handleStructuralCheck(
               linkedCitationId: entryRowId,
               contextSentence: q.contextSentence,
               structuralFlags: q.flags,
-              verificationFlags: null,
-              status: "open" as const,
+              verificationFlags: prev?.verificationFlags ?? null,
+              status: prev && prev.status !== "open" ? prev.status : ("open" as const),
+              userAction: prev?.userAction ?? null,
+              correctedText: prev?.userAction ? prev.correctedText : null,
             };
           }),
         ])

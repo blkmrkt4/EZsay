@@ -1911,7 +1911,7 @@ export default function WorkspacePage() {
           "bg-blue-600 hover:bg-blue-700"
         }`}
       >
-        {scanning ? "Scanning…" : suggestProgress.generating ? "Preparing…" : hasScanned && !scanViewed ? "Scanned" : "Scan"}
+        {scanning ? "Scanning…" : suggestProgress.generating ? "Preparing…" : hasScanned && !scanViewed ? "Scanned" : hasScanned || activeDoc?.lastScanAt ? "Re-scan" : "Scan"}
       </button>
       {hasScanned && scanViewed && !versionSavedSinceScan && (
         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-56 rounded border border-gray-200 bg-white p-2 text-[10px] text-gray-600 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">

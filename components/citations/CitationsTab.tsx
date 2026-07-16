@@ -133,7 +133,7 @@ export default function CitationsTab({ documentId }: CitationsTabProps) {
           disabled={checking}
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
         >
-          {checking ? "Checking..." : citationsList.length > 0 ? "Re-check" : "Run Structural Check"}
+          {checking ? "Checking..." : citationsList.length > 0 ? "Re-check formatting" : "Run Structural Check"}
         </button>
       </div>
 

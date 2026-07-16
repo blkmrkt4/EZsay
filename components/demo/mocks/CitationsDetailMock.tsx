@@ -25,7 +25,7 @@ export default function CitationsDetailMock() {
       </div>
 
       <div className="flex items-center gap-2">
-        <span className="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white">Re-check</span>
+        <span className="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white">Re-check formatting</span>
         <span className="flex items-center gap-1.5 rounded-md bg-violet-100 px-3 py-1 text-xs font-medium text-violet-700">
           <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-violet-500" />
           Verifying…

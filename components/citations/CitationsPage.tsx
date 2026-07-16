@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import AuditSummary from "./AuditSummary";
 import CorrectedList from "./CorrectedList";
 import {
@@ -113,7 +113,19 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
     setLoading(false);
   }, [documentId]);
 
-  useEffect(() => { loadCitations(); }, [loadCitations]);
+  // The structural check is instant, LLM-free, and preserves verification
+  // verdicts and user resolutions — so it runs automatically once per tab
+  // open, keeping formatting/cross-reference findings in step with the
+  // document as currently edited.
+  const autoCheckedFor = useRef<string | null>(null);
+  useEffect(() => {
+    loadCitations().then(() => {
+      if (autoCheckedFor.current === documentId) return;
+      autoCheckedFor.current = documentId;
+      runStructuralCheck();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadCitations, documentId]);
 
   async function runStructuralCheck() {
     setChecking(true);
@@ -303,37 +315,53 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
             {issueCount > 0 && <> &middot; <span className="text-amber-600"><strong>{issueCount}</strong> structural issue{issueCount !== 1 ? "s" : ""}</span></>}
           </p>
         ) : (
-          <p className="mt-1 text-xs text-gray-400">No citations extracted yet.</p>
+          <p className="mt-1 text-xs text-gray-400">{checking ? "Checking your document for citations…" : "No citations detected in this document."}</p>
         )}
-        <div className="mt-2 flex gap-2">
+        <p className="mt-1.5 flex flex-wrap items-center gap-2 text-[10px] text-gray-400">
           <button
             onClick={runStructuralCheck}
-            disabled={checking}
-            className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+            disabled={checking || verifying || quoteVerifying}
+            title="Re-reads your edited document and refreshes the formatting and cross-reference findings. Verification results are kept."
+            className="inline-flex items-center gap-1 rounded border border-gray-200 px-1.5 py-0.5 text-[10px] text-gray-500 hover:bg-gray-50 disabled:opacity-40"
           >
-            {checking ? "Checking..." : citations.length > 0 ? "Re-check" : "Extract Citations"}
+            <span className={checking ? "inline-block animate-spin" : ""}>&#8635;</span>
+            {checking ? "Checking formatting…" : "Re-check formatting"}
           </button>
-        </div>
-        <p className="mt-1.5 text-[9px] text-gray-400 italic">To verify citations against web sources, choose Citations after selecting the Scan button.</p>
-        <div className="mt-2 flex gap-2">
+          <span>Formatting and cross-references re-check automatically when you open this tab.</span>
+        </p>
+        {citations.length > 0 && (
+          <p className="mt-2 text-[10px] text-gray-500">
+            Two checks need you: first whether your sources exist, then whether your quotes hold up.
+          </p>
+        )}
+        <div className="mt-2 grid max-w-2xl gap-2 sm:grid-cols-2">
           {citations.length > 0 && (
-            <button
-              onClick={runVerification}
-              disabled={verifying || checking || quoteVerifying}
-              className="rounded bg-purple-600 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-40"
-            >
-              {verifying ? "Verifying..." : "Verify All Sources"}
-            </button>
+            <div className="rounded-md border border-gray-200 bg-gray-50 p-2.5">
+              <button
+                onClick={runVerification}
+                disabled={verifying || checking || quoteVerifying}
+                className="w-full rounded bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-40"
+              >
+                {verifying ? "Verifying..." : "Verify sources are real"}
+              </button>
+              <p className="mt-1.5 text-[10px] leading-snug text-gray-500">
+                Searches the web for each reference to confirm it exists and the author, year, and title match. Catches invented references. Takes a few minutes.
+              </p>
+            </div>
           )}
           {quoteCount > 0 && (
-            <button
-              onClick={runQuoteVerification}
-              disabled={verifying || checking || quoteVerifying}
-              title="Fetch each quote's source and check it is real and fairly used"
-              className="rounded bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
-            >
-              {quoteVerifying ? "Checking quotes..." : `Verify Quotes (${quoteCount})`}
-            </button>
+            <div className="rounded-md border border-gray-200 bg-gray-50 p-2.5">
+              <button
+                onClick={runQuoteVerification}
+                disabled={verifying || checking || quoteVerifying}
+                className="w-full rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+              >
+                {quoteVerifying ? "Checking quotes..." : `Check quotes against sources (${quoteCount})`}
+              </button>
+              <p className="mt-1.5 text-[10px] leading-snug text-gray-500">
+                Finds each quotation&apos;s source and checks it appears there — and that your sentence fairly represents it. Run after verifying sources.
+              </p>
+            </div>
           )}
         </div>
         {verifying && (
