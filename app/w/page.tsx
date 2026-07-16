@@ -3265,6 +3265,7 @@ export default function WorkspacePage() {
                 <CitationsPage
                   documentId={activeDoc.id}
                   sections={sections}
+                  onSaveVersion={handleSaveVersion}
                   onScoreUpdate={(score) => setActiveDoc((prev) => prev ? { ...prev, citationsScore: score } : prev)}
                   onScrollToText={(text) => {
                     setHighlightedCitationText(text || null);

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import AuditSummary from "./AuditSummary";
+import Checklist from "./Checklist";
 import CorrectedList from "./CorrectedList";
 import {
   type Citation,
@@ -11,6 +12,13 @@ import {
   proposedFixOf,
   QUOTE_VERDICT_DISPLAY,
 } from "./types";
+
+/** "14 Jul 2026" from a verdict's verifiedAt ISO stamp. */
+function checkedOn(iso?: string): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
 
 const QUOTE_TONE_CLASSES: Record<string, string> = {
   green: "bg-green-100 text-green-700",
@@ -90,9 +98,10 @@ interface CitationsPageProps {
   sections?: SectionData[];
   onScoreUpdate?: (score: number) => void;
   onScrollToText?: (text: string) => void;
+  onSaveVersion?: () => void;
 }
 
-export default function CitationsPage({ documentId, sections, onScoreUpdate, onScrollToText }: CitationsPageProps) {
+export default function CitationsPage({ documentId, sections, onScoreUpdate, onScrollToText, onSaveVersion }: CitationsPageProps) {
   const [citations, setCitations] = useState<Citation[]>([]);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
@@ -142,14 +151,15 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
     setChecking(false);
   }
 
-  async function runVerification() {
+  async function runVerification(full: boolean) {
     setVerifying(true);
     setVerifyProgress(null);
     try {
       // Batch loop: the server verifies a few entries per request (Vercel
-      // function cap), we keep calling until none remain. reset=true on the
-      // first call clears previous verdicts for a full re-check.
-      let reset = true;
+      // function cap), we keep calling until none remain. Incremental runs
+      // (full=false) only check entries without a verdict — new or changed
+      // since the last verification; full=true wipes and re-checks all.
+      let reset = full;
       for (let guard = 0; guard < 60; guard++) {
         const res = await fetch("/api/citations", {
           method: "POST",
@@ -174,11 +184,11 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
     setVerifyProgress(null);
   }
 
-  async function runQuoteVerification() {
+  async function runQuoteVerification(full: boolean) {
     setQuoteVerifying(true);
     setQuoteProgress(null);
     try {
-      let reset = true;
+      let reset = full;
       for (let guard = 0; guard < 60; guard++) {
         const res = await fetch("/api/citations", {
           method: "POST",
@@ -285,7 +295,20 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
       c.entryType === "inline" ||
       (c.entryType === "quote" && (((c.structuralFlags?.length ?? 0) > 0) || c.verificationFlags != null)),
   );
-  const quoteCount = citations.filter((c) => c.entryType === "quote").length;
+  const quotes = citations.filter((c) => c.entryType === "quote");
+  const quoteCount = quotes.length;
+
+  // Checklist step states. "Unchecked" = no verdict yet — new entries, or
+  // entries whose text changed since the last verification (the re-check
+  // preservation clears their verdicts). Open findings = everything below
+  // that still needs a user decision; a healthy verified quote doesn't.
+  const uncheckedSources = refEntries.filter((c) => !c.verificationFlags).length;
+  const uncheckedQuotes = quotes.filter((c) => !c.verificationFlags).length;
+  const openFindings =
+    refEntries.filter((c) => c.status === "open" && ["fabricated", "needs_correction"].includes(bucketOf(c))).length +
+    docFindings.filter(
+      (c) => c.status === "open" && !(c.verificationFlags?.verdict === "quote_verified" && (c.structuralFlags?.length ?? 0) === 0),
+    ).length;
 
   // Audit ordering: most severe first (fabricated → needs correction →
   // uncertain → unchecked → verified). The corrected list keeps the
@@ -329,77 +352,21 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
           </button>
           <span>Formatting and cross-references re-check automatically when you open this tab.</span>
         </p>
-        {citations.length > 0 && (
-          <p className="mt-2 text-[10px] text-gray-500">
-            Two checks need you: first whether your sources exist, then whether your quotes hold up.
-          </p>
-        )}
-        <div className="mt-2 grid max-w-2xl gap-2 sm:grid-cols-2">
-          {citations.length > 0 && (
-            <div className="rounded-md border border-gray-200 bg-gray-50 p-2.5">
-              <button
-                onClick={runVerification}
-                disabled={verifying || checking || quoteVerifying}
-                className="w-full rounded bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-40"
-              >
-                {verifying ? "Verifying..." : "Verify sources are real"}
-              </button>
-              <p className="mt-1.5 text-[10px] leading-snug text-gray-500">
-                Searches the web for each reference to confirm it exists and the author, year, and title match. Catches invented references. Takes a few minutes.
-              </p>
-            </div>
-          )}
-          {quoteCount > 0 && (
-            <div className="rounded-md border border-gray-200 bg-gray-50 p-2.5">
-              <button
-                onClick={runQuoteVerification}
-                disabled={verifying || checking || quoteVerifying}
-                className="w-full rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
-              >
-                {quoteVerifying ? "Checking quotes..." : `Check quotes against sources (${quoteCount})`}
-              </button>
-              <p className="mt-1.5 text-[10px] leading-snug text-gray-500">
-                Finds each quotation&apos;s source and checks it appears there — and that your sentence fairly represents it. Run after verifying sources.
-              </p>
-            </div>
-          )}
-        </div>
-        {verifying && (
-          <div className="mt-1 space-y-1">
-            <div className="flex items-center gap-2 text-[10px] text-purple-600">
-              <div className="h-3 w-3 animate-spin rounded-full border-2 border-purple-200 border-t-purple-600" />
-              {verifyProgress
-                ? `Verifying sources… ${verifyProgress.done} of ${verifyProgress.total}`
-                : "Searching the web to verify each citation..."}
-            </div>
-            {verifyProgress && verifyProgress.total > 0 && (
-              <div className="h-1 w-48 overflow-hidden rounded-full bg-purple-100">
-                <div
-                  className="h-full rounded-full bg-purple-500 transition-all"
-                  style={{ width: `${Math.round((verifyProgress.done / verifyProgress.total) * 100)}%` }}
-                />
-              </div>
-            )}
-          </div>
-        )}
-        {quoteVerifying && (
-          <div className="mt-1 space-y-1">
-            <div className="flex items-center gap-2 text-[10px] text-indigo-600">
-              <div className="h-3 w-3 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
-              {quoteProgress
-                ? `Checking quotes against sources… ${quoteProgress.done} of ${quoteProgress.total}`
-                : "Fetching sources to check each quote..."}
-            </div>
-            {quoteProgress && quoteProgress.total > 0 && (
-              <div className="h-1 w-48 overflow-hidden rounded-full bg-indigo-100">
-                <div
-                  className="h-full rounded-full bg-indigo-500 transition-all"
-                  style={{ width: `${Math.round((quoteProgress.done / quoteProgress.total) * 100)}%` }}
-                />
-              </div>
-            )}
-          </div>
-        )}
+        <Checklist
+          totalSources={refEntries.length}
+          uncheckedSources={uncheckedSources}
+          totalQuotes={quoteCount}
+          uncheckedQuotes={uncheckedQuotes}
+          openFindings={openFindings}
+          verifying={verifying}
+          quoteVerifying={quoteVerifying}
+          busy={checking || verifying || quoteVerifying}
+          verifyProgress={verifyProgress}
+          quoteProgress={quoteProgress}
+          onVerifySources={runVerification}
+          onVerifyQuotes={runQuoteVerification}
+          onSaveVersion={onSaveVersion}
+        />
       </div>
 
       {/* Style Conversion — collapsible */}
@@ -568,6 +535,9 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                           <span className="font-semibold">Faithful rewrite:</span> {quoteCheck.suggestedRewrite}
                         </p>
                       )}
+                      {checkedOn(quoteCheck.verifiedAt) && (
+                        <p className="text-[8px] text-gray-400">Checked {checkedOn(quoteCheck.verifiedAt)}</p>
+                      )}
                       {quoteCheck.sourceUrl && (
                         <a
                           href={quoteCheck.sourceUrl}
@@ -720,6 +690,9 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                              "Uncertain"}
                           </span>
                           <span className="text-[8px] text-gray-400">{Math.round(c.verificationFlags.confidence * 100)}% confidence</span>
+                          {checkedOn(c.verificationFlags.verifiedAt) && (
+                            <span className="text-[8px] text-gray-400">&middot; Checked {checkedOn(c.verificationFlags.verifiedAt)}</span>
+                          )}
                         </div>
                         {/* Field-level diff: author / year / title / source checked independently */}
                         {c.verificationFlags.fields && (

@@ -26,6 +26,8 @@ export interface VerificationData {
   actualArgument?: string | null;
   suggestedRewrite?: string | null;
   matchedExcerpt?: string | null;
+  // ISO timestamp stamped by the server when this verdict was produced.
+  verifiedAt?: string;
 }
 
 /** Display config for quote-check verdicts. */

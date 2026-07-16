@@ -176,15 +176,20 @@ async function handleStructuralCheck(
     .from(citations)
     .where(eq(citations.documentId, documentId));
   const normText = (t: string) => t.replace(/\s+/g, " ").trim();
+  // Quote verdicts also judge whether the writer's sentence fairly represents
+  // the source, so a quote's key includes its context sentence — editing the
+  // claim around an unchanged quote invalidates the stale context verdict.
+  const keyFor = (entryType: string, text: string, context?: string | null) =>
+    `${entryType}::${normText(text)}${entryType === "quote" ? `::${normText(context ?? "")}` : ""}`;
   const previousByText = new Map<string, (typeof previousRows)[number]>();
   for (const row of previousRows) {
-    previousByText.set(`${row.entryType}::${normText(row.rawText)}`, row);
+    previousByText.set(keyFor(row.entryType, row.rawText, row.contextSentence), row);
     if (row.correctedText) {
-      previousByText.set(`${row.entryType}::${normText(row.correctedText)}`, row);
+      previousByText.set(keyFor(row.entryType, row.correctedText, row.contextSentence), row);
     }
   }
-  const previousFor = (entryType: string, text: string) =>
-    previousByText.get(`${entryType}::${normText(text)}`);
+  const previousFor = (entryType: string, text: string, context?: string | null) =>
+    previousByText.get(keyFor(entryType, text, context));
 
   // Clear previous citations, then insert reference entries first so inline
   // and quote rows can point at their entry's row id.
@@ -249,7 +254,7 @@ async function handleStructuralCheck(
               viaInText && viaInText.matchedEntryIndex !== null
                 ? insertedEntries[viaInText.matchedEntryIndex]?.id ?? null
                 : null;
-            const prev = previousFor("quote", q.text);
+            const prev = previousFor("quote", q.text, q.contextSentence);
             return {
               documentId,
               rawText: q.text,
@@ -629,7 +634,7 @@ async function handleVerifyBatch(
 
     console.log(`[citations/verify] "${citation.rawText.slice(0, 50)}..."`);
     try {
-      const result = await verifyEntry(citation.rawText, assessCfg);
+      const result = { ...(await verifyEntry(citation.rawText, assessCfg)), verifiedAt: new Date().toISOString() };
 
       await db.update(citations).set({ verificationFlags: result }).where(eq(citations.id, citation.id));
 
@@ -656,6 +661,7 @@ async function handleVerifyBatch(
           sourceUrl: null,
           fields: null,
           plausibilityNote: null,
+          verifiedAt: new Date().toISOString(),
         },
       }).where(eq(citations.id, citation.id));
     }
@@ -756,9 +762,12 @@ async function handleVerifyQuotes(
         sourceUrl = entryVerify?.sourceUrl ?? null;
       }
 
-      const result = sourceUrl
-        ? await verifyQuoteAgainstSource(quote.rawText, quote.contextSentence ?? "", sourceUrl, cfg)
-        : await findSourceForQuote(quote.rawText, quote.contextSentence ?? undefined);
+      const result = {
+        ...(sourceUrl
+          ? await verifyQuoteAgainstSource(quote.rawText, quote.contextSentence ?? "", sourceUrl, cfg)
+          : await findSourceForQuote(quote.rawText, quote.contextSentence ?? undefined)),
+        verifiedAt: new Date().toISOString(),
+      };
 
       await db.update(citations).set({ verificationFlags: result }).where(eq(citations.id, quote.id));
 
@@ -787,6 +796,7 @@ async function handleVerifyQuotes(
           suggestedRewrite: null,
           sourceUrl: null,
           matchedExcerpt: null,
+          verifiedAt: new Date().toISOString(),
         },
       }).where(eq(citations.id, quote.id));
     }
