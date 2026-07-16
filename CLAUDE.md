@@ -562,7 +562,8 @@ components/editor/
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=        # server-side only — never expose to client
-DATABASE_URL=
+DATABASE_URL=                     # TRANSACTION-mode pooler (:6543) — session mode (:5432) caps at 15 clients shared by prod + local dev and gets exhausted
+DIRECT_DATABASE_URL=              # session-mode pooler (:5432) — drizzle-kit migrations/seed scripts only
 
 # Stripe — live values in Vercel production, test values in local .env.local
 STRIPE_SECRET_KEY=                # sk_live_... (prod) / sk_test_... (dev)

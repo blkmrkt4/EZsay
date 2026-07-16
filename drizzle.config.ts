@@ -8,6 +8,8 @@ export default defineConfig({
   out: "./db/migrations",
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env.DATABASE_URL!,
+    // Migrations need a session-mode connection (direct pooler, port 5432);
+    // the app's DATABASE_URL is the transaction-mode pooler (port 6543).
+    url: process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL!,
   },
 });

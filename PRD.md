@@ -479,7 +479,8 @@ Validates text after replacements. Catches LLM response markers (CHANGED:, OPTIO
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=         # server-side only — never expose to client
-DATABASE_URL=                       # Postgres connection string
+DATABASE_URL=                       # TRANSACTION-mode pooler (port 6543) — app runtime
+DIRECT_DATABASE_URL=                # session-mode pooler (port 5432) — drizzle-kit migrations/seeds
 
 # Stripe (live keys in Vercel production, test keys for local dev)
 STRIPE_SECRET_KEY=                  # sk_live_... in prod, sk_test_... in dev
@@ -549,6 +550,7 @@ DEV_BYPASS_AUTH=false
 - **Site URL:** `https://ezsay.byzyb.ai`
 - **Redirect URLs:** `https://ezsay.byzyb.ai/**`, `https://ezsay.byzyb.ai/auth/callback`, `http://localhost:3000/auth/callback` (kept for local dev).
 - **Single project for dev + prod.** Same `DATABASE_URL` used in local `.env.local` and in Vercel production env. No separate prod migration step needed unless we later split.
+- **DB connections use the transaction-mode pooler (2026-07-16).** Production went down with `EMAXCONNSESSION: max clients reached in session mode — pool_size: 15` in the auth-guard profile query: the session-mode pooler (`:5432`) caps *total* clients at 15, shared between Vercel and any local dev/test server (each holds up to `max: 10`), so a local testing session can starve production. `DATABASE_URL` now points at the transaction-mode pooler (`:6543`, multiplexed, `prepare: false` set in `db/index.ts`); `DIRECT_DATABASE_URL` (`:5432`) exists for drizzle-kit migrations and seed scripts (`drizzle.config.ts` prefers it). **The same port change must be made to `DATABASE_URL` in the Vercel project env (then redeploy).**
 - **Anonymous Sign-Ins** must remain enabled (Authentication → Providers) — required for the free-scan funnel at `/scan`.
 
 ### Google OAuth
