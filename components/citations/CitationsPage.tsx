@@ -310,6 +310,29 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
       (c) => c.status === "open" && !(c.verificationFlags?.verdict === "quote_verified" && (c.structuralFlags?.length ?? 0) === 0),
     ).length;
 
+  // Verification outcome tallies for the checklist — a completed step shows
+  // what it found, not just that it ran.
+  const sourceResults = {
+    verified: refEntries.filter((c) => c.verificationFlags?.verdict === "verified").length,
+    wrongDetails: refEntries.filter((c) => c.verificationFlags?.verdict === "wrong_details").length,
+    fabricated: refEntries.filter((c) => isNotFoundVerdict(c.verificationFlags?.verdict)).length,
+    uncertain: refEntries.filter((c) => c.verificationFlags?.verdict === "uncertain").length,
+  };
+  const quoteResults = {
+    verified: quotes.filter((c) => c.verificationFlags?.verdict === "quote_verified").length,
+    nearMatch: quotes.filter((c) => c.verificationFlags?.verdict === "quote_near_match").length,
+    notFound: quotes.filter((c) => c.verificationFlags?.verdict === "quote_not_found").length,
+    misrepresented: quotes.filter((c) => c.verificationFlags?.verdict === "quote_misrepresented").length,
+    sourceFound: quotes.filter((c) => c.verificationFlags?.verdict === "quote_source_found").length,
+    uncertain: quotes.filter((c) => c.verificationFlags?.verdict === "uncertain").length,
+  };
+
+  function jumpToFindings() {
+    const target =
+      document.getElementById("doc-findings") ?? document.getElementById("reference-entries");
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   // Audit ordering: most severe first (fabricated → needs correction →
   // uncertain → unchecked → verified). The corrected list keeps the
   // document's original reference order.
@@ -358,6 +381,9 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
           totalQuotes={quoteCount}
           uncheckedQuotes={uncheckedQuotes}
           openFindings={openFindings}
+          sourceResults={sourceResults}
+          quoteResults={quoteResults}
+          onJumpToFindings={jumpToFindings}
           verifying={verifying}
           quoteVerifying={quoteVerifying}
           busy={checking || verifying || quoteVerifying}
@@ -463,7 +489,7 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
           These come from cross-referencing the whole document (citation graph),
           not from checking individual reference entries. */}
       {docFindings.length > 0 && (
-        <div className="space-y-2">
+        <div id="doc-findings" className="space-y-2 scroll-mt-4">
           <h3 className="text-sm font-semibold text-gray-700">Document-Wide Findings</h3>
           <p className="text-[10px] text-gray-400">
             Issues found by cross-referencing the body text against the reference list.
@@ -576,7 +602,7 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
 
       {/* Citation List — audit order, most severe first */}
       {refEntries.length > 0 && (
-        <div className="space-y-2">
+        <div id="reference-entries" className="space-y-2 scroll-mt-4">
           <h3 className="text-sm font-semibold text-gray-700">Reference Entries</h3>
           {auditOrdered.map((c, i) => {
             const flags = c.structuralFlags ?? [];
