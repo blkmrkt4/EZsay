@@ -20,6 +20,9 @@ export interface GraphFlag {
   message: string;
   severity: "error" | "warning";
   suggestedFix: string | null;
+  /** For never_cited: the body sentence that mentions this source's author
+      without citing it — the "used but unattributed" case. */
+  mentionContext?: string | null;
 }
 
 export interface ParsedRefEntry {
@@ -168,6 +171,37 @@ export function insertReferenceEntry(sectionText: string, entry: string): string
     return head + "\n" + entry + rest;
   }
   return head + lines.join("\n");
+}
+
+/**
+ * Removes an entry from a section's reference list, including any hard-wrapped
+ * continuation lines that follow it (PDF extraction). Returns null when the
+ * entry text can't be found in the section.
+ */
+export function removeReferenceEntry(sectionText: string, entry: string): string | null {
+  const idx = sectionText.indexOf(entry);
+  if (idx < 0) return null;
+
+  const lineStart = sectionText.lastIndexOf("\n", idx - 1) + 1;
+  const entryEnd = idx + entry.length;
+  const nextNl = sectionText.indexOf("\n", entryEnd);
+  const ownLineStart = sectionText.slice(lineStart, idx).trim() === "";
+  const ownLineEnd = nextNl === -1 || sectionText.slice(entryEnd, nextNl).trim() === "";
+
+  if (ownLineStart && ownLineEnd) {
+    let cut = nextNl === -1 ? sectionText.length : nextNl + 1;
+    // Wrapped continuation lines: non-empty and not entry-shaped.
+    while (cut < sectionText.length) {
+      const lineEnd = sectionText.indexOf("\n", cut);
+      const line = sectionText.slice(cut, lineEnd === -1 ? sectionText.length : lineEnd).trim();
+      if (line.length === 0 || looksLikeReferenceEntry(line)) break;
+      cut = lineEnd === -1 ? sectionText.length : lineEnd + 1;
+    }
+    return (sectionText.slice(0, lineStart) + sectionText.slice(cut)).replace(/\n{3,}/g, "\n\n");
+  }
+
+  // Run-together text — remove just the substring.
+  return (sectionText.slice(0, idx) + sectionText.slice(entryEnd)).replace(/\n{3,}/g, "\n\n");
 }
 
 // ── Entry parsing ────────────────────────────────────────────────────────────
@@ -466,14 +500,31 @@ export function buildCitationGraph(rawText: string): CitationGraph {
     }
   }
 
-  // Entries never cited in the body.
+  // Entries never cited in the body. Two distinct situations, told apart by
+  // searching the body for the author's name: (a) the source IS discussed but
+  // never attributed — the fix is adding an in-text citation where it's used;
+  // (b) nothing in the body relates to it — the fix is removing the unused
+  // entry (or citing it if the writer actually drew on it).
   for (const entry of entries) {
     if (entry.citedCount === 0 && entries.length > 0 && inline.length > 0) {
+      const name = entry.firstAuthor;
+      let mention: string | null = null;
+      if (name && name.length >= 3) {
+        const m = body.match(new RegExp(`(?<![A-Za-z])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z])`));
+        if (m && m.index !== undefined) {
+          const { start, end } = sentenceBounds(body, m.index);
+          mention = body.slice(start, end).trim();
+        }
+      }
+      const suggested = name ? `(${name}${entry.year ? `, ${entry.year}` : ""})` : "(Author, Year)";
       entry.flags.push({
         type: "never_cited",
-        message: "This reference entry is never cited in the body text.",
+        message: mention
+          ? `This reference entry is never cited — but "${name}" IS mentioned in the body without a citation. If that passage draws on this source, add ${suggested} there; the entry then stops being unused.`
+          : `This reference entry is never cited in the body text${name ? `, and "${name}" isn't mentioned anywhere in it either` : ""}. Add an in-text citation where you used this source, or remove the unused entry from the list.`,
         severity: "warning",
         suggestedFix: null,
+        mentionContext: mention,
       });
     }
   }

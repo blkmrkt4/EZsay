@@ -53,7 +53,7 @@ export interface Citation {
   entryType: "reference_entry" | "inline" | "quote";
   linkedCitationId: string | null;
   contextSentence: string | null;
-  structuralFlags: { type: string; message: string; severity: "error" | "warning"; suggestedFix?: string | null }[] | null;
+  structuralFlags: { type: string; message: string; severity: "error" | "warning"; suggestedFix?: string | null; mentionContext?: string | null }[] | null;
   verificationFlags: VerificationData | null;
   status: string;
   userAction: string | null;

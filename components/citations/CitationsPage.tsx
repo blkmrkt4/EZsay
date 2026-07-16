@@ -295,6 +295,25 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
     setAddingReferenceId(null);
   }
 
+  /** Delete a never-cited entry from the document's reference list. */
+  async function handleRemoveReference(c: Citation) {
+    const confirmed = window.confirm(
+      "Remove this entry from your reference list? The entry text will be deleted from the document."
+    );
+    if (!confirmed) return;
+    const res = await fetch("/api/citations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "remove_reference", citationId: c.id }),
+    });
+    const json = await res.json();
+    if (json.success) {
+      if (json.score != null && onScoreUpdate) onScoreUpdate(json.score);
+      onDocumentChanged?.();
+      await runStructuralCheck();
+    }
+  }
+
   async function handleConvertAll() {
     if (!targetStyle) return;
     const confirmed = window.confirm(`Convert all citations to ${STYLES.find((s) => s.value === targetStyle)?.label}? This will modify the document text.`);
@@ -614,7 +633,7 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                   <div className="space-y-0.5">
                     {flags.map((f, fi) => (
                       <p key={fi} className={`text-[11px] font-medium ${f.severity === "error" ? "text-red-600" : "text-amber-600"}`}>
-                        {f.severity === "error" ? "Error" : "Warning"}: {f.message}
+                        {f.severity === "error" ? "Issue" : "Warning"}: {f.message}
                       </p>
                     ))}
                   </div>
@@ -790,6 +809,7 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
             const flags = c.structuralFlags ?? [];
             const isEditing = editingId === c.id;
             const isInline = c.entryType ? false : c.rawText.length <= 40;
+            const neverCited = flags.find((f) => f.type === "never_cited");
 
             const isSelected = selectedId === c.id;
             const context = isSelected ? findContext(c.rawText) : null;
@@ -860,7 +880,7 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                     <div className="mt-1 space-y-0.5">
                       {flags.map((f, fi) => (
                         <p key={fi} className={`text-[10px] ${f.severity === "error" ? "text-red-600" : "text-amber-600"}`}>
-                          {f.severity === "error" ? "Error" : "Warning"}: {f.message}
+                          {f.severity === "error" ? "Issue" : "Warning"}: {f.message}
                         </p>
                       ))}
                     </div>
@@ -884,6 +904,21 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                       </div>
                     ) : (
                       <p className="text-[10px] text-gray-400 italic">Could not locate this citation in the current document text.</p>
+                    )}
+
+                    {/* Never-cited entry whose author IS mentioned in the body —
+                        likely used but unattributed. Point at the passage. */}
+                    {c.status === "open" && neverCited?.mentionContext && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5">
+                        <p className="text-[9px] font-semibold text-amber-700 uppercase tracking-wider mb-1">Possible uncited use</p>
+                        <p className="text-[10px] italic leading-relaxed text-gray-600">…{neverCited.mentionContext}…</p>
+                        <button
+                          onClick={() => onScrollToText?.(neverCited.mentionContext!)}
+                          className="mt-1.5 rounded bg-amber-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-amber-700"
+                        >
+                          Show in document
+                        </button>
+                      </div>
                     )}
 
                     {/* Verification results */}
@@ -985,6 +1020,15 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                         )}
                         <button onClick={() => { setEditingId(c.id); setEditText(proposedFixOf(c) ?? c.rawText); }} className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-600 hover:bg-white">Edit</button>
                         <button onClick={() => handleResolve(c.id, "verified")} className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-600 hover:bg-white" title="Mark as verified without changing the text">Verify</button>
+                        {neverCited && (
+                          <button
+                            onClick={() => handleRemoveReference(c)}
+                            className="rounded border border-red-300 px-2 py-0.5 text-[10px] font-medium text-red-600 hover:bg-red-50"
+                            title="Delete this unused entry from your reference list"
+                          >
+                            Remove from List
+                          </button>
+                        )}
                         <button onClick={() => handleResolve(c.id, "dismissed")} className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-500 hover:bg-white">Dismiss</button>
                       </div>
                     )}

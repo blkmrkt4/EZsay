@@ -5,7 +5,7 @@ import { citations, documents, sections, llmCallLog, libraryEntries } from "@/db
 import { eq, and, asc, sql } from "drizzle-orm";
 import { callOpenRouter, loadBind } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
-import { buildCitationGraph, insertReferenceEntry, type GraphFlag } from "@/lib/citations/graph";
+import { buildCitationGraph, insertReferenceEntry, removeReferenceEntry, type GraphFlag } from "@/lib/citations/graph";
 import { findSourceForInlineCitation } from "@/lib/citations/find-source";
 import {
   loadCitationArtifacts,
@@ -97,6 +97,10 @@ export async function POST(request: NextRequest) {
 
     if (action === "add_reference") {
       return handleAddReference(body, user.id);
+    }
+
+    if (action === "remove_reference") {
+      return handleRemoveReference(body, user.id);
     }
 
     if (action === "convert_all") {
@@ -832,6 +836,50 @@ async function handleAddReference(
   const score = await computeAndUpdateScore(citation.documentId);
 
   return NextResponse.json({ success: true, data: { entry }, score });
+}
+
+/**
+ * Deletes a never-cited reference entry from the document's reference list.
+ * The inverse of add_reference: removes the entry text (plus hard-wrapped
+ * continuation lines) from the section holding it and resolves the row.
+ */
+async function handleRemoveReference(body: { citationId: string }, userId: string) {
+  const citation = await loadOwnedCitation(body.citationId, userId);
+  if (!citation) {
+    return NextResponse.json({ success: false, error: "Citation not found" }, { status: 404 });
+  }
+  if (citation.entryType !== "reference_entry") {
+    return NextResponse.json({ success: false, error: "Only reference entries can be removed" }, { status: 400 });
+  }
+
+  const docSections = await db
+    .select()
+    .from(sections)
+    .where(eq(sections.documentId, citation.documentId));
+  const target = docSections.find((s) => s.currentText.includes(citation.rawText));
+  if (!target) {
+    return NextResponse.json(
+      { success: false, error: "Could not locate this entry in the current document text." },
+      { status: 400 }
+    );
+  }
+
+  const newText = removeReferenceEntry(target.currentText, citation.rawText);
+  if (newText == null) {
+    return NextResponse.json(
+      { success: false, error: "Could not locate this entry in the current document text." },
+      { status: 400 }
+    );
+  }
+
+  await db.update(sections).set({ currentText: newText }).where(eq(sections.id, target.id));
+  await db
+    .update(citations)
+    .set({ status: "resolved", userAction: "edited", correctedText: null })
+    .where(eq(citations.id, citation.id));
+
+  const score = await computeAndUpdateScore(citation.documentId);
+  return NextResponse.json({ success: true, score });
 }
 
 // ── Quote verification ──────────────────────────────────────────────────────
