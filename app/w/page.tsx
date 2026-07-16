@@ -379,6 +379,23 @@ export default function WorkspacePage() {
   const [plagiarismConfirmation, setPlagiarismConfirmation] = useState<{ resultId: string; citation: string } | null>(null);
   const [plagiarismError, setPlagiarismError] = useState<string | null>(null);
   const [plagiarismResolving, setPlagiarismResolving] = useState(false);
+
+  // Footer actions: Save Version needs visible feedback (it's a silent DB
+  // snapshot), and the download menu is click-toggled — hover-only menus die
+  // in the pointer gap between button and menu.
+  const [saveVersionState, setSaveVersionState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
+  const downloadMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!downloadMenuOpen) return;
+    function onDocClick(e: MouseEvent) {
+      if (downloadMenuRef.current && !downloadMenuRef.current.contains(e.target as Node)) {
+        setDownloadMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [downloadMenuOpen]);
   const [showPlagiarismExplanation, setShowPlagiarismExplanation] = useState(false);
 
   // Writing-quality advisory "Edit" mode — per-example-sentence drafts,
@@ -1430,19 +1447,26 @@ export default function WorkspacePage() {
   // ── Save version ────────────────────────────────────────────────────────
 
   async function handleSaveVersion() {
-    if (!activeDocId) return;
+    if (!activeDocId || saveVersionState === "saving") return;
 
     // No confirm dialog — the EditSessionSummary already shows remaining items inline
-    await fetch(`/api/documents/${activeDocId}/versions`, { method: "POST" });
-    setVersionSavedSinceScan(true);
-    // Reload versions for the analysis chart
+    setSaveVersionState("saving");
     try {
+      const res = await fetch(`/api/documents/${activeDocId}/versions`, { method: "POST" });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || json?.success === false) throw new Error(json?.error ?? "Save failed");
+      setVersionSavedSinceScan(true);
+      setSaveVersionState("saved");
+      // Reload versions for the analysis chart
       const vRes = await fetch(`/api/documents/${activeDocId}/versions`);
       if (vRes.ok) {
         const vJson = await vRes.json();
         if (vJson.success) setDocVersions(vJson.data);
       }
-    } catch {}
+    } catch {
+      setSaveVersionState("error");
+    }
+    setTimeout(() => setSaveVersionState("idle"), 2500);
   }
 
   // ── Generate options ───────────────────────────────────────────────────
@@ -2591,6 +2615,7 @@ export default function WorkspacePage() {
                     if (idx !== -1) { setSelectedFlagIdx(idx); setSelectedOptionIdx(null); }
                   }}
                   onSaveVersion={handleSaveVersion}
+                  saveState={saveVersionState}
                   citationsPending={citationsNeedingReview}
                   onGoToCitations={() => { setNav("workspace"); setWorkspaceMode("citations"); }}
                 />
@@ -3266,6 +3291,7 @@ export default function WorkspacePage() {
                   documentId={activeDoc.id}
                   sections={sections}
                   onSaveVersion={handleSaveVersion}
+                  saveVersionState={saveVersionState}
                   onScoreUpdate={(score) => setActiveDoc((prev) => prev ? { ...prev, citationsScore: score } : prev)}
                   onScrollToText={(text) => {
                     setHighlightedCitationText(text || null);
@@ -3901,9 +3927,12 @@ export default function WorkspacePage() {
               >
                 Reset to Original
               </button>
-              {/* Primary download — user's end goal. Solid brand-blue "success" styling. */}
-              <div className="relative group">
+              {/* Primary download — user's end goal. Solid brand-blue "success" styling.
+                  Click-toggled (not hover): a hover menu vanishes in the pointer
+                  gap between the button and the menu, making it unclickable. */}
+              <div className="relative" ref={downloadMenuRef}>
                 <button
+                  onClick={() => setDownloadMenuOpen((prev) => !prev)}
                   className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
                 >
                   {/* Lucide Download icon */}
@@ -3913,46 +3942,58 @@ export default function WorkspacePage() {
                     <line x1="12" y1="15" x2="12" y2="3" />
                   </svg>
                   Download Edited File
-                  <svg className="h-3 w-3 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                  <svg className={`h-3 w-3 opacity-75 transition-transform ${downloadMenuOpen ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
                     <path d="m6 9 6 6 6-6" />
                   </svg>
                 </button>
-                <div className="absolute bottom-full right-0 mb-1 hidden group-hover:block z-50">
-                  <div className="rounded-md border border-gray-200 bg-white shadow-lg py-1 min-w-[140px]">
-                    <button
-                      onClick={() => {
-                        const text = sections.filter((s) => !s.isLocked).map((s) => s.currentText).join("\n\n");
-                        const refSection = sections.find((s) => s.isLocked);
-                        const fullText = refSection ? text + "\n\n" + refSection.currentText : text;
-                        const blob = new Blob([fullText], { type: "text/plain" });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = `${activeDoc?.title ?? "document"}.txt`;
-                        a.click();
-                        URL.revokeObjectURL(url);
-                      }}
-                      className="w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-100"
-                    >
-                      Save as .txt
-                    </button>
-                    <button
-                      onClick={() => {
-                        window.open(`/api/documents/export?documentId=${activeDocId}&format=docx`, "_blank");
-                      }}
-                      className="w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-100"
-                    >
-                      Save as .docx
-                    </button>
+                {downloadMenuOpen && (
+                  <div className="absolute bottom-full right-0 mb-1 z-50">
+                    <div className="rounded-md border border-gray-200 bg-white shadow-lg py-1 min-w-[140px]">
+                      <button
+                        onClick={() => {
+                          setDownloadMenuOpen(false);
+                          const text = sections.filter((s) => !s.isLocked).map((s) => s.currentText).join("\n\n");
+                          const refSection = sections.find((s) => s.isLocked);
+                          const fullText = refSection ? text + "\n\n" + refSection.currentText : text;
+                          const blob = new Blob([fullText], { type: "text/plain" });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          a.download = `${activeDoc?.title ?? "document"}.txt`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-100"
+                      >
+                        Save as .txt
+                      </button>
+                      <button
+                        onClick={() => {
+                          setDownloadMenuOpen(false);
+                          window.open(`/api/documents/export?documentId=${activeDocId}&format=docx`, "_blank");
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-100"
+                      >
+                        Save as .docx
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
               {/* Secondary: snapshot to our database */}
               <button
                 onClick={handleSaveVersion}
-                className="rounded-md border border-gray-300 px-3 py-1.5 text-[11px] font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                disabled={saveVersionState === "saving"}
+                className={`rounded-md border px-3 py-1.5 text-[11px] font-medium transition-colors ${
+                  saveVersionState === "saved" ? "border-green-300 bg-green-50 text-green-700" :
+                  saveVersionState === "error" ? "border-red-300 bg-red-50 text-red-600" :
+                  "border-gray-300 text-gray-700 hover:bg-gray-50"
+                } disabled:opacity-60`}
               >
-                Save Version
+                {saveVersionState === "saving" ? "Saving…" :
+                 saveVersionState === "saved" ? "✓ Version saved" :
+                 saveVersionState === "error" ? "Save failed — try again" :
+                 "Save Version"}
               </button>
             </>
           )}
@@ -4416,7 +4457,7 @@ function EmptyPanel({ title, description, extra }: { title: string; description:
 
 // ── Edit session summary (shown when all flags are resolved) ─────────────
 
-function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifactsRemaining, artifactsProcessed, onReviewArtifacts, onSaveVersion, citationsPending, onGoToCitations }: {
+function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifactsRemaining, artifactsProcessed, onReviewArtifacts, onSaveVersion, saveState = "idle", citationsPending, onGoToCitations }: {
   flags: { id: string; patternType: string; status: string }[];
   spellingRemaining: number;
   grammarRemaining: number;
@@ -4424,6 +4465,7 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifa
   artifactsProcessed: boolean;
   onReviewArtifacts: () => void;
   onSaveVersion: () => void;
+  saveState?: "idle" | "saving" | "saved" | "error";
   citationsPending: number;
   onGoToCitations: () => void;
 }) {
@@ -4591,13 +4633,19 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifa
           )}
           <button
             onClick={onSaveVersion}
-            className={`w-full rounded-lg py-2 text-sm font-medium ${
+            disabled={saveState === "saving"}
+            className={`w-full rounded-lg py-2 text-sm font-medium disabled:opacity-60 ${
+              saveState === "saved" ? "border border-green-300 bg-green-50 text-green-700" :
+              saveState === "error" ? "border border-red-300 bg-red-50 text-red-600" :
               hasRemainingEdits || hasPendingCitations
                 ? "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
                 : "bg-blue-600 text-white hover:bg-blue-700"
             }`}
           >
-            Save Version
+            {saveState === "saving" ? "Saving…" :
+             saveState === "saved" ? "✓ Version saved" :
+             saveState === "error" ? "Save failed — try again" :
+             "Save Version"}
           </button>
         </div>
       </div>

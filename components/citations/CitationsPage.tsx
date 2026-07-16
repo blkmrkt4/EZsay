@@ -112,11 +112,13 @@ interface CitationsPageProps {
   onScoreUpdate?: (score: number) => void;
   onScrollToText?: (text: string) => void;
   onSaveVersion?: () => void;
+  /** Save-version progress from the workspace, forwarded to the checklist button. */
+  saveVersionState?: "idle" | "saving" | "saved" | "error";
   /** Called after an action changes the document text (e.g. a reference entry was added). */
   onDocumentChanged?: () => void;
 }
 
-export default function CitationsPage({ documentId, sections, onScoreUpdate, onScrollToText, onSaveVersion, onDocumentChanged }: CitationsPageProps) {
+export default function CitationsPage({ documentId, sections, onScoreUpdate, onScrollToText, onSaveVersion, saveVersionState, onDocumentChanged }: CitationsPageProps) {
   const [citations, setCitations] = useState<Citation[]>([]);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
@@ -455,6 +457,7 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
           onVerifySources={runVerification}
           onVerifyQuotes={runQuoteVerification}
           onSaveVersion={onSaveVersion}
+          saveState={saveVersionState}
         />
       </div>
 

@@ -51,6 +51,8 @@ interface ChecklistProps {
   onVerifyQuotes: (full: boolean) => void;
   onJumpToFindings?: () => void;
   onSaveVersion?: () => void;
+  /** Save-version progress from the workspace, so the button shows feedback. */
+  saveState?: "idle" | "saving" | "saved" | "error";
 }
 
 const CHIP_TONES = {
@@ -108,6 +110,7 @@ export default function Checklist({
   onVerifyQuotes,
   onJumpToFindings,
   onSaveVersion,
+  saveState = "idle",
 }: ChecklistProps) {
   if (totalSources === 0 && totalQuotes === 0) return null;
 
@@ -140,9 +143,13 @@ export default function Checklist({
           {onSaveVersion && (
             <button
               onClick={onSaveVersion}
-              className="rounded bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+              disabled={saveState === "saving"}
+              className="rounded bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-60"
             >
-              Save a version
+              {saveState === "saving" ? "Saving…" :
+               saveState === "saved" ? "✓ Version saved" :
+               saveState === "error" ? "Save failed — try again" :
+               "Save a version"}
             </button>
           )}
           <span className="text-[10px] text-green-700">Then Re-scan for your final score, or download the edited file.</span>

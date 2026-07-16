@@ -90,6 +90,8 @@ Single-page desktop application at `/w`. No page navigation — everything acces
 
 **Panel collapsing:** Doc, Edit, and Choices collapse to 28px vertical strips with chevron + vertical label + keyboard shortcut badge (D, E, C).
 
+**Footer actions feedback (2026-07-16).** Two footer defects fixed: (1) the "Download Edited File" format menu was hover-only with a margin gap between button and menu, so moving the pointer toward the menu closed it before it could be clicked — it is now click-toggled (chevron rotates, closes on outside click and after choosing a format); (2) "Save Version" gave no feedback at all — it now runs Saving… → "✓ Version saved" (green) or "Save failed — try again" (red), reverting after 2.5s. The same `saveVersionState` drives the Save Version buttons in the EditSessionSummary card and the citations checklist's "Citations complete" banner, since all three call the same workspace handler.
+
 **Keyboard shortcuts:** D = toggle Doc, E = toggle Edit, C = toggle Choices, 1-9 = select option, Enter = confirm, S = skip, R = reject, left/right arrows = navigate items.
 
 ### 5.2 Nav rail items
