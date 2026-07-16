@@ -13,7 +13,10 @@ export interface VerificationData {
   verdict:
     | "verified" | "wrong_details" | "fabricated" | "unverified" | "uncertain"
     | "quote_verified" | "quote_near_match" | "quote_not_found"
-    | "quote_misrepresented" | "quote_source_found";
+    | "quote_misrepresented" | "quote_source_found"
+    // Inline-citation source discovery ("no reference entry" findings):
+    // correctCitation holds the drafted reference-list entry when found.
+    | "source_found" | "source_not_found";
   confidence: number;
   explanation: string;
   correctCitation?: string | null;

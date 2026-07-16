@@ -127,6 +127,49 @@ export function splitReferenceEntries(text: string): string[] {
   return text.trim().length > 10 && looksLikeReferenceEntry(text) ? [text.trim()] : [];
 }
 
+/**
+ * Inserts a new entry into a section's reference list, alphabetically when
+ * the entries are line-separated, appended after the last entry otherwise.
+ * The section text must contain the reference-section header; callers that
+ * can't find one should append their own "References" block instead.
+ */
+export function insertReferenceEntry(sectionText: string, entry: string): string {
+  const m = sectionText.match(REF_HEADER_RE);
+  if (!m || m.index === undefined) {
+    return sectionText.trimEnd() + "\n\n" + entry;
+  }
+  const headEnd = m.index + m[0].length;
+  const head = sectionText.slice(0, headEnd);
+  const rest = sectionText.slice(headEnd);
+  const lines = rest.split("\n");
+
+  let lastEntryLine = -1;
+  let insertBefore = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!looksLikeReferenceEntry(line)) continue;
+    lastEntryLine = i;
+    if (insertBefore === -1 && line.toLowerCase().localeCompare(entry.toLowerCase()) > 0) {
+      insertBefore = i;
+    }
+  }
+
+  if (insertBefore !== -1) {
+    lines.splice(insertBefore, 0, entry);
+  } else if (lastEntryLine !== -1) {
+    // Hard-wrapped entries (PDF extraction) continue on lines that don't look
+    // like entry starts — insert after the last entry's continuation lines,
+    // not between its wrapped halves.
+    let at = lastEntryLine + 1;
+    while (at < lines.length && lines[at].trim().length > 0 && !looksLikeReferenceEntry(lines[at].trim())) at++;
+    lines.splice(at, 0, entry);
+  } else {
+    // Run-together reference text (PDF extraction) — place right after the header.
+    return head + "\n" + entry + rest;
+  }
+  return head + lines.join("\n");
+}
+
 // ── Entry parsing ────────────────────────────────────────────────────────────
 
 const PERSON_AUTHOR_RE = /([A-Z][A-Za-zÀ-ÿ'’-]+(?:-[A-Z][A-Za-zÀ-ÿ'’]+)?),\s*(?:[A-Z]\.?\s*)+/g;

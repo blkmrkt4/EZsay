@@ -3277,6 +3277,7 @@ export default function WorkspacePage() {
                       }, 150);
                     }
                   }}
+                  onDocumentChanged={() => { if (activeDocId) loadDocument(activeDocId); }}
                 />
                 </>
               )}

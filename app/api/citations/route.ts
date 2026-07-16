@@ -5,7 +5,8 @@ import { citations, documents, sections, llmCallLog, libraryEntries } from "@/db
 import { eq, and, asc, sql } from "drizzle-orm";
 import { callOpenRouter, loadBind } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
-import { buildCitationGraph, type GraphFlag } from "@/lib/citations/graph";
+import { buildCitationGraph, insertReferenceEntry, type GraphFlag } from "@/lib/citations/graph";
+import { findSourceForInlineCitation } from "@/lib/citations/find-source";
 import {
   loadCitationArtifacts,
   checkCitationArtifacts,
@@ -88,6 +89,14 @@ export async function POST(request: NextRequest) {
 
     if (action === "verify_quotes") {
       return handleVerifyQuotes(body, user.id);
+    }
+
+    if (action === "find_source") {
+      return handleFindSource(body, user.id);
+    }
+
+    if (action === "add_reference") {
+      return handleAddReference(body, user.id);
     }
 
     if (action === "convert_all") {
@@ -677,6 +686,152 @@ async function handleVerifyBatch(
     success: true,
     data: { processed, remaining, total, score },
   });
+}
+
+// ── Inline-citation source discovery ────────────────────────────────────────
+// For "no matching reference entry" findings: search the web for the cited
+// author + year + attributed idea, and draft the reference-list entry when a
+// real publication matches. Prompt/model live in the `citation-find-source`
+// activity bind; this is the last-resort fallback.
+
+const FIND_SOURCE_FALLBACK: CitationLLMFallback = {
+  system: `You determine whether an in-text citation refers to a real publication, using web search results — and when it does, you write its full reference-list entry.
+
+You receive: the in-text citation (author and year as cited), the writer's sentence around it (the idea attributed to the source), the document's citation style, and web search results.
+
+Rules:
+- FOUND is "yes" only when a publication plausibly matches BOTH the cited author AND the idea attributed in the writer's sentence.
+- If the publication clearly exists but under a different year than cited, still answer "yes" — format the entry with the REAL year and note the discrepancy in the explanation.
+- REFERENCE_ENTRY must be complete and formatted in the document's citation style: authors, year, title, journal/publisher/outlet, and DOI or URL when available.
+- Never invent details the search results don't support — omit an uncertain field rather than guessing.
+
+Respond in EXACTLY this format (one line each):
+FOUND: [yes/no/uncertain]
+CONFIDENCE: [0.0 to 1.0]
+REFERENCE_ENTRY: [the full reference-list entry in the document's style, or "n/a"]
+SOURCE_URL: [URL of the best matching source, or "none"]
+EXPLANATION: [2-3 sentences: what was found and how it matches the citation and the writer's claim]`,
+  user: 'IN-TEXT CITATION:\n[CITATION]\n\nWRITER\'S SENTENCE:\n[CLAIM]\n\nDOCUMENT CITATION STYLE: [STYLE]\n\nWEB SEARCH RESULTS:\n[SEARCH_RESULTS]',
+  model: "anthropic/claude-sonnet-4",
+  fallbacks: ["google/gemini-2.5-pro", "openai/gpt-4o"],
+  temperature: 0.2,
+  maxTokens: 1024,
+};
+
+/** Loads a citation row and confirms the requesting user owns its document. */
+async function loadOwnedCitation(citationId: string, userId: string) {
+  const [citation] = await db.select().from(citations).where(eq(citations.id, citationId)).limit(1);
+  if (!citation) return null;
+  const [doc] = await db
+    .select({ id: documents.id })
+    .from(documents)
+    .where(and(eq(documents.id, citation.documentId), eq(documents.userId, userId)))
+    .limit(1);
+  return doc ? citation : null;
+}
+
+/**
+ * Searches the web for the source behind a flagged in-text citation and
+ * stores the outcome (found + drafted entry / not found / uncertain) on the
+ * citation row, where re-checks preserve it.
+ */
+async function handleFindSource(body: { citationId: string }, userId: string) {
+  const citation = await loadOwnedCitation(body.citationId, userId);
+  if (!citation) {
+    return NextResponse.json({ success: false, error: "Citation not found" }, { status: 404 });
+  }
+  if (citation.entryType !== "inline") {
+    return NextResponse.json({ success: false, error: "Only in-text citations can be searched" }, { status: 400 });
+  }
+
+  const cfg = await loadCitationConfig("citation-find-source", FIND_SOURCE_FALLBACK);
+  const result = {
+    ...(await findSourceForInlineCitation(
+      citation.rawText,
+      citation.contextSentence ?? "",
+      citation.style,
+      cfg,
+    )),
+    verifiedAt: new Date().toISOString(),
+  };
+
+  await db.update(citations).set({ verificationFlags: result }).where(eq(citations.id, citation.id));
+
+  if (result.modelUsed) {
+    await db.insert(llmCallLog).values({
+      activityType: "citation_find_source",
+      modelUsed: result.modelUsed,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      latencyMs: result.latencyMs,
+      outcome: "pending",
+    });
+  }
+
+  return NextResponse.json({ success: true, data: result });
+}
+
+/**
+ * Adds a drafted reference entry to the document's reference list and
+ * resolves the finding. Distinct from `resolve` on purpose: resolve's
+ * correctedText path REPLACES the citation's rawText in the body — here the
+ * in-text citation stays and a new entry is INSERTED into the reference list.
+ */
+async function handleAddReference(
+  body: { citationId: string; entryText: string },
+  userId: string
+) {
+  const entry = (body.entryText ?? "").trim().replace(/\s+/g, " ");
+  if (!entry || entry.length > 1000) {
+    return NextResponse.json({ success: false, error: "Invalid reference entry" }, { status: 400 });
+  }
+
+  const citation = await loadOwnedCitation(body.citationId, userId);
+  if (!citation) {
+    return NextResponse.json({ success: false, error: "Citation not found" }, { status: 404 });
+  }
+
+  const docSections = await db
+    .select()
+    .from(sections)
+    .where(eq(sections.documentId, citation.documentId))
+    .orderBy(asc(sections.index));
+  if (docSections.length === 0) {
+    return NextResponse.json({ success: false, error: "Document has no sections" }, { status: 400 });
+  }
+
+  // Target: the section holding the reference list — the one whose text
+  // contains the References header, else the last locked section (locked runs
+  // are the reference list), else start a References block in the last section.
+  const hasRefHeader = (t: string) =>
+    /(?:^|\n)[^\S\n]*(?:References|Bibliography|Works Cited|Reference List)/i.test(t);
+  const target =
+    docSections.find((s) => hasRefHeader(s.currentText)) ??
+    [...docSections].reverse().find((s) => s.isLocked);
+
+  let sectionId: string;
+  let newText: string;
+  if (target) {
+    sectionId = target.id;
+    newText = hasRefHeader(target.currentText)
+      ? insertReferenceEntry(target.currentText, entry)
+      : target.currentText.trimEnd() + "\n" + entry;
+  } else {
+    const last = docSections[docSections.length - 1];
+    sectionId = last.id;
+    newText = last.currentText.trimEnd() + "\n\nReferences\n\n" + entry;
+  }
+
+  await db.update(sections).set({ currentText: newText }).where(eq(sections.id, sectionId));
+
+  await db
+    .update(citations)
+    .set({ status: "resolved", userAction: "accepted", correctedText: entry })
+    .where(eq(citations.id, citation.id));
+
+  const score = await computeAndUpdateScore(citation.documentId);
+
+  return NextResponse.json({ success: true, data: { entry }, score });
 }
 
 // ── Quote verification ──────────────────────────────────────────────────────

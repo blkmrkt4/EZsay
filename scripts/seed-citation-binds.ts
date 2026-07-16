@@ -87,6 +87,23 @@ ACTUAL_ARGUMENT: [one sentence: what the source actually says on this point, or 
 SUGGESTED_REWRITE: [if misrepresented: a sentence the writer could use instead that is faithful to the source, or "n/a"]
 EXPLANATION: [2-3 sentences]`;
 
+const FIND_SOURCE_SYSTEM = `You determine whether an in-text citation refers to a real publication, using web search results — and when it does, you write its full reference-list entry.
+
+You receive: the in-text citation (author and year as cited), the writer's sentence around it (the idea attributed to the source), the document's citation style, and web search results.
+
+Rules:
+- FOUND is "yes" only when a publication plausibly matches BOTH the cited author AND the idea attributed in the writer's sentence.
+- If the publication clearly exists but under a different year than cited, still answer "yes" — format the entry with the REAL year and note the discrepancy in the explanation.
+- REFERENCE_ENTRY must be complete and formatted in the document's citation style: authors, year, title, journal/publisher/outlet, and DOI or URL when available.
+- Never invent details the search results don't support — omit an uncertain field rather than guessing.
+
+Respond in EXACTLY this format (one line each):
+FOUND: [yes/no/uncertain]
+CONFIDENCE: [0.0 to 1.0]
+REFERENCE_ENTRY: [the full reference-list entry in the document's style, or "n/a"]
+SOURCE_URL: [URL of the best matching source, or "none"]
+EXPLANATION: [2-3 sentences: what was found and how it matches the citation and the writer's claim]`;
+
 const CONVERT_SYSTEM = `You convert citations from one academic style to another.
 
 Rules:
@@ -107,6 +124,7 @@ const MODELS = [
   { name: "Gemini Flash — Citation Search Queries", openrouterModelId: "google/gemini-2.5-flash", temperature: 0.1, maxTokens: 2048, description: "Fast, cheap query generation for citation verification" },
   { name: "Claude Sonnet — Citation Converter", openrouterModelId: "anthropic/claude-sonnet-4", temperature: 0.2, maxTokens: 512, description: "Citation style conversion, low creativity" },
   { name: "Claude Sonnet — Quote Checker", openrouterModelId: "anthropic/claude-sonnet-4", temperature: 0.2, maxTokens: 1024, description: "Quote verification: verbatim match + misrepresentation check against source text" },
+  { name: "Claude Sonnet — Source Finder", openrouterModelId: "anthropic/claude-sonnet-4", temperature: 0.2, maxTokens: 1024, description: "Finds the real publication behind an uncited in-text citation and drafts its reference entry" },
   { name: "Gemini Pro — Fallback", openrouterModelId: "google/gemini-2.5-pro", temperature: 0.2, maxTokens: 1024, description: "Fallback model for citation activities" },
   { name: "GPT-4o — Fallback", openrouterModelId: "openai/gpt-4o", temperature: 0.2, maxTokens: 1024, description: "Second fallback model for citation activities" },
 ];
@@ -141,6 +159,12 @@ const PROMPTS = [
     description: "Verifies a quotation against fetched source text: verbatim match + faithful-use check",
     systemPrompt: QUOTE_CHECK_SYSTEM,
     userPrompt: 'DOCUMENT QUOTE:\n"[QUOTE]"\n\nWRITER\'S SENTENCE:\n[CLAIM]\n\nSOURCE EXCERPT:\n[EXCERPT]',
+  },
+  {
+    name: "Citation Find Source",
+    description: "Searches for the publication behind an in-text citation with no reference entry and drafts the entry",
+    systemPrompt: FIND_SOURCE_SYSTEM,
+    userPrompt: 'IN-TEXT CITATION:\n[CITATION]\n\nWRITER\'S SENTENCE:\n[CLAIM]\n\nDOCUMENT CITATION STYLE: [STYLE]\n\nWEB SEARCH RESULTS:\n[SEARCH_RESULTS]',
   },
 ];
 
@@ -178,6 +202,13 @@ const BINDS: {
     description: "Verify quotations against fetched source text",
     modelName: "Claude Sonnet — Quote Checker",
     promptName: "Citation Quote Check",
+  },
+  {
+    slug: "citation-find-source",
+    name: "Citation Find Source",
+    description: "Find the real source behind an uncited in-text citation and draft its reference entry",
+    modelName: "Claude Sonnet — Source Finder",
+    promptName: "Citation Find Source",
   },
 ];
 

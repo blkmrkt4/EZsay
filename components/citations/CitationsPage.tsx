@@ -32,7 +32,7 @@ const QUOTE_TONE_CLASSES: Record<string, string> = {
     when there is no computable one-click fix. */
 const FIX_GUIDANCE: Record<string, string> = {
   no_reference_entry:
-    "Add an entry for this source to your reference list, then press “Re-check formatting” above. If you can't find the source, it may not exist — remove the citation or cite a real source instead.",
+    "Press “Search for this source” and EzSay will look it up online — if the source is real, you'll get a drafted reference entry to add in one click. Or add the entry to your reference list yourself, then press “Re-check formatting” above.",
   year_mismatch:
     "Look up the source's actual publication year, then correct whichever is wrong — the in-text citation or the reference entry — so both use the same year.",
   author_inconsistent:
@@ -112,9 +112,11 @@ interface CitationsPageProps {
   onScoreUpdate?: (score: number) => void;
   onScrollToText?: (text: string) => void;
   onSaveVersion?: () => void;
+  /** Called after an action changes the document text (e.g. a reference entry was added). */
+  onDocumentChanged?: () => void;
 }
 
-export default function CitationsPage({ documentId, sections, onScoreUpdate, onScrollToText, onSaveVersion }: CitationsPageProps) {
+export default function CitationsPage({ documentId, sections, onScoreUpdate, onScrollToText, onSaveVersion, onDocumentChanged }: CitationsPageProps) {
   const [citations, setCitations] = useState<Citation[]>([]);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
@@ -127,6 +129,8 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
+  const [searchingSourceId, setSearchingSourceId] = useState<string | null>(null);
+  const [addingReferenceId, setAddingReferenceId] = useState<string | null>(null);
 
   const loadCitations = useCallback(async () => {
     const res = await fetch(`/api/citations?documentId=${documentId}`);
@@ -241,6 +245,52 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
     ));
     setEditingId(null);
     setEditText("");
+  }
+
+  /** Web-search a "no reference entry" in-text citation for its real source. */
+  async function handleFindSource(citationId: string) {
+    setSearchingSourceId(citationId);
+    try {
+      const res = await fetch("/api/citations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "find_source", citationId }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setCitations((prev) =>
+          prev.map((c) => (c.id === citationId ? { ...c, verificationFlags: json.data } : c)),
+        );
+      }
+    } catch (err) {
+      console.error("Find source error:", err);
+    }
+    setSearchingSourceId(null);
+  }
+
+  /** Insert the drafted reference entry into the document's reference list. */
+  async function handleAddReference(c: Citation) {
+    const entry = c.verificationFlags?.correctCitation;
+    if (!entry) return;
+    setAddingReferenceId(c.id);
+    try {
+      const res = await fetch("/api/citations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "add_reference", citationId: c.id, entryText: entry }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        if (json.score != null && onScoreUpdate) onScoreUpdate(json.score);
+        onDocumentChanged?.();
+        // Re-cross-reference: the finding disappears (the entry now exists)
+        // and the new entry gets its own row in the Reference Entries list.
+        await runStructuralCheck();
+      }
+    } catch (err) {
+      console.error("Add reference error:", err);
+    }
+    setAddingReferenceId(null);
   }
 
   async function handleConvertAll() {
@@ -517,8 +567,16 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
             // A computable one-click fix (e.g. cite the entry's first author
             // instead) — otherwise fall back to plain-language guidance.
             const flagFix = flags.find((f) => f.suggestedFix)?.suggestedFix ?? null;
+            // "No reference entry" findings can be web-searched: found → a
+            // drafted entry to add in one click; not found → say so plainly.
+            const missingEntry =
+              c.entryType === "inline" && flags.some((f) => f.type === "no_reference_entry");
+            const srcCheck = missingEntry ? c.verificationFlags : null;
             const guidanceTypes = [...new Set(flags.map((f) => f.type))].filter(
-              (t) => FIX_GUIDANCE[t] && !(flagFix && t === "author_inconsistent"),
+              (t) =>
+                FIX_GUIDANCE[t] &&
+                !(flagFix && t === "author_inconsistent") &&
+                !(srcCheck && t === "no_reference_entry"),
             );
             return (
               <div
@@ -618,8 +676,77 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                       ))}
                     </div>
                   )}
+                  {/* Source-search outcome for "no reference entry" findings */}
+                  {c.status === "open" && srcCheck && (
+                    <div className="mt-1.5 space-y-1 rounded border border-gray-200 bg-white/70 px-2 py-1.5">
+                      {srcCheck.verdict === "source_found" ? (
+                        <>
+                          <p className="text-[10px] font-semibold text-green-700">
+                            Source found — it appears to be real
+                          </p>
+                          <p className="text-[10px] text-gray-600">{srcCheck.explanation}</p>
+                          {srcCheck.correctCitation && (
+                            <div className="rounded border border-green-200 bg-green-50/60 px-2 py-1">
+                              <span className="mr-1.5 text-[8px] font-semibold uppercase tracking-wider text-green-500">Drafted entry</span>
+                              <span className="text-xs font-mono leading-relaxed text-gray-800">{srcCheck.correctCitation}</span>
+                            </div>
+                          )}
+                          {srcCheck.sourceUrl && (
+                            <a
+                              href={srcCheck.sourceUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="block truncate text-[9px] text-blue-600 hover:underline"
+                            >
+                              {srcCheck.sourceUrl}
+                            </a>
+                          )}
+                        </>
+                      ) : srcCheck.verdict === "source_not_found" ? (
+                        <>
+                          <p className="text-[10px] font-semibold text-red-600">
+                            We searched — no matching source was found
+                          </p>
+                          <p className="text-[10px] text-gray-600">{srcCheck.explanation}</p>
+                          <p className="text-[10px] text-gray-600">
+                            If you have the original source, add it to your reference list yourself; otherwise remove the citation or cite a real source instead.
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-[10px] text-gray-600">{srcCheck.explanation}</p>
+                      )}
+                      {checkedOn(srcCheck.verifiedAt) && (
+                        <p className="text-[8px] text-gray-400">Searched {checkedOn(srcCheck.verifiedAt)}</p>
+                      )}
+                    </div>
+                  )}
                   {c.status === "open" && (
                     <div className="mt-1.5 flex gap-1">
+                      {missingEntry && srcCheck?.correctCitation && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleAddReference(c); }}
+                          disabled={addingReferenceId === c.id}
+                          className="rounded bg-green-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                          title="Insert the drafted entry into your reference list and resolve this finding"
+                        >
+                          {addingReferenceId === c.id ? "Adding…" : "Add to Reference List"}
+                        </button>
+                      )}
+                      {missingEntry && !srcCheck?.correctCitation && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleFindSource(c.id); }}
+                          disabled={searchingSourceId === c.id}
+                          className="rounded bg-blue-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                          title="Search the web for this source; if it's real, EzSay drafts the reference entry for you"
+                        >
+                          {searchingSourceId === c.id
+                            ? "Searching…"
+                            : srcCheck
+                              ? "Search Again"
+                              : "Search for This Source"}
+                        </button>
+                      )}
                       {flagFix && (
                         <button
                           onClick={(e) => { e.stopPropagation(); handleResolve(c.id, "accepted", flagFix); }}
