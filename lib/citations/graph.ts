@@ -411,11 +411,14 @@ export function buildCitationGraph(rawText: string): CitationGraph {
     }
 
     if (matched.kind === "other") {
+      // Concrete fix: swap the cited surname for the entry's first author,
+      // keeping the citation's own form ("(Fitz-Gibbon, 2019)" → "(Walklate, 2019)").
+      const fixed = entry.firstAuthor ? cite.text.replace(primaryName, entry.firstAuthor) : null;
       cite.flags.push({
         type: "author_inconsistent",
         message: `In-text citation ${cite.text} names an author who is not listed first in the reference entry ("${entry.text.slice(0, 60)}…"). Cite the first author or fix the entry's author order.`,
         severity: "warning",
-        suggestedFix: null,
+        suggestedFix: fixed && fixed !== cite.text ? fixed : null,
       });
     }
   }

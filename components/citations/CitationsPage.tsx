@@ -28,6 +28,19 @@ const QUOTE_TONE_CLASSES: Record<string, string> = {
   gray: "bg-gray-100 text-gray-500",
 };
 
+/** Plain-language repair instructions per document-wide finding type, shown
+    when there is no computable one-click fix. */
+const FIX_GUIDANCE: Record<string, string> = {
+  no_reference_entry:
+    "Add an entry for this source to your reference list, then press “Re-check formatting” above. If you can't find the source, it may not exist — remove the citation or cite a real source instead.",
+  year_mismatch:
+    "Look up the source's actual publication year, then correct whichever is wrong — the in-text citation or the reference entry — so both use the same year.",
+  author_inconsistent:
+    "In-text citations should name the first author listed in the reference entry.",
+  quote_without_citation:
+    "Add an in-text citation directly after the closing quotation mark — e.g. (Author, Year) — or remove the quotation marks if this isn't a word-for-word quote.",
+};
+
 const FIELD_LABELS: { key: "author" | "year" | "title" | "source"; label: string }[] = [
   { key: "author", label: "Author" },
   { key: "year", label: "Year" },
@@ -501,14 +514,22 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
             const quoteDisplay = quoteCheck ? QUOTE_VERDICT_DISPLAY[quoteCheck.verdict] : null;
             const isBadQuote =
               quoteCheck?.verdict === "quote_not_found" || quoteCheck?.verdict === "quote_misrepresented";
+            // A computable one-click fix (e.g. cite the entry's first author
+            // instead) — otherwise fall back to plain-language guidance.
+            const flagFix = flags.find((f) => f.suggestedFix)?.suggestedFix ?? null;
+            const guidanceTypes = [...new Set(flags.map((f) => f.type))].filter(
+              (t) => FIX_GUIDANCE[t] && !(flagFix && t === "author_inconsistent"),
+            );
             return (
               <div
                 key={c.id}
-                className={`rounded-lg border overflow-hidden ${
+                onClick={() => onScrollToText?.(c.rawText)}
+                title="Show this passage in the document"
+                className={`rounded-lg border overflow-hidden cursor-pointer transition-shadow hover:shadow-md ${
                   resolvedOut ? "border-gray-200 bg-gray-50 opacity-60" :
-                  isBadQuote || flags.some((f) => f.severity === "error") ? "border-red-200 bg-red-50" :
-                  quoteCheck?.verdict === "quote_verified" && flags.length === 0 ? "border-green-200 bg-green-50" :
-                  "border-amber-200 bg-amber-50"
+                  isBadQuote || flags.some((f) => f.severity === "error") ? "border-red-200 bg-red-50 hover:border-red-300" :
+                  quoteCheck?.verdict === "quote_verified" && flags.length === 0 ? "border-green-200 bg-green-50 hover:border-green-300" :
+                  "border-amber-200 bg-amber-50 hover:border-amber-300"
                 }`}
               >
                 <div className="px-3 py-2.5">
@@ -526,26 +547,23 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                         {c.status === "dismissed" ? "dismissed" : "resolved"}
                       </span>
                     )}
+                    <span className="ml-auto shrink-0 text-[9px] text-gray-400">Click to view in document →</span>
                   </div>
-                  <button
-                    onClick={() => onScrollToText?.(c.entryType === "quote" ? c.rawText : c.rawText)}
-                    className="text-left w-full"
-                    title="Locate in document"
-                  >
-                    <p className="text-xs text-gray-800 font-mono leading-relaxed">
-                      {c.entryType === "quote" ? `“${c.rawText}”` : c.rawText}
-                    </p>
-                  </button>
-                  {c.contextSentence && (
-                    <p className="mt-1 text-[10px] text-gray-500 italic leading-relaxed">…{c.contextSentence}…</p>
-                  )}
-                  <div className="mt-1 space-y-0.5">
+                  {/* The finding itself comes first — what's wrong, prominently */}
+                  <div className="space-y-0.5">
                     {flags.map((f, fi) => (
-                      <p key={fi} className={`text-[10px] ${f.severity === "error" ? "text-red-600" : "text-amber-600"}`}>
+                      <p key={fi} className={`text-[11px] font-medium ${f.severity === "error" ? "text-red-600" : "text-amber-600"}`}>
                         {f.severity === "error" ? "Error" : "Warning"}: {f.message}
                       </p>
                     ))}
                   </div>
+                  {/* Then the passage in question */}
+                  <p className="mt-1.5 text-xs text-gray-800 font-mono leading-relaxed">
+                    {c.entryType === "quote" ? `“${c.rawText}”` : c.rawText}
+                  </p>
+                  {c.contextSentence && (
+                    <p className="mt-1 text-[10px] text-gray-500 italic leading-relaxed">…{c.contextSentence}…</p>
+                  )}
                   {/* Quote-check result: verdict explanation, the source's
                       actual argument, a faithful rewrite, and the source link */}
                   {quoteCheck && (
@@ -569,6 +587,7 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                           href={quoteCheck.sourceUrl}
                           target="_blank"
                           rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
                           className="block truncate text-[9px] text-blue-600 hover:underline"
                         >
                           {quoteCheck.sourceUrl}
@@ -576,18 +595,51 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                       )}
                     </div>
                   )}
+                  {/* How to fix — a one-click fix when we can compute one,
+                      plain instructions otherwise */}
+                  {c.status === "open" && flagFix && (
+                    <div className="mt-1.5 space-y-1 rounded border border-gray-200 bg-white/70 px-2 py-1.5">
+                      <div className="rounded border border-red-200 bg-red-50/60 px-2 py-1">
+                        <span className="mr-1.5 text-[8px] font-semibold uppercase tracking-wider text-red-400">Before</span>
+                        <span className="text-xs font-mono leading-relaxed text-gray-700">{c.rawText}</span>
+                      </div>
+                      <div className="rounded border border-green-200 bg-green-50/60 px-2 py-1">
+                        <span className="mr-1.5 text-[8px] font-semibold uppercase tracking-wider text-green-500">After</span>
+                        <span className="text-xs font-mono leading-relaxed text-gray-800">{flagFix}</span>
+                      </div>
+                    </div>
+                  )}
+                  {c.status === "open" && guidanceTypes.length > 0 && (
+                    <div className="mt-1.5 rounded border border-gray-200 bg-white/70 px-2 py-1.5 space-y-0.5">
+                      {guidanceTypes.map((t) => (
+                        <p key={t} className="text-[10px] text-gray-600">
+                          <span className="font-semibold text-gray-700">How to fix:</span> {FIX_GUIDANCE[t]}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                   {c.status === "open" && (
                     <div className="mt-1.5 flex gap-1">
+                      {flagFix && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleResolve(c.id, "accepted", flagFix); }}
+                          className="rounded bg-green-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-green-700"
+                          title="Apply this correction to your document"
+                        >
+                          Apply Fix
+                        </button>
+                      )}
                       <button
-                        onClick={() => handleResolve(c.id, "verified")}
+                        onClick={(e) => { e.stopPropagation(); handleResolve(c.id, "verified"); }}
                         className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-600 hover:bg-white"
-                        title="I've fixed this in the document"
+                        title="I've fixed this in the document myself"
                       >
                         Mark Fixed
                       </button>
                       <button
-                        onClick={() => handleResolve(c.id, "dismissed")}
+                        onClick={(e) => { e.stopPropagation(); handleResolve(c.id, "dismissed"); }}
                         className="rounded border border-gray-300 px-2 py-0.5 text-[10px] text-gray-500 hover:bg-white"
+                        title="This is fine as it is — hide the finding"
                       >
                         Dismiss
                       </button>
@@ -646,7 +698,16 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
                         </span>
                       )}
                     </div>
-                    <svg className={`h-3.5 w-3.5 text-gray-400 transition-transform ${isSelected ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {c.status === "open" && proposedFixOf(c) && !isSelected && (
+                        <span className="rounded bg-green-600 px-2 py-0.5 text-[9px] font-semibold text-white">
+                          Fix
+                        </span>
+                      )}
+                      <svg className={`h-3.5 w-3.5 transition-transform ${isSelected ? "rotate-180" : ""} ${
+                        c.status === "open" && proposedFixOf(c) ? "text-green-600" : "text-gray-400"
+                      }`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+                    </div>
                   </div>
                   {c.status === "open" && proposedFixOf(c) ? (
                     /* BEFORE / AFTER — a fix is proposed but not yet accepted */
