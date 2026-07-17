@@ -47,22 +47,24 @@ function Sparkline({ history, color, width = 44, height = 16 }: {
   );
 }
 
-export default function ScoreSpectrum({ label, score, interpretation, lowLabel, highLabel, lowerIsBetter, loading, expanded, onClick }: {
+// Every score is 0-100 with HIGHER = BETTER — callers normalize before
+// passing (e.g. AI detectability passes 100 - risk). No direction labels;
+// 100 is always the good end.
+export default function ScoreSpectrum({ label, score, interpretation, lowLabel, highLabel, loading, expanded, onClick }: {
   label: string;
   score: number | null;
   interpretation: string;
   lowLabel: string;
   highLabel: string;
-  lowerIsBetter?: boolean;
   loading?: boolean;
   expanded?: boolean;
   onClick?: () => void;
 }) {
   const hasScore = score !== null;
-  const markerPosition = hasScore ? (lowerIsBetter ? 100 - score : score) : 0;
+  const markerPosition = hasScore ? score : 0;
   const history = hasScore ? mockScanHistory(label, score) : [];
 
-  const perf = hasScore ? (lowerIsBetter ? 100 - score : score) : 0;
+  const perf = hasScore ? score : 0;
   const sparkColor = perf >= 67 ? "#10b981" : perf >= 34 ? "#f59e0b" : "#ef4444";
 
   return (
@@ -86,7 +88,6 @@ export default function ScoreSpectrum({ label, score, interpretation, lowLabel, 
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-gray-700">{label}</span>
-          <span className="text-[8px] text-gray-400 italic">{lowerIsBetter ? "lower is better" : "higher is better"}</span>
         </div>
         <div className="flex items-center gap-2">
           {loading && <div className="h-3 w-3 animate-spin rounded-full border-2 border-purple-200 border-t-purple-600" />}

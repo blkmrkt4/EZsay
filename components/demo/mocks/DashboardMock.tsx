@@ -15,21 +15,19 @@ type Focus = "overview" | "ai" | "artifacts" | "writing" | "plagiarism";
 interface Spectrum {
   key: string;
   label: string;
-  hint: string;
-  score: number;
+  score: number; // 0-100, higher = better — every metric, no exceptions
   band: string;
-  higher: boolean; // higher-is-better?
 }
 
 const SPECTRUMS: Record<string, Spectrum> = {
-  ai: { key: "ai", label: "AI Detectability", hint: "lower is better", score: 17, band: "Low", higher: false },
-  artifacts: { key: "artifacts", label: "AI Artifacts", hint: "lower is better", score: 27, band: "Minor", higher: false },
-  writing: { key: "writing", label: "Writing Quality", hint: "higher is better", score: 58, band: "Fair", higher: true },
-  citations: { key: "citations", label: "Citations", hint: "higher is better", score: 0, band: "Needs attention", higher: true },
-  plagiarism: { key: "plagiarism", label: "Plagiarism", hint: "lower is better", score: 4, band: "Minor", higher: false },
-  tone: { key: "tone", label: "Tone Consistency", hint: "higher is better", score: 100, band: "Consistent", higher: true },
-  spelling: { key: "spelling", label: "Spelling", hint: "higher is better", score: 100, band: "Clean", higher: true },
-  grammar: { key: "grammar", label: "Grammar", hint: "higher is better", score: 100, band: "Clean", higher: true },
+  ai: { key: "ai", label: "AI Detectability", score: 83, band: "Low AI signals" },
+  artifacts: { key: "artifacts", label: "AI Artifacts", score: 73, band: "Minor" },
+  writing: { key: "writing", label: "Writing Quality", score: 58, band: "Fair" },
+  citations: { key: "citations", label: "Citations", score: 0, band: "Needs attention" },
+  plagiarism: { key: "plagiarism", label: "Plagiarism", score: 96, band: "Minor matches" },
+  tone: { key: "tone", label: "Tone Consistency", score: 100, band: "Consistent" },
+  spelling: { key: "spelling", label: "Spelling", score: 100, band: "Clean" },
+  grammar: { key: "grammar", label: "Grammar", score: 100, band: "Clean" },
 };
 
 const OVERVIEW_ORDER = ["ai", "artifacts", "writing", "citations", "plagiarism", "tone", "spelling", "grammar"];
@@ -41,21 +39,18 @@ const PAIRS: Record<string, [string, string]> = {
 };
 
 function ScoreCard({ s, focused }: { s: Spectrum; focused?: boolean }) {
-  // Marker position on a red→green scale = goodness, not raw score.
-  const goodPct = s.higher ? s.score : 100 - s.score;
   return (
     <div className={`rounded-lg border bg-white p-3 ${focused ? "border-blue-400 ring-2 ring-blue-300" : "border-gray-200"}`}>
       <div className="flex items-start justify-between">
         <div className="flex items-baseline gap-1.5">
           <span className="text-sm font-bold text-gray-900">{s.label}</span>
-          <span className="text-[10px] italic text-gray-400">{s.hint}</span>
         </div>
         <span className="text-2xl font-bold text-gray-900">{s.score}</span>
       </div>
       <div className="relative mt-2 h-2 rounded-full bg-gradient-to-r from-red-500 via-yellow-400 to-green-500">
         <span
           className="absolute top-1/2 h-3.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-sm bg-gray-900 ring-1 ring-white"
-          style={{ left: `${goodPct}%` }}
+          style={{ left: `${s.score}%` }}
         />
       </div>
       <div className="mt-1 flex justify-between text-[9px] text-gray-400">

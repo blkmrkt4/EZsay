@@ -571,15 +571,15 @@ function FreeScanInner() {
             <div className="mt-8 grid grid-cols-2 gap-3">
               <ScoreSpectrum
                 label="AI Detectability"
-                score={result.aiRiskScore}
-                interpretation={result.aiRiskScore >= 70 ? "High" : result.aiRiskScore >= 40 ? "Moderate" : result.aiRiskScore >= 15 ? "Low" : "Minimal"}
-                lowLabel="0" highLabel="100" lowerIsBetter
+                score={result.aiRiskScore != null ? 100 - result.aiRiskScore : null}
+                interpretation={result.aiRiskScore >= 70 ? "Very detectable" : result.aiRiskScore >= 40 ? "Some AI signals" : result.aiRiskScore >= 15 ? "Low AI signals" : "Reads human"}
+                lowLabel="0" highLabel="100"
               />
               <ScoreSpectrum
                 label="AI Artifacts"
                 score={result.aiArtifactScore}
                 interpretation={result.aiArtifactScore === null ? "Not checked" : result.aiArtifactScore >= 90 ? "Clean" : result.aiArtifactScore >= 70 ? "Minor" : "Present"}
-                lowLabel="0" highLabel="100" lowerIsBetter
+                lowLabel="0" highLabel="100"
               />
               <ScoreSpectrum
                 label="Writing Quality"
@@ -597,7 +597,7 @@ function FreeScanInner() {
                 label="Plagiarism"
                 score={null}
                 interpretation="Subscriber-only"
-                lowLabel="0" highLabel="100" lowerIsBetter
+                lowLabel="0" highLabel="100"
               />
               <ScoreSpectrum
                 label="Tone Consistency"

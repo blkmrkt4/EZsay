@@ -121,7 +121,6 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
   const aiScore = doc.aiRiskScore ?? 0;
   const qualScore = doc.writingQualityScore ?? 50;
   const artifactScore = doc.aiArtifactScore ?? null;
-  const artifactScoreInverted = artifactScore !== null ? 100 - artifactScore : null;
   const extractionMeta = doc.extractionMeta;
   const showCoverageWarning = extractionMeta?.sourceType === "pdf"
     && (extractionMeta.confidence === "low" || extractionMeta.likelyGraphicsHeavy);
@@ -257,8 +256,8 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
       <div className="space-y-3">
         {/* Row 1: AI Detection + AI Artifacts */}
         <div className="grid grid-cols-2 gap-3">
-          <ScoreSpectrum label="AI Detectability" score={aiScore} interpretation={aiScore >= 70 ? "High" : aiScore >= 40 ? "Moderate" : aiScore >= 15 ? "Low" : "Very Low"} lowLabel="0" highLabel="100" lowerIsBetter expanded={expandedScore === "ai"} onClick={() => toggle("ai")} />
-          <ScoreSpectrum label="AI Artifacts" score={artifactScoreInverted} interpretation={artifactScoreInverted === null ? "Not scanned" : artifactScoreInverted <= 10 ? "Clean" : artifactScoreInverted <= 30 ? "Minor" : artifactScoreInverted <= 50 ? "Moderate" : "Heavy"} lowLabel="0" highLabel="100" lowerIsBetter expanded={expandedScore === "artifacts"} onClick={() => toggle("artifacts")} />
+          <ScoreSpectrum label="AI Detectability" score={100 - aiScore} interpretation={aiScore >= 70 ? "Very detectable" : aiScore >= 40 ? "Some AI signals" : aiScore >= 15 ? "Low AI signals" : "Reads human"} lowLabel="0" highLabel="100" expanded={expandedScore === "ai"} onClick={() => toggle("ai")} />
+          <ScoreSpectrum label="AI Artifacts" score={artifactScore} interpretation={artifactScore === null ? "Not scanned" : artifactScore >= 90 ? "Clean" : artifactScore >= 70 ? "Minor" : artifactScore >= 50 ? "Moderate" : "Heavy"} lowLabel="0" highLabel="100" expanded={expandedScore === "artifacts"} onClick={() => toggle("artifacts")} />
         </div>
 
         {/* AI Detection detail */}
@@ -348,7 +347,7 @@ export default function AnalysisPanel({ document: doc, versions, flags, plagiari
 
         {/* Row 3: Plagiarism + Tone Consistency */}
         <div className="grid grid-cols-2 gap-3">
-          <ScoreSpectrum label="Plagiarism" score={plagScore} loading={plagiarismLoading} interpretation={plagScore === null ? (plagiarismLoading ? "Checking..." : "Not checked") : plagScore === 0 ? "Clean" : plagScore <= 10 ? "Minor" : plagScore <= 30 ? "Moderate" : "High"} lowLabel="0" highLabel="100" lowerIsBetter expanded={expandedScore === "plagiarism"} onClick={() => toggle("plagiarism")} />
+          <ScoreSpectrum label="Plagiarism" score={plagScore === null ? null : 100 - plagScore} loading={plagiarismLoading} interpretation={plagScore === null ? (plagiarismLoading ? "Checking..." : "Not checked") : plagScore === 0 ? "Original" : plagScore <= 10 ? "Minor matches" : plagScore <= 30 ? "Moderate matches" : "Heavy matches"} lowLabel="0" highLabel="100" expanded={expandedScore === "plagiarism"} onClick={() => toggle("plagiarism")} />
           <ScoreSpectrum label="Tone Consistency" score={toneScore} interpretation={toneScore === null ? "Not checked" : toneScore >= 90 ? "Consistent" : toneScore >= 70 ? "Minor shifts" : toneScore >= 50 ? "Some issues" : "Inconsistent"} lowLabel="0" highLabel="100" expanded={expandedScore === "tone"} onClick={() => toggle("tone")} />
         </div>
 
@@ -634,25 +633,26 @@ function Sparkline({ history, color, width = 44, height = 16 }: {
   );
 }
 
-function ScoreSpectrum({ label, score, interpretation, lowLabel, highLabel, lowerIsBetter, loading, expanded, onClick }: {
+// Every score is 0-100 with HIGHER = BETTER — callers normalize before
+// passing (e.g. AI Detectability passes 100 - risk). No direction labels;
+// 100 is always the good end.
+function ScoreSpectrum({ label, score, interpretation, lowLabel, highLabel, loading, expanded, onClick }: {
   label: string;
   score: number | null;
   interpretation: string;
   lowLabel: string;
   highLabel: string;
-  lowerIsBetter?: boolean;
   loading?: boolean;
   expanded?: boolean;
   onClick?: () => void;
 }) {
   const hasScore = score !== null;
-  const markerPosition = hasScore ? (lowerIsBetter ? 100 - score : score) : 0;
+  const markerPosition = hasScore ? score : 0;
   const history = hasScore ? mockScanHistory(label, score) : [];
 
   // Trend colour = same "red/yellow/green" logic as the gauge marker,
   // so the sparkline visually agrees with the current bar position.
-  const perf = hasScore ? (lowerIsBetter ? 100 - score : score) : 0;
-  const sparkColor = perf >= 67 ? "#10b981" : perf >= 34 ? "#f59e0b" : "#ef4444";
+  const sparkColor = (hasScore ? score : 0) >= 67 ? "#10b981" : (hasScore ? score : 0) >= 34 ? "#f59e0b" : "#ef4444";
 
   return (
     <button
@@ -675,7 +675,6 @@ function ScoreSpectrum({ label, score, interpretation, lowLabel, highLabel, lowe
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-gray-700">{label}</span>
-          <span className="text-[8px] text-gray-400 italic">{lowerIsBetter ? "lower is better" : "higher is better"}</span>
         </div>
         <div className="flex items-center gap-2">
           {loading && <div className="h-3 w-3 animate-spin rounded-full border-2 border-purple-200 border-t-purple-600" />}

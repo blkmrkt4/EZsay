@@ -176,21 +176,21 @@ A British academic paper full of American spellings previously passed every chec
 
 ## 7. Six score spectrums
 
-The Analysis panel shows six clickable score bars. Each expands to show detail. All bars use the same gradient (red -> yellow -> green, left to right). "Lower is better" or "higher is better" labels on each.
+The Analysis panel shows clickable score bars. Each expands to show detail. All bars use the same gradient (red -> yellow -> green, left to right). **Every displayed score is 0-100 with HIGHER = BETTER — no exceptions, no direction labels (removed 2026-07-17).** Metrics whose underlying stored value runs the other way are flipped at display time: AI Detectability shows `100 - aiRiskScore`, Plagiarism shows `100 - plagiarism match score`; AI Artifacts displays the stored `aiArtifactScore` directly (already 100 = clean — the old display inverted it). Interpretations describe the state in words ("Reads human", "Original", "Clean") so the number and the words always agree.
 
-### 7.1 AI Detectability (lower is better, weight: 25%)
+### 7.1 AI Detectability (displayed as 100 - risk, weight: 25%)
 
 Severity-weighted flag density with sigmoid curve. Flags come from exact phrase matching (~250 library entries), regex structural patterns (~23), and semantic analysis (5 implemented analyzers). Severity weights: high = 3x, medium = 1.5x, low = 1x. Formula: `(weightedDensity / (weightedDensity + 5)) * 100` with word count dampener for short documents.
 
-### 7.2 AI Artifacts (lower is better, weight: 12%)
+### 7.2 AI Artifacts (displayed as stored score, 100 = clean, weight: 10%)
 
 Penalty-based scoring across 44 formatting artifacts. Four indicativeness tiers: definitive AI tells (2x: assistant closers, TL;DR), strong signals (1.5x: emojis, code blocks), moderate (1x: default), weak (0.7x: curly quotes, spacing). Items set to "always_keep" in Style Training are excluded. Score = 100 - sum(penalty * tier).
 
-### 7.3 Writing Quality (higher is better, weight: 10%)
+### 7.3 Writing Quality (weight: 9%)
 
 50% Flesch-Kincaid readability + 50% structural quality (paragraph variation, sentence variation, section coherence, lexical diversity). Each sub-score 0-100. Detail panel shows five individual bars.
 
-### 7.4 Plagiarism (lower is better, weight: 30%)
+### 7.4 Plagiarism (displayed as 100 - match score, weight: 30%)
 
 Every paragraph searched via web (DuckDuckGo or Tavily). LLM assesses each match. Only "plagiarism" verdicts count toward score (weighted by confidence). "Common knowledge" shown as informational, clearly labeled "not plagiarism." Detail panel shows all passages sorted by severity, clean passages collapsed.
 
@@ -198,11 +198,11 @@ Every paragraph searched via web (DuckDuckGo or Tavily). LLM assesses each match
 
 **Doc-panel follow for plagiarism items (fixed 2026-07-13):** the document panel's violet highlight, auto-scroll, and heatmap ticks previously keyed off AI-detection flags only — reviewing a plagiarism queue item left the doc panel unaligned and (since `close_match` produced no tick) the heatmap empty. Plagiarism items now highlight their passage in violet, scroll the doc panel to it, and both actionable verdicts produce heatmap ticks.
 
-### 7.5 Citations (higher is better, weight: 15%)
+### 7.5 Citations (weight: 12%)
 
 Two-step check: structural validation (formatting errors) + web verification (source exists). 8 styles supported: APA, MLA, Chicago, Harvard, Oxford, Bluebook, OSCOLA, Business. LLM-powered style conversion available.
 
-### 7.6 Tone Consistency (higher is better, weight: 8%)
+### 7.6 Tone Consistency (weight: 4%)
 
 LLM analysis for tone shifts, voice inconsistencies, register changes, contradictions, and repetition. Creates editable flags with suggestions.
 
