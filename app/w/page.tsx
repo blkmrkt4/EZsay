@@ -1259,15 +1259,31 @@ export default function WorkspacePage() {
     const item = editQueue[selectedFlagIdx];
     const flag = item && (item.type === "ai_detection" || item.type === "artifact_individual") ? item.flag : null;
     if (!flag) return;
-    await fetch("/api/flags/resolve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ flagId: flag.id, action, optionId, manualText }),
-    });
+    let json: { success?: boolean; error?: string; data?: { autoSkippedSiblings?: number } } | null = null;
+    try {
+      const res = await fetch("/api/flags/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flagId: flag.id, action, optionId, manualText }),
+      });
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    // The server refuses stale/corrupt replacements instead of splicing them
+    // (that splice was the document-corruption bug). Don't mark anything
+    // resolved locally — refresh so stale flags drop out of the queue.
+    if (!json?.success) {
+      alert(json?.error || "That edit couldn't be applied — the text may have changed since the scan. The document was not modified.");
+      if (activeDocId) await loadDocument(activeDocId);
+      return;
+    }
     setFlags((prev) => prev.map((f) => (f.id === flag.id ? { ...f, status: action } : f)));
     setSelectedOptionIdx(null);
     setManualEditText("");
-    setResolvedThisSession((c) => c + 1);
+    // A full-section accept auto-skips the section's other open content
+    // flags server-side — count them so the session counter holds steady.
+    setResolvedThisSession((c) => c + 1 + (json.data?.autoSkippedSiblings ?? 0));
     // Reload document to reflect text changes from accepted replacements
     if (activeDocId && action === "accepted") await loadDocument(activeDocId);
     // Every resolution (accepted/rejected/skipped) removes this flag from the

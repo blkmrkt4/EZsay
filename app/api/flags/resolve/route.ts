@@ -56,6 +56,75 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
     }
 
+    // ── Compute the text change FIRST — refuse before any status write ──
+    //
+    // Replacement semantics (this caused real document corruption when it
+    // was a blind offset splice — see PRD "Corruption root cause 2026-07-17"):
+    //
+    // - ai_artifact flags: the option/manual text is a NARROW replacement for
+    //   the artifact instance ("(remove)" sentinel = delete). Replace the
+    //   flagged span, verified against the CURRENT text and re-anchored by
+    //   search if earlier edits moved it. Refuse if the text is gone.
+    //
+    // - every other flag: generated options are FULL-SECTION rewrites (the
+    //   suggest prompts interpolate [SECTION_TEXT] only), and both editors
+    //   prefill manual edits with the full section text — so the replacement
+    //   IS the new section text. Never splice it into a narrow span: that
+    //   pastes a whole paragraph mid-word and duplicates everything around it.
+    const replacementRaw = action === "accepted"
+      ? (optionId ? flagRow.optionText : manualText) ?? null
+      : null;
+    let newSectionText: string | null = null;
+    let autoSkippedSiblings = 0;
+
+    if (action === "accepted" && optionId && !flagRow.optionText) {
+      return NextResponse.json({ success: false, error: "Option not found" }, { status: 404 });
+    }
+
+    if (replacementRaw !== null) {
+      let candidate: string;
+      if (flagRow.flag.patternType === "ai_artifact") {
+        const replacement = replacementRaw === "(remove)" ? "" : replacementRaw;
+        const span = locateSpan(
+          flagRow.sectionCurrentText,
+          flagRow.flag.flaggedPhrase,
+          flagRow.flag.phraseStart,
+          flagRow.flag.phraseEnd,
+        );
+        if (!span) {
+          return NextResponse.json(
+            { success: false, error: "This text has changed since the scan — the suggestion no longer applies.", code: "stale_flag" },
+            { status: 409 },
+          );
+        }
+        candidate =
+          flagRow.sectionCurrentText.slice(0, span.start) +
+          replacement +
+          flagRow.sectionCurrentText.slice(span.end);
+      } else {
+        // Whole-section replacement. Guard against a pathologically small
+        // replacement wiping a large section (broken client / truncated LLM).
+        if (replacementRaw.trim().length < 40 && flagRow.sectionCurrentText.trim().length > 300) {
+          return NextResponse.json(
+            { success: false, error: "The replacement looks truncated and was not applied.", code: "suspect_replacement" },
+            { status: 422 },
+          );
+        }
+        candidate = replacementRaw;
+      }
+
+      // BLOCKING corruption check — previously this only console.warned and
+      // corrupted text was written anyway.
+      const corruption = validateReplacement(flagRow.sectionCurrentText, candidate);
+      if (corruption) {
+        return NextResponse.json(
+          { success: false, error: `The replacement looked corrupted and was not applied (${corruption}).`, code: "corrupt_replacement" },
+          { status: 422 },
+        );
+      }
+      newSectionText = candidate;
+    }
+
     // ── Update flag status ───────────────────────────────────────────
     const updateData: Record<string, unknown> = { status: action };
 
@@ -81,48 +150,33 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Flag not found" }, { status: 404 });
     }
 
-    // ── Update section text if accepted with an option ────────────────
-    if (action === "accepted" && optionId && flagRow.optionText) {
-      const newText =
-        flagRow.sectionCurrentText.slice(0, updatedFlag.phraseStart) +
-        flagRow.optionText +
-        flagRow.sectionCurrentText.slice(updatedFlag.phraseEnd);
-
-      const corruption = validateReplacement(flagRow.sectionCurrentText, newText);
-      if (corruption) {
-        console.warn(`[flags/resolve] Corruption detected in replacement: ${corruption}`);
-      }
-
+    // ── Apply the text change ─────────────────────────────────────────
+    if (newSectionText !== null) {
       await db
         .update(sections)
         .set({
-          currentText: newText,
+          currentText: newSectionText,
           flagsResolved: flagRow.sectionFlagsResolved + 1,
         })
         .where(eq(sections.id, flagRow.sectionId));
-    }
 
-    // ── Update section text for a manual / custom-mix replacement ─────
-    // Mirrors the optionId branch: splices the supplied text into the flagged
-    // span. Covers "Edit myself" and the per-box custom mix (no optionId).
-    if (action === "accepted" && manualText && !optionId) {
-      const newText =
-        flagRow.sectionCurrentText.slice(0, updatedFlag.phraseStart) +
-        manualText +
-        flagRow.sectionCurrentText.slice(updatedFlag.phraseEnd);
-
-      const corruption = validateReplacement(flagRow.sectionCurrentText, newText);
-      if (corruption) {
-        console.warn(`[flags/resolve] Corruption detected in manual replacement: ${corruption}`);
+      // A full-section rewrite invalidates every other open content flag in
+      // the section — their text basis no longer exists. Auto-skip them so
+      // they can't be accepted against the old text (artifact flags stay:
+      // they re-anchor by search at their own accept time).
+      if (updatedFlag.patternType !== "ai_artifact") {
+        const skipped = await db
+          .update(flags)
+          .set({ status: "skipped" })
+          .where(and(
+            eq(flags.sectionId, flagRow.sectionId),
+            sql`${flags.id} != ${flagId}`,
+            sql`${flags.status} in ('open', 'generation_failed')`,
+            sql`${flags.patternType} != 'ai_artifact'`,
+          ))
+          .returning({ id: flags.id });
+        autoSkippedSiblings = skipped.length;
       }
-
-      await db
-        .update(sections)
-        .set({
-          currentText: newText,
-          flagsResolved: flagRow.sectionFlagsResolved + 1,
-        })
-        .where(eq(sections.id, flagRow.sectionId));
     }
 
     // ── Increment resolved count for skip/reject ─────────────────────
@@ -173,9 +227,41 @@ export async function POST(request: NextRequest) {
       documentType: flagRow.documentType,
     }).catch((err) => console.error("Style logging failed:", err));
 
-    return NextResponse.json({ success: true, data: updatedFlag });
+    return NextResponse.json({ success: true, data: { ...updatedFlag, autoSkippedSiblings } });
   } catch (err) {
     console.error("Flag resolve error:", err);
     return NextResponse.json({ success: false, error: "Failed to resolve flag." }, { status: 500 });
   }
+}
+
+/**
+ * Locate the span to replace in the CURRENT text: stored offsets when they
+ * still match the flagged phrase, else the occurrence nearest the original
+ * position (earlier edits shift text), else null — never splice blind.
+ */
+function locateSpan(
+  text: string,
+  phrase: string,
+  storedStart: number,
+  storedEnd: number,
+): { start: number; end: number } | null {
+  if (
+    storedStart >= 0 &&
+    storedEnd <= text.length &&
+    text.slice(storedStart, storedEnd) === phrase
+  ) {
+    return { start: storedStart, end: storedEnd };
+  }
+  let best = -1;
+  let bestDist = Infinity;
+  let idx = text.indexOf(phrase);
+  while (idx !== -1) {
+    const dist = Math.abs(idx - storedStart);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = idx;
+    }
+    idx = text.indexOf(phrase, idx + 1);
+  }
+  return best === -1 ? null : { start: best, end: best + phrase.length };
 }
