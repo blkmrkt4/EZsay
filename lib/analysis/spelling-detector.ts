@@ -51,6 +51,15 @@ export async function detectSpellingErrors(
       const batchFindings: SpellingFinding[] = [];
       for (const item of parsed) {
         if (!item.word || !item.correction) continue;
+
+        // LLM noise guards: the model sometimes "flags" a word and returns
+        // the identical string as the correction (especially over-triggering
+        // on the variant instruction for words already in the target
+        // variant), and sometimes flags punctuation/number tokens that
+        // aren't words at all. Both are meaningless to the user.
+        if (normalizeForCompare(item.word) === normalizeForCompare(item.correction)) continue;
+        if (!/[a-zA-Z]/.test(String(item.word))) continue;
+
         const category: "spelling" | "variant" = item.category === "variant" ? "variant" : "spelling";
 
         // Attribute the finding to the batch section that contains the word.
@@ -96,6 +105,15 @@ export async function detectSpellingErrors(
   }
 
   return results.flat();
+}
+
+/**
+ * Normalize for the no-op check: NFC so composed/decomposed accents compare
+ * equal, and strip zero-width characters so an invisible difference doesn't
+ * produce a finding that LOOKS identical on screen.
+ */
+function normalizeForCompare(text: string): string {
+  return String(text).normalize("NFC").replace(/[\u200B\u200C\u200D\uFEFF]/g, "").trim();
 }
 
 function parseJsonResponse(content: string): unknown {

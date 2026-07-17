@@ -109,6 +109,8 @@ Rules:
 - The "word" field must contain the EXACT misspelled word as it appears in the text
 - phraseStart and phraseEnd are character offsets from the start of the text (0-indexed)
 - "category" is "variant" for wrong-variant words, "spelling" for ordinary misspellings
+- "correction" must be DIFFERENT from "word". Never report a word whose correction is the same spelling — if a word is already correct (including already correct in the target variant), it is not an error and must not appear in the output
+- Only flag actual words. Numbers, years, and punctuation tokens (e.g. "2019).") are never spelling errors
 - Return an empty array [] only if there are genuinely no spelling errors
 
 Respond with ONLY a JSON array. No explanation, no markdown, no wrapping.`,

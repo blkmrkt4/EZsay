@@ -1746,14 +1746,18 @@ export default function WorkspacePage() {
     // fixing citations mid-edit is wasted effort because rewrites can move,
     // merge, or remove the surrounding text. See section 10 of the PRD.
 
-    // 6. Spelling batch
-    const spellingFindings = (activeDoc?.spellingResults as import("@/lib/analysis/grammar-spelling-types").SpellingFinding[] | null) || [];
+    // 6. Spelling batch — drop no-op findings (correction identical to the
+    // word); documents scanned before the detector-level guard existed still
+    // carry them in spellingResults.
+    const spellingFindings = ((activeDoc?.spellingResults as import("@/lib/analysis/grammar-spelling-types").SpellingFinding[] | null) || [])
+      .filter((f) => f.word.trim() !== f.correction.trim());
     if (spellingFindings.length > 0) {
       queue.push({ type: "spelling_batch", findings: spellingFindings });
     }
 
-    // 7. Grammar batch
-    const grammarFindings = (activeDoc?.grammarResults as import("@/lib/analysis/grammar-spelling-types").GrammarFinding[] | null) || [];
+    // 7. Grammar batch — same no-op guard for older stored results.
+    const grammarFindings = ((activeDoc?.grammarResults as import("@/lib/analysis/grammar-spelling-types").GrammarFinding[] | null) || [])
+      .filter((f) => f.originalText.trim() !== f.correctedText.trim());
     if (grammarFindings.length > 0) {
       queue.push({ type: "grammar_batch", findings: grammarFindings });
     }
