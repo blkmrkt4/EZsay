@@ -135,6 +135,10 @@ export default function EditPage() {
       setFlags((prev) =>
         prev.map((f) => (f.id === flagId ? { ...f, status: action } : f))
       );
+      // An accept rewrites the whole section server-side and auto-skips its
+      // other open flags — reload so the displayed text and sibling flag
+      // statuses aren't stale (the server refuses re-resolves either way).
+      if (action === "accepted") await loadData();
       return true;
     } catch {
       return false;

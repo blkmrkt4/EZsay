@@ -108,6 +108,32 @@ export function checkForCorruption(text: string): CorruptionIssue[] {
 }
 
 /**
+ * BLOCKING validation for text about to be written to a document. Unlike
+ * checkForCorruption (advisory, broad), this only matches shapes that
+ * essentially never occur in legitimate prose — because a match REFUSES the
+ * user's accept. "The court's verdict: guilty" is normal writing; an LLM
+ * leak is line-anchored ("VERDICT: ..." on its own line) or structural.
+ */
+export function validateReplacementBlocking(originalText: string, replacementText: string): string | null {
+  const blocking = [
+    { pattern: /^\s*(CHANGED|OPTION\s+\d+|EXPLANATION|PRINCIPLE|VERDICT|REASONING):/gim, description: "LLM response marker at line start" },
+    { pattern: /\bCONFIDENCE:\s*[\d.]+/g, description: "LLM confidence marker" },
+    { pattern: /```/g, description: "Code fence in document text" },
+    { pattern: /\*\*[^*]{2,50}\*\*/g, description: "Markdown bold **text**" },
+  ];
+  for (const b of blocking) {
+    const re = new RegExp(b.pattern.source, b.pattern.flags);
+    let match;
+    while ((match = re.exec(replacementText)) !== null) {
+      if (!originalText.includes(match[0])) {
+        return `${b.description}: "${match[0].slice(0, 60)}"`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Validate that a replacement text doesn't introduce corruption.
  * Returns null if clean, or a description of the problem.
  */

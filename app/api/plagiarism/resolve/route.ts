@@ -75,10 +75,17 @@ export async function POST(request: NextRequest) {
 
     const newText = section.currentText.slice(0, idx) + replacementText + section.currentText.slice(idx + result.passageText.length);
 
-    await db
+    const written = await db
       .update(sections)
       .set({ currentText: newText })
-      .where(eq(sections.id, sectionId));
+      .where(and(eq(sections.id, sectionId), eq(sections.currentText, section.currentText)))
+      .returning({ id: sections.id });
+    if (written.length === 0) {
+      return NextResponse.json(
+        { success: false, error: "The document changed while saving — nothing was modified. Please retry.", code: "stale_section" },
+        { status: 409 },
+      );
+    }
 
     await db
       .update(plagiarismResults)
@@ -133,10 +140,17 @@ export async function POST(request: NextRequest) {
 
     const newText = section.currentText.slice(0, insertAt) + citation + section.currentText.slice(insertAt);
 
-    await db
+    const written = await db
       .update(sections)
       .set({ currentText: newText })
-      .where(eq(sections.id, sectionId));
+      .where(and(eq(sections.id, sectionId), eq(sections.currentText, section.currentText)))
+      .returning({ id: sections.id });
+    if (written.length === 0) {
+      return NextResponse.json(
+        { success: false, error: "The document changed while saving — nothing was modified. Please retry.", code: "stale_section" },
+        { status: 409 },
+      );
+    }
 
     await db
       .update(plagiarismResults)

@@ -333,6 +333,34 @@ async function handleResolve(body: {
   // Load the full citation record before updating (need rawText for section replacement)
   const [fullCitation] = await db.select().from(citations).where(eq(citations.id, citationId)).limit(1);
 
+  // When accepting or editing a fix, apply the text change FIRST — previously
+  // the citation was marked resolved before checking the text still contained
+  // it, so a fix could be silently dropped while the row claimed "resolved".
+  if (correctedText && fullCitation && (userAction === "accepted" || userAction === "edited")) {
+    const docSections = await db.select().from(sections).where(eq(sections.documentId, fullCitation.documentId));
+    let replacedAnywhere = false;
+    for (const section of docSections) {
+      if (section.currentText.includes(fullCitation.rawText)) {
+        const newText = section.currentText.replaceAll(fullCitation.rawText, correctedText);
+        if (newText !== section.currentText) {
+          // Optimistic guard — never clobber a concurrent write to this section.
+          const written = await db
+            .update(sections)
+            .set({ currentText: newText })
+            .where(and(eq(sections.id, section.id), eq(sections.currentText, section.currentText)))
+            .returning({ id: sections.id });
+          if (written.length > 0) replacedAnywhere = true;
+        }
+      }
+    }
+    if (!replacedAnywhere) {
+      return NextResponse.json(
+        { success: false, error: "This citation no longer appears in the document text — it may have been changed by an earlier edit. Nothing was modified.", code: "stale_citation" },
+        { status: 409 },
+      );
+    }
+  }
+
   const [updated] = await db
     .update(citations)
     .set({
@@ -342,19 +370,6 @@ async function handleResolve(body: {
     })
     .where(eq(citations.id, citationId))
     .returning();
-
-  // When accepting or editing a fix, also replace the citation in the document text
-  if (correctedText && fullCitation && (userAction === "accepted" || userAction === "edited")) {
-    const docSections = await db.select().from(sections).where(eq(sections.documentId, fullCitation.documentId));
-    for (const section of docSections) {
-      if (section.currentText.includes(fullCitation.rawText)) {
-        const newText = section.currentText.replaceAll(fullCitation.rawText, correctedText);
-        if (newText !== section.currentText) {
-          await db.update(sections).set({ currentText: newText }).where(eq(sections.id, section.id));
-        }
-      }
-    }
-  }
 
   // Recompute score after resolving
   let score: number | null = null;
@@ -826,7 +841,18 @@ async function handleAddReference(
     newText = last.currentText.trimEnd() + "\n\nReferences\n\n" + entry;
   }
 
-  await db.update(sections).set({ currentText: newText }).where(eq(sections.id, sectionId));
+  const asRead = target ? target.currentText : docSections[docSections.length - 1].currentText;
+  const written = await db
+    .update(sections)
+    .set({ currentText: newText })
+    .where(and(eq(sections.id, sectionId), eq(sections.currentText, asRead)))
+    .returning({ id: sections.id });
+  if (written.length === 0) {
+    return NextResponse.json(
+      { success: false, error: "The document changed while saving — nothing was modified. Please retry.", code: "stale_section" },
+      { status: 409 },
+    );
+  }
 
   await db
     .update(citations)
@@ -872,7 +898,17 @@ async function handleRemoveReference(body: { citationId: string }, userId: strin
     );
   }
 
-  await db.update(sections).set({ currentText: newText }).where(eq(sections.id, target.id));
+  const written = await db
+    .update(sections)
+    .set({ currentText: newText })
+    .where(and(eq(sections.id, target.id), eq(sections.currentText, target.currentText)))
+    .returning({ id: sections.id });
+  if (written.length === 0) {
+    return NextResponse.json(
+      { success: false, error: "The document changed while saving — nothing was modified. Please retry.", code: "stale_section" },
+      { status: 409 },
+    );
+  }
   await db
     .update(citations)
     .set({ status: "resolved", userAction: "edited", correctedText: null })
@@ -1141,13 +1177,21 @@ async function handleConvertAll(body: { documentId: string; targetStyle: string 
         outcome: "pending",
       });
 
-      // Replace in sections
+      // Replace in sections (optimistic guard: skip a section a concurrent
+      // writer touched rather than clobbering it; local copy is only updated
+      // when the write actually landed)
       for (const section of docSections) {
         if (section.currentText.includes(citation.rawText)) {
           const newText = section.currentText.replaceAll(citation.rawText, convertedText);
           if (newText !== section.currentText) {
-            await db.update(sections).set({ currentText: newText }).where(eq(sections.id, section.id));
-            section.currentText = newText; // Update local copy for subsequent replacements
+            const written = await db
+              .update(sections)
+              .set({ currentText: newText })
+              .where(and(eq(sections.id, section.id), eq(sections.currentText, section.currentText)))
+              .returning({ id: sections.id });
+            if (written.length > 0) {
+              section.currentText = newText; // Update local copy for subsequent replacements
+            }
           }
         }
       }

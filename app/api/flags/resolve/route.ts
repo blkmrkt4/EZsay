@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { flags, flagOptions, sections, libraryEntries, documents } from "@/db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { logStyleSignal } from "@/lib/style/logger";
-import { validateReplacement } from "@/lib/analysis/corruption-checker";
+import { validateReplacementBlocking } from "@/lib/analysis/corruption-checker";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { trackEvent } from "@/lib/events/track";
 
@@ -71,6 +71,19 @@ export async function POST(request: NextRequest) {
     //   prefill manual edits with the full section text — so the replacement
     //   IS the new section text. Never splice it into a narrow span: that
     //   pastes a whole paragraph mid-word and duplicates everything around it.
+    // Idempotency guard: a flag that is already resolved (accepted, rejected,
+    // skipped — including siblings AUTO-skipped by a whole-section accept)
+    // must never be processed again. Without this, re-accepting an
+    // auto-skipped sibling would overwrite the fresh rewrite with a stale
+    // full-section option — the corruption class this route was rewritten
+    // to kill.
+    if (flagRow.flag.status !== "open" && flagRow.flag.status !== "generation_failed") {
+      return NextResponse.json(
+        { success: false, error: "This flag was already resolved (the section may have been rewritten since).", code: "already_resolved" },
+        { status: 409 },
+      );
+    }
+
     const replacementRaw = action === "accepted"
       ? (optionId ? flagRow.optionText : manualText) ?? null
       : null;
@@ -79,6 +92,13 @@ export async function POST(request: NextRequest) {
 
     if (action === "accepted" && optionId && !flagRow.optionText) {
       return NextResponse.json({ success: false, error: "Option not found" }, { status: 404 });
+    }
+    if (action === "accepted" && replacementRaw === null) {
+      // A bare accept would mark the flag resolved without changing any text.
+      return NextResponse.json(
+        { success: false, error: "Nothing to apply — select an option or provide an edit first." },
+        { status: 400 },
+      );
     }
 
     if (replacementRaw !== null) {
@@ -103,8 +123,9 @@ export async function POST(request: NextRequest) {
           flagRow.sectionCurrentText.slice(span.end);
       } else {
         // Whole-section replacement. Guard against a pathologically small
-        // replacement wiping a large section (broken client / truncated LLM).
-        if (replacementRaw.trim().length < 40 && flagRow.sectionCurrentText.trim().length > 300) {
+        // OPTION wiping a large section (truncated LLM output). Manual edits
+        // are exempt — a user may deliberately condense a section hard.
+        if (optionId && replacementRaw.trim().length < 40 && flagRow.sectionCurrentText.trim().length > 300) {
           return NextResponse.json(
             { success: false, error: "The replacement looks truncated and was not applied.", code: "suspect_replacement" },
             { status: 422 },
@@ -113,9 +134,11 @@ export async function POST(request: NextRequest) {
         candidate = replacementRaw;
       }
 
-      // BLOCKING corruption check — previously this only console.warned and
-      // corrupted text was written anyway.
-      const corruption = validateReplacement(flagRow.sectionCurrentText, candidate);
+      // BLOCKING corruption check — conservative patterns only (line-anchored
+      // LLM markers, code fences, markdown bold): a match here REFUSES the
+      // accept, so prose-plausible phrases like "the verdict: guilty" must
+      // not trigger it.
+      const corruption = validateReplacementBlocking(flagRow.sectionCurrentText, candidate);
       if (corruption) {
         return NextResponse.json(
           { success: false, error: `The replacement looked corrupted and was not applied (${corruption}).`, code: "corrupt_replacement" },
@@ -125,7 +148,33 @@ export async function POST(request: NextRequest) {
       newSectionText = candidate;
     }
 
-    // ── Update flag status ───────────────────────────────────────────
+    // ── Apply the text change with an optimistic concurrency guard ────
+    // The write only lands if the section still contains exactly the text we
+    // read and validated against. A concurrent writer (double-fire, second
+    // tab, overlapping bulk fix) makes this a no-op instead of a silent
+    // clobber — and the flag stays untouched because we haven't updated it.
+    if (newSectionText !== null) {
+      const written = await db
+        .update(sections)
+        .set({
+          currentText: newSectionText,
+          flagsResolved: flagRow.sectionFlagsResolved + 1,
+        })
+        .where(and(
+          eq(sections.id, flagRow.sectionId),
+          eq(sections.currentText, flagRow.sectionCurrentText),
+        ))
+        .returning({ id: sections.id });
+
+      if (written.length === 0) {
+        return NextResponse.json(
+          { success: false, error: "The document changed while this edit was being applied — nothing was modified. Please retry.", code: "stale_section" },
+          { status: 409 },
+        );
+      }
+    }
+
+    // ── Update flag status (only after the text change landed) ────────
     const updateData: Record<string, unknown> = { status: action };
 
     if (optionId) {
@@ -150,40 +199,36 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Flag not found" }, { status: 404 });
     }
 
-    // ── Apply the text change ─────────────────────────────────────────
-    if (newSectionText !== null) {
-      await db
-        .update(sections)
-        .set({
-          currentText: newSectionText,
-          flagsResolved: flagRow.sectionFlagsResolved + 1,
-        })
-        .where(eq(sections.id, flagRow.sectionId));
-
-      // A full-section rewrite invalidates every other open content flag in
-      // the section — their text basis no longer exists. Auto-skip them so
-      // they can't be accepted against the old text (artifact flags stay:
-      // they re-anchor by search at their own accept time).
-      if (updatedFlag.patternType !== "ai_artifact") {
-        const skipped = await db
-          .update(flags)
-          .set({ status: "skipped" })
-          .where(and(
-            eq(flags.sectionId, flagRow.sectionId),
-            sql`${flags.id} != ${flagId}`,
-            sql`${flags.status} in ('open', 'generation_failed')`,
-            sql`${flags.patternType} != 'ai_artifact'`,
-          ))
-          .returning({ id: flags.id });
-        autoSkippedSiblings = skipped.length;
+    // A full-section rewrite invalidates every other open content flag in
+    // the section — their text basis no longer exists. Auto-skip them so
+    // they can't be accepted against the old text (artifact flags stay:
+    // they re-anchor by search at their own accept time; a status guard
+    // above refuses any attempt to re-resolve the skipped siblings).
+    if (newSectionText !== null && updatedFlag.patternType !== "ai_artifact") {
+      const skipped = await db
+        .update(flags)
+        .set({ status: "skipped" })
+        .where(and(
+          eq(flags.sectionId, flagRow.sectionId),
+          sql`${flags.id} != ${flagId}`,
+          sql`${flags.status} in ('open', 'generation_failed')`,
+          sql`${flags.patternType} != 'ai_artifact'`,
+        ))
+        .returning({ id: flags.id });
+      autoSkippedSiblings = skipped.length;
+      if (autoSkippedSiblings > 0) {
+        await db
+          .update(sections)
+          .set({ flagsResolved: sql`${sections.flagsResolved} + ${autoSkippedSiblings}` })
+          .where(eq(sections.id, flagRow.sectionId));
       }
     }
 
-    // ── Increment resolved count for skip/reject ─────────────────────
+    // ── Increment resolved count for skip/reject (atomic) ─────────────
     if (action === "skipped" || action === "rejected") {
       await db
         .update(sections)
-        .set({ flagsResolved: flagRow.sectionFlagsResolved + 1 })
+        .set({ flagsResolved: sql`${sections.flagsResolved} + 1` })
         .where(eq(sections.id, flagRow.sectionId));
     }
 

@@ -72,10 +72,21 @@ export async function POST(request: NextRequest) {
 
   const newText = section.currentText.slice(0, idx) + replacement + section.currentText.slice(end);
 
-  await db
+  // Optimistic concurrency guard: only write if the section still contains
+  // the text we located the sentence in (a concurrent edit otherwise gets
+  // silently reverted by this whole-text write).
+  const written = await db
     .update(sections)
     .set({ currentText: newText })
-    .where(eq(sections.id, sectionId));
+    .where(and(eq(sections.id, sectionId), eq(sections.currentText, section.currentText)))
+    .returning({ id: sections.id });
+
+  if (written.length === 0) {
+    return NextResponse.json(
+      { success: false, error: "The document changed while saving — nothing was modified. Please retry.", code: "stale_section" },
+      { status: 409 },
+    );
+  }
 
   return NextResponse.json({ success: true, data: { sectionId, newText } });
 }

@@ -146,6 +146,8 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
   // open, keeping formatting/cross-reference findings in step with the
   // document as currently edited.
   const autoCheckedFor = useRef<string | null>(null);
+  // One document-mutating citation action at a time (resolve / remove entry).
+  const resolveInFlightRef = useRef(false);
   useEffect(() => {
     loadCitations().then(() => {
       if (autoCheckedFor.current === documentId) return;
@@ -233,20 +235,34 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
   }
 
   async function handleResolve(citationId: string, userAction: string, correctedText?: string) {
-    const res = await fetch("/api/citations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "resolve", citationId, userAction, correctedText }),
-    });
-    const json = await res.json();
-    if (json.score != null && onScoreUpdate) onScoreUpdate(json.score);
-    setCitations((prev) => prev.map((c) =>
-      c.id === citationId
-        ? { ...c, status: userAction === "dismissed" ? "dismissed" : "resolved", userAction, correctedText: correctedText ?? c.correctedText }
-        : c
-    ));
-    setEditingId(null);
-    setEditText("");
+    // In-flight lock — double-clicked Accept fired two overlapping section
+    // writes; the server now also refuses stale/conflicting writes (409).
+    if (resolveInFlightRef.current) return;
+    resolveInFlightRef.current = true;
+    try {
+      const res = await fetch("/api/citations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "resolve", citationId, userAction, correctedText }),
+      });
+      const json = await res.json();
+      if (!json.success) {
+        alert(json.error || "The fix couldn't be applied — the document may have changed. Nothing was modified.");
+        await runStructuralCheck();
+        return;
+      }
+      if (json.score != null && onScoreUpdate) onScoreUpdate(json.score);
+      setCitations((prev) => prev.map((c) =>
+        c.id === citationId
+          ? { ...c, status: userAction === "dismissed" ? "dismissed" : "resolved", userAction, correctedText: correctedText ?? c.correctedText }
+          : c
+      ));
+      setEditingId(null);
+      setEditText("");
+      if (correctedText && (userAction === "accepted" || userAction === "edited")) onDocumentChanged?.();
+    } finally {
+      resolveInFlightRef.current = false;
+    }
   }
 
   /** Web-search a "no reference entry" in-text citation for its real source. */
@@ -297,20 +313,25 @@ export default function CitationsPage({ documentId, sections, onScoreUpdate, onS
 
   /** Delete a never-cited entry from the document's reference list. */
   async function handleRemoveReference(c: Citation) {
+    if (resolveInFlightRef.current) return;
     const confirmed = window.confirm(
       "Remove this entry from your reference list? The entry text will be deleted from the document."
     );
     if (!confirmed) return;
+    resolveInFlightRef.current = true;
     const res = await fetch("/api/citations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "remove_reference", citationId: c.id }),
     });
     const json = await res.json();
+    resolveInFlightRef.current = false;
     if (json.success) {
       if (json.score != null && onScoreUpdate) onScoreUpdate(json.score);
       onDocumentChanged?.();
       await runStructuralCheck();
+    } else {
+      alert(json.error || "Couldn't remove the entry — the document may have changed. Nothing was modified.");
     }
   }
 

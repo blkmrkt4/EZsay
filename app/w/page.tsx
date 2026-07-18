@@ -322,6 +322,7 @@ export default function WorkspacePage() {
 
   // Unified edit queue state
   const [artifactBatchChoices, setArtifactBatchChoices] = useState<Record<string, "remove" | "keep" | "ask">>({});
+  const [artifactProcessing, setArtifactProcessing] = useState(false);
   const [processedArtifacts, setProcessedArtifacts] = useState<Record<string, { action: "remove" | "keep" | "ask"; count: number }>>({});
   const [skipAllWritingQuality, setSkipAllWritingQuality] = useState(false);
   // Artifact items the user has set to "always keep" — the client-side final
@@ -419,6 +420,8 @@ export default function WorkspacePage() {
   const diffDocRef = useRef<HTMLDivElement>(null);
   const diffEditRef = useRef<HTMLDivElement>(null);
   const diffSyncingRef = useRef(false);
+  // One resolve at a time — see handleFlagResolved.
+  const flagResolveInFlightRef = useRef(false);
   // Mirrors of state the async generation loop reads (closures would go stale).
   const flagsRef = useRef<Flag[]>([]);
   const flagOptionsRef = useRef<FlagOption[]>([]);
@@ -950,8 +953,9 @@ export default function WorkspacePage() {
   // ── Artifact batch processing ──────────────────────────────────────────
 
   async function handleArtifactBatchProcess() {
-    if (!activeDocId) return;
-
+    if (!activeDocId || artifactProcessing) return;
+    setArtifactProcessing(true);
+    try {
     // Every finding gets an effective choice — untouched items default to
     // REMOVE (the fastest path to a clean document; previously untouched
     // items were silently skipped, so "Process Choices" often did nothing).
@@ -972,13 +976,18 @@ export default function WorkspacePage() {
       .filter(([, choice]) => choice === "ask")
       .map(([item]) => item);
 
-    // Bulk remove
+    // Bulk remove — check the response; a failed removal must not be
+    // recorded as processed.
     if (removeItems.length > 0) {
-      await fetch("/api/artifacts/bulk-remove", {
+      const res = await fetch("/api/artifacts/bulk-remove", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ documentId: activeDocId, items: removeItems }),
-      });
+      }).then((r) => r.json()).catch(() => null);
+      if (!res?.success) {
+        alert(res?.error || "Artifact removal failed — nothing was recorded as processed. Please retry.");
+        return;
+      }
     }
 
     // Create individual flags for "Ask" items
@@ -1008,6 +1017,9 @@ export default function WorkspacePage() {
     // Advance past the batch flag — if findings remain, it'll still be in the queue for later
     setSelectedFlagIdx((prev) => prev + 1);
     setSelectedOptionIdx(null);
+    } finally {
+      setArtifactProcessing(false);
+    }
   }
 
   // ── Plagiarism resolution ─────────────────────────────────────────────
@@ -1256,9 +1268,15 @@ export default function WorkspacePage() {
   // ── Flag resolution ────────────────────────────────────────────────────
 
   async function handleFlagResolved(action: "accepted" | "rejected" | "skipped", optionId?: string, manualText?: string) {
+    // In-flight lock: double-click, Enter key-repeat, and navigate-then-fire
+    // must never issue two overlapping resolves (two whole-section writes
+    // computed from the same starting text silently revert each other).
+    if (flagResolveInFlightRef.current) return;
     const item = editQueue[selectedFlagIdx];
     const flag = item && (item.type === "ai_detection" || item.type === "artifact_individual") ? item.flag : null;
     if (!flag) return;
+    flagResolveInFlightRef.current = true;
+    try {
     let json: { success?: boolean; error?: string; data?: { autoSkippedSiblings?: number } } | null = null;
     try {
       const res = await fetch("/api/flags/resolve", {
@@ -1289,6 +1307,9 @@ export default function WorkspacePage() {
     // Every resolution (accepted/rejected/skipped) removes this flag from the
     // queue, so the next item slides into the same index — advancing here
     // would skip an item and eventually strand past the end of the queue.
+    } finally {
+      flagResolveInFlightRef.current = false;
+    }
   }
 
   // ── Rename document ─────────────────────────────────────────────────────
@@ -3546,10 +3567,11 @@ export default function WorkspacePage() {
                       <>
                         <button
                           onClick={handleArtifactBatchProcess}
-                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-white bg-purple-600 hover:bg-purple-700"
+                          disabled={artifactProcessing}
+                          className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50"
                         >
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white text-[9px] font-bold text-purple-600">1</span>
-                          <span>Process Choices</span>
+                          <span>{artifactProcessing ? "Processing…" : "Process Choices"}</span>
                         </button>
                         <button
                           onClick={() => { setSelectedFlagIdx((p) => p + 1); setSelectedOptionIdx(null); }}

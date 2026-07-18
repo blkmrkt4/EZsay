@@ -78,10 +78,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Optimistic guard: skip this section if something else wrote to it
+    // between our read and this write (never clobber a concurrent edit).
     await db
       .update(sections)
       .set({ currentText: text })
-      .where(eq(sections.id, sectionId));
+      .where(and(eq(sections.id, sectionId), eq(sections.currentText, section.currentText)));
   }
 
   // Remove fixed findings from stored results

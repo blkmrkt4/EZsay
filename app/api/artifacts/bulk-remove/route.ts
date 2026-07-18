@@ -67,10 +67,12 @@ export async function POST(request: NextRequest) {
     newText = newText.replace(/  +/g, " ").replace(/\n{3,}/g, "\n\n");
 
     if (newText !== section.currentText) {
+      // Optimistic guard: skip this section if something else wrote to it
+      // between our read and this write (never clobber a concurrent edit).
       await db
         .update(sections)
         .set({ currentText: newText })
-        .where(eq(sections.id, section.id));
+        .where(and(eq(sections.id, section.id), eq(sections.currentText, section.currentText)));
     }
   }
 
