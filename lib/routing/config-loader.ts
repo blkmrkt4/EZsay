@@ -1,3 +1,11 @@
+/**
+ * @deprecated Legacy config path. No live route calls loadConfig() — the
+ * production LLM configuration is the Activity Binds system
+ * (lib/routing/openrouter.ts: loadBind / executeActivity, backed by
+ * activity_binds + model_library). Kept only until the legacy
+ * prompt_configs/model_configs tables are dropped.
+ */
+
 import { db } from "@/db";
 import { promptConfigs, promptVersions, modelConfigs, contextVersions } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -53,9 +61,9 @@ export async function loadConfig(activityType: string): Promise<LLMConfig> {
 
   // Load model config
   let model = {
-    primaryModel: "anthropic/claude-sonnet-4-20250514",
-    fallbackModel1: "google/gemini-2.5-flash-preview",
-    fallbackModel2: "openai/gpt-4o",
+    primaryModel: "anthropic/claude-sonnet-4.6",
+    fallbackModel1: "google/gemini-3-flash-preview",
+    fallbackModel2: "openai/gpt-5.4-mini",
     temperature: 0.7,
     maxTokens: 2048,
   };

@@ -121,6 +121,12 @@ export async function PATCH(
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (body.title !== undefined) updates.title = body.title;
     if (body.intake !== undefined) updates.intake = body.intake;
+    if (
+      body.documentType !== undefined &&
+      ["academic", "professional", "casual", "legal"].includes(body.documentType)
+    ) {
+      updates.documentType = body.documentType;
+    }
 
     const [updated] = await db
       .update(documents)

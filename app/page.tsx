@@ -310,7 +310,7 @@ export default function Home() {
                   "Side-by-side A/B rewrites on every flag",
                   "Voice learning across your documents",
                   "Unlimited scans, unlimited length",
-                  "Clean exports in .docx, .pdf, or .md",
+                  "Clean exports in .docx or plain text",
                   "Track your score improvement over time",
                 ].map((item) => (
                   <li key={item} className="flex items-start gap-2 text-sm text-gray-300">

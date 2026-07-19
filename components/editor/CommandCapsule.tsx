@@ -34,7 +34,10 @@ export default function CommandCapsule({ scanSlot, score }: CommandCapsuleProps)
     >
       <div className="flex items-center self-center">{scanSlot}</div>
       <div className="h-5 w-px shrink-0 self-center bg-gray-300/50 dark:bg-white/10" aria-hidden />
-      <div className="flex items-center gap-2 self-center">
+      <div
+        className="flex items-center gap-2 self-center"
+        title="EzSay's own estimate of AI-pattern density — not your university's detector. Higher is better."
+      >
         <span className="hidden text-[10px] font-medium uppercase tracking-widest text-gray-400 dark:text-gray-500 sm:inline">
           Auditor
         </span>

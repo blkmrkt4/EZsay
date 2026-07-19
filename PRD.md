@@ -112,43 +112,26 @@ Single-page desktop application at `/w`. No page navigation — everything acces
 
 ## 6. Scan system
 
-### 6.1 Scan configuration dialog
+### 6.1 One-click comprehensive scan (dialog removed 2026-07-19)
 
-Before every scan, a modal dialog lets the user choose:
+**There is no scan configuration dialog.** Every scan runs ALL categories (AI Detection, Writing Quality, AI Artifacts, Plagiarism, Citations, Tone Consistency, Spelling, Grammar) at **comprehensive** depth (~250 library entries). The `ScanConfigDialog` component, the Surface/Deep depth choice, and the per-category checkboxes were removed — the config lives as a constant in `app/w/page.tsx` (`scanConfig`). Rationale: a stressed student should never face 8 checkboxes and a jargon depth-picker before getting value; "if we do this right, we don't need a dialogue box."
 
-**Step 1 -- What to check** (checkboxes, never overridden):
-- AI Detection (default: on)
-- Writing Quality (default: on)
-- AI Artifacts (default: on)
-- Plagiarism (default: off)
-- Citations (default: off)
-- Tone Consistency (default: on)
-
-**Step 2 -- AI Detection depth** (radio buttons):
-
-| Depth | Sensitivity | Library entries loaded |
-|---|---|---|
-| Surface | Low | ~55 high-severity entries |
-| Deep | Medium | ~218 high + medium entries |
-| Comprehensive | High | ~250 all entries |
-
-All three depths run the full detection pipeline (exact + regex + semantic). The only difference is how many library entries are loaded. Depth does NOT override category checkboxes.
+Cost guards that make always-comprehensive affordable:
+- AI detection / rescore are pure code — $0 per scan.
+- Suggest options and citation verifications are idempotent (never re-billed).
+- Plagiarism re-checks reuse the stored verdict for any paragraph whose text is unchanged since the last pass (`app/api/plagiarism/route.ts`, keyed by exact paragraph text) — only edited paragraphs pay for search + assessment.
 
 ### 6.2 Scan flow
 
-1. User clicks Scan -> dialog opens -> user picks settings -> confirm
-2. Button shows "Scanning..." (blue) -> "Preparing..." (amber) -> "Scanned" (green)
-3. Analysis panel shows progress checklist with checkmarks, spinners, and waiting indicators
-4. "Start Editing" button disabled until suggestions are ready
-5. After viewing results, Scan button grays out until user saves a version
+1. User clicks **Scan** (or **Re-check** after the first scan) — the scan starts immediately, no dialog
+2. A re-check auto-saves a version first (score history keeps its snapshots); scanning is still user-triggered only (constraint #2)
+3. Button shows "Scanning..." (blue) -> "Preparing..." (amber) -> "Scanned" (green)
+4. Analysis panel shows progress checklist with checkmarks, spinners, and waiting indicators
+5. "Start Editing" button disabled until suggestions are ready
 
 ### 6.3 Scan history message
 
-The scan dialog shows context about the previous scan:
-- Upgrading depth: green message
-- Same depth at max: "Already at maximum depth. This re-scan will check your latest edits."
-- Same depth below max: blue suggestion to upgrade
-- Downgrading: amber warning
+Removed with the dialog (2026-07-19) — depth is always comprehensive, so upgrade/downgrade messaging no longer applies. The footer still shows "Last scan" info.
 
 ### 6.4 English-variant conformance (added 2026-07-15)
 
@@ -161,12 +144,11 @@ A British academic paper full of American spellings previously passed every chec
 **Edit context for existing documents (added 2026-07-15).** Intake normally runs once, right after upload — documents uploaded before a question existed could never answer it. The library row's kebab menu now has **"Edit context"** (`openDocumentContext` in `app/w/page.tsx`): reopens the intake questionnaire for any document with answers pre-filled from `documents.intake`, and Done re-saves via the same PATCH. This is how older documents get an English variant (or change any answer).
 
 **Style-guide nudges (added 2026-07-15).** Users won't find the Style Rules tab on their own, and the scan can only check what an institution requires if the rules exist. Two non-blocking nudges appear until the user has GONE THROUGH their style guide — that means a deliberate, complete act only: an uploaded/parsed guide (`styleGuideParsedAt`) OR a full wizard run-through after the nudge feature shipped (`wizardCompletedLatest` — max `wizardCompletedAt` across the user's rows — newer than the hardcoded `STYLE_RULES_ENGAGEMENT_EPOCH`, 2026-07-15). Toggling a single rule and pre-nudge wizard answers deliberately do NOT count. The client's `hasStyleRules` refetches on nav changes so completing the wizard/upload clears the nudges immediately:
-1. **Intake:** an amber "Do you have a style guide?" card under every question, with an "Open Style Rules" button. While unengaged, the "Skip and start scanning" escape hatch is replaced by an amber "Highly recommended: set up your style guide to adjust what gets scanned" link (a rules-less scan misses what the user is looking for); both style-guide exits silently PATCH the answers given so far, so intake progress survives — the user finishes the rest via "Edit context". Once engaged, the muted "Skip and start scanning" link returns.
-2. **Scan dialog:** an amber "Sure, I'll scan — but have you filled out your style guide?" panel above the footer with "Open Style Rules first"; the confirm button reads **"Scan anyway"** instead of "Run Scan". Scanning is never blocked.
+**(Updated 2026-07-19)** With the intake questionnaire replaced by the assignment brief and the scan dialog removed, the nudge is now a single non-blocking amber line inside the brief card ("Have an institution style guide? Upload it in Style Rules…"); leaving for Style Rules still silently PATCHes the answers given so far. Scanning is never blocked and the primary "Save & run the full scan" button is always available.
 
 **Token rule:** `buildIntakeTokens` now ALWAYS emits `SPELLING_VARIANT` — `executeActivity` leaves unmatched `[PLACEHOLDER]`s literally in the prompt (`lib/routing/openrouter.ts:233-237`), so `variantToken(null)` supplies the neutral "no target variant, both valid" instruction. Any prompt gaining a new token must follow this always-emit rule.
 
-**Consumers:** `[SPELLING_VARIANT]` now appears in the user prompts of `detect-spelling`, `detect-grammar` (seeded via `scripts/seed-grammar-spelling-binds.ts`), and `suggest-rewrite` / `suggest-academic` / `suggest-tone` / `evaluate-rewrite` (appended via `scripts/add-variant-to-prompts.ts`, idempotent, resolves prompts through `activityBinds`). Spelling reports wrong-variant words with `category: "variant"` (new optional field on `SpellingFinding`, blue VARIANT badge in `SpellingView`); grammar uses `ruleCategory: "variant"` and must write corrections in the target variant; tone-consistency (direct `callOpenRouter`, still hardcoded — constraint-#7 migration debt) gets a target-variant line in its user message and treats unquoted off-variant spelling as a register_change.
+**Consumers:** `[SPELLING_VARIANT]` now appears in the user prompts of `detect-spelling`, `detect-grammar` (seeded via `scripts/seed-grammar-spelling-binds.ts`), and `suggest-rewrite` / `suggest-academic` / `suggest-tone` / `evaluate-rewrite` (appended via `scripts/add-variant-to-prompts.ts`, idempotent, resolves prompts through `activityBinds`). Spelling reports wrong-variant words with `category: "variant"` (new optional field on `SpellingFinding`, blue VARIANT badge in `SpellingView`); grammar uses `ruleCategory: "variant"` and must write corrections in the target variant; tone-consistency (now bind-driven via `loadBind("tone-consistency")` — the constraint-#7 debt was cleared 2026-07-19) gets a target-variant line in its user message and treats unquoted off-variant spelling as a register_change.
 
 **Quote exemption:** quoted material keeps its source's spelling (a verbatim US quote in a British paper stays American). Enforced in every prompt AND by a code backstop: `lib/analysis/quote-ranges.ts` (`findQuotedRanges` — straight doubles, curly doubles, curly single pairs; straight singles skipped for apostrophe ambiguity; 600-char span cap against unbalanced quotes) — the spelling/grammar detectors drop variant-category findings whose span intersects a quoted range.
 
@@ -547,6 +529,12 @@ DEV_BYPASS_AUTH=false
 | 15 | Writing Quality in edit queue | Advisory flags, skippable, don't count toward total | 2026-04-21 |
 | 16 | Production domain | Subdomain on existing portfolio domain — `ezsay.byzyb.ai` — not a new top-level domain | 2026-05-09 |
 | 17 | Stripe environment for launch | Live mode from day one. Two products × two intervals; no separate test deployment | 2026-05-09 |
+| 18 | Scan config dialog | Removed entirely — every scan is all categories at comprehensive depth, one click | 2026-07-19 |
+| 19 | Intake questionnaire | Replaced by the assignment brief: one optional card (doc type, citation style, word target, English variant, AI usage, collapsed extras) with "Save & run the full scan" primary | 2026-07-19 |
+| 20 | Re-check flow | Scan button auto-saves a version then re-scans — the Save-Version-then-Scan ritual and the grayed-out Scan button are gone | 2026-07-19 |
+| 21 | Model routing | Sonnet 4.6 only for rewrites (with Kimi K2.5 / DeepSeek V4 Flash A/B fallbacks); nano/flash tiers everywhere else; prompt caching on; see §24 | 2026-07-19 |
+| 22 | Word-count target | Stored in `documents.intake.wordTarget` via the assignment brief; footer shows live progress; completion screen shows words vs target | 2026-07-19 |
+| 23 | Detector-parity framing | Score displays carry "EzSay's own estimate — not your university's detector" (free-scan results + Auditor tooltip); landing no longer claims .pdf/.md export | 2026-07-19 |
 
 ---
 
@@ -740,3 +728,29 @@ Detours shipped:
 ### 23.3 Visuals — hybrid, currently all HTML mockups
 
 The plan called for a hybrid of real workspace screenshots + HTML mockups for simpler screens. Shipped state: **all screens are HTML/Tailwind mockups** in `components/demo/mocks/` (`WelcomeMock`, `UploadMock`, `LibraryMock`, `ResultsMock`, `WorkspaceMock`, `AnalysisMock`, `MorphMock`, `ReviewMock`, `CitationsMock`, `StyleRulesMock`, `ShadingLegendMock`). The mocks reuse the app's real color tokens (`SIGNAL_COLORS` / `SIGNAL_BADGE` from `app/w/page.tsx`, pattern colors from `lib/constants.ts`) so the shading legend is truthful. Real captures were deferred because they need an authenticated session with a fully-scanned document + generated options; swapping a screenshot into a workspace step is a one-line `visual:` change in `steps.tsx` (drop the PNG in `public/demo/` and reference it with an `<img>`).
+
+---
+
+## 24. Model routing & LLM cost (2026-07-19 pass)
+
+All routing lives in the Activity Binds system (`activity_binds` + `model_library`), applied by `scripts/seed-model-reroute.ts` (idempotent; validates every model ID against OpenRouter's public /models list before writing; never overwrites an admin-customised bind — only replaces models still on the known stale seeded IDs). The legacy `model_configs`/`prompt_configs` path (`lib/routing/config-loader.ts`) is dead code, marked `@deprecated`.
+
+### Current routing
+
+| Activity | Primary | Fallbacks | Why |
+|---|---|---|---|
+| suggest-rewrite / suggest-academic | `anthropic/claude-sonnet-4.6` | `moonshotai/kimi-k2.5`, `deepseek/deepseek-v4-flash` | The one quality-critical prose task. Fallbacks double as the acceptance-rate A/B pool. |
+| evaluate-rewrite | `openai/gpt-5-nano` | `anthropic/claude-haiku-4.5`, `google/gemini-3-flash-preview` | 512-token classification |
+| detect-grammar / detect-spelling | `google/gemini-3-flash-preview` | `deepseek/deepseek-v4-flash`, `openai/gpt-5.4-nano` | Mechanical detection — was the biggest Sonnet overkill |
+| tone-consistency (new bind) | `google/gemini-3-flash-preview` | `openai/gpt-5.4-mini`, `deepseek/deepseek-v4-flash` | Whole-doc JSON verdict; was hardcoded Sonnet (constraint-#7 debt, now fixed) |
+| plagiarism-queries / plagiarism-assess (new binds) | `google/gemini-3-flash-preview` | mini/nano/deepseek | Was hardcoded (constraint-#7 debt, now fixed) |
+| citation-verify / quote-check / find-source | `openai/gpt-5.4-mini` | `google/gemini-3-flash-preview`, `deepseek/deepseek-v4-flash` | Structured extraction with honesty-committee stakes — mid-tier, not nano |
+| citation-convert | `openai/gpt-5.4-nano` | flash, mini | Format transform, 512 tokens |
+
+Notes (pricing verified against openrouter.ai 2026-07-19):
+- **Kimi K3 is $3/$15 — Sonnet-priced with no OpenRouter prompt caching. Not a savings play.** Kimi K2.5 ($0.375/$2.025) is the value Moonshot tier.
+- **`x-ai/grok-4.1-fast` was delisted from OpenRouter** (checked live); the cheapest Grok (4.3, $1.25/$2.50) loses to Gemini 3 Flash for short-output analysis, so Grok is out of the lineup.
+- **Prompt caching is ON** (`lib/routing/openrouter.ts` `withCacheControl`): system messages ≥4,000 chars get a `cache_control: ephemeral` breakpoint — the ~3k-token ContextLLM prefix repeated on every suggest/evaluate call was the largest fixed input cost. Cache-read tokens are logged (`prompt_tokens_details.cached_tokens`).
+- **A/B plan:** `llm_call_log` already records model + outcome per call; when enough acceptance data accumulates, compare Sonnet 4.6 vs Kimi K2.5 vs DeepSeek V4 Flash acceptance rates on suggest activities before demoting Sonnet.
+- **Retired binds** (never invoked by any route — scan is pure code): surface-scan, deep-scan, comprehensive-scan, suggest-tone, expand-prose — rows kept with `isActive=false`, removed from the admin auto-recreate list.
+- Estimated full-workup cost for a 10k-word doc: ~$2.50–4.00 (old all-Sonnet, uncached) → ~$0.80–1.20 (this routing). Verify against `llm_call_log`, not the estimate.

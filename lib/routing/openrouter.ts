@@ -7,9 +7,39 @@ interface OpenRouterMessage {
   content: string;
 }
 
+type OpenRouterContentPart = {
+  type: "text";
+  text: string;
+  cache_control?: { type: "ephemeral" };
+};
+
+interface OpenRouterWireMessage {
+  role: "system" | "user" | "assistant";
+  content: string | OpenRouterContentPart[];
+}
+
 interface OpenRouterResponse {
   choices: { message: { content: string } }[];
-  usage?: { prompt_tokens: number; completion_tokens: number };
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
+}
+
+// Anthropic won't cache prompts below ~1024 tokens, so only mark breakpoints on
+// system messages large enough to qualify (~4 chars/token). Providers that don't
+// support cache_control ignore it; OpenAI/Gemini/Grok cache automatically.
+const CACHE_CONTROL_MIN_CHARS = 4_000;
+
+function withCacheControl(messages: OpenRouterMessage[]): OpenRouterWireMessage[] {
+  return messages.map((m) => {
+    if (m.role !== "system" || m.content.length < CACHE_CONTROL_MIN_CHARS) return m;
+    return {
+      role: m.role,
+      content: [{ type: "text", text: m.content, cache_control: { type: "ephemeral" } }],
+    };
+  });
 }
 
 /**
@@ -43,7 +73,7 @@ export async function loadBind(slug: string) {
   if (!bind) throw new Error(`No activity bind found for slug: ${slug}`);
 
   // Load model
-  let model = { openrouterModelId: "anthropic/claude-sonnet-4-20250514", temperature: 0.7, maxTokens: 2048 };
+  let model = { openrouterModelId: "anthropic/claude-sonnet-4.6", temperature: 0.7, maxTokens: 2048 };
   if (bind.modelId) {
     const [m] = await db.select().from(modelLibrary).where(eq(modelLibrary.id, bind.modelId)).limit(1);
     if (m) model = { openrouterModelId: m.openrouterModelId, temperature: m.temperature, maxTokens: m.maxTokens };
@@ -152,7 +182,7 @@ export async function callOpenRouter(
           },
           body: JSON.stringify({
             model,
-            messages,
+            messages: withCacheControl(messages),
             temperature,
             max_tokens: maxTokens,
           }),
@@ -192,7 +222,8 @@ export async function callOpenRouter(
         }
 
         const latencyMs = Date.now() - startTime;
-        console.log(`[OpenRouter] Success with ${model} (${data.usage?.prompt_tokens ?? "?"}in/${data.usage?.completion_tokens ?? "?"}out tokens, ${latencyMs}ms)`);
+        const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+        console.log(`[OpenRouter] Success with ${model} (${data.usage?.prompt_tokens ?? "?"}in/${data.usage?.completion_tokens ?? "?"}out tokens${cachedTokens ? `, ${cachedTokens} cached` : ""}, ${latencyMs}ms)`);
         return {
           content: data.choices[0].message.content,
           modelUsed: model,

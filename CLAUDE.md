@@ -80,7 +80,7 @@ The analysis engine never uses a hardcoded list of banned words or patterns. It 
 | Auth | Supabase Auth | Email/password + Google SSO. No NextAuth. Apple SSO deferred to post-V1. |
 | File storage | Supabase Storage | Uploaded PDFs and .docx files |
 | Payments | Stripe | Monthly + annual subscriptions |
-| Model routing | OpenRouter | Single API key, multi-model, hidden from users |
+| Model routing | OpenRouter | Single API key, multi-model, hidden from users. Live routing = Activity Binds (`activity_binds` + `model_library`, loaded by `lib/routing/openrouter.ts::loadBind`); current lineup applied by `scripts/seed-model-reroute.ts` — Sonnet 4.6 for rewrites only, nano/flash tiers elsewhere (PRD §24). Prompt caching: system messages ≥4k chars get a `cache_control` breakpoint. The legacy `model_configs`/`prompt_configs` path is dead (`config-loader.ts` is `@deprecated`). |
 | PDF parsing | pdfjs-dist | Server-side text extraction |
 | DOCX parsing | mammoth.js | Preserves headings and footnote markers |
 | Citation verify | OpenRouter + web search | Citation strings only — no full document content |
@@ -482,7 +482,8 @@ Fire-and-forget — never block the editing UI. Use `waitUntil` or background jo
 - **Desktop-first.** Editing panel requires full screen width. Mobile shows "best on desktop" for editing only. All other screens mobile-responsive.
 - **Silent saves.** No spinners. Progress via progress indicator only.
 - **Flag severity colours:** High = amber, Medium = yellow, Low = light blue, Resolved = faded + strikethrough, Locked = grey no highlight.
-- **Re-evaluate button:** persistent header, disabled during active scan, animates score on return.
+- **One-click scan (2026-07-19):** there is NO scan-config dialog. Every scan runs all 8 categories at comprehensive depth (`scanConfig` constant in `app/w/page.tsx`). After the first scan the button reads **Re-check** and auto-saves a version before re-scanning — still user-triggered only (constraint #2). Do not reintroduce a dialog, depth picker, or category checkboxes.
+- **Assignment brief (2026-07-19):** the forced 5-question intake is gone. After upload the user sees ONE optional card (`nav === "intake"` in `app/w/page.tsx`): document type, citation style (writes `citation_format` style preference), word-count target (stored in `documents.intake.wordTarget`, shown as live progress in the footer), English variant, AI usage, plus a collapsed "More context" disclosure. Primary button is always "Save & run the full scan". Nothing in this card may ever block scanning.
 
 ---
 

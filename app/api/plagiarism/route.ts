@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
 import { documents, sections, plagiarismResults, llmCallLog } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
-import { callOpenRouter } from "@/lib/routing/openrouter";
+import { callOpenRouter, loadBind } from "@/lib/routing/openrouter";
 import { webSearch } from "@/lib/search/tavily";
 import { rateLimit } from "@/lib/rate-limit";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
@@ -43,10 +43,39 @@ TOP_URL: [the most relevant matching URL, or "none"]
 TOP_TITLE: [title of that page, or "none"]
 TOP_SNIPPET: [the matching snippet from that page, or "none"]`;
 
-// Models
-const QUERY_MODEL = "google/gemini-2.5-flash";
-const ASSESS_MODEL = "anthropic/claude-sonnet-4";
-const ASSESS_FALLBACKS = ["google/gemini-2.5-pro", "openai/gpt-4o"];
+// Last-resort defaults only — the live config is the "plagiarism-queries" /
+// "plagiarism-assess" activity binds (constraint #7: models are admin-managed).
+const QUERY_FALLBACK_CONFIG = {
+  system: QUERY_SYSTEM,
+  model: "google/gemini-3-flash-preview",
+  fallbacks: ["openai/gpt-5.4-nano"],
+  temperature: 0.1,
+  maxTokens: 4096,
+};
+const ASSESS_FALLBACK_CONFIG = {
+  system: ASSESS_SYSTEM,
+  model: "google/gemini-3-flash-preview",
+  fallbacks: ["openai/gpt-5.4-mini", "deepseek/deepseek-v4-flash"],
+  temperature: 0.2,
+  maxTokens: 1024,
+};
+
+type PlagLLMConfig = typeof ASSESS_FALLBACK_CONFIG;
+
+async function loadPlagConfig(slug: string, fallback: PlagLLMConfig): Promise<PlagLLMConfig> {
+  try {
+    const b = await loadBind(slug);
+    return {
+      system: b.systemPrompt || fallback.system,
+      model: b.model.openrouterModelId,
+      fallbacks: b.fallbacks.length > 0 ? b.fallbacks : fallback.fallbacks,
+      temperature: b.model.temperature,
+      maxTokens: b.model.maxTokens,
+    };
+  } catch {
+    return fallback;
+  }
+}
 
 const MIN_SEARCH_SCORE = 0.4;
 const MIN_PARAGRAPH_WORDS = 8; // Skip very short paragraphs (titles, single words)
@@ -140,6 +169,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Document has no text" }, { status: 400 });
   }
 
+  // Cost guard for re-checks: paragraphs whose text is unchanged since the
+  // last plagiarism pass reuse their stored verdict instead of paying for a
+  // fresh search + assessment. Keyed by exact paragraph text.
+  const previousResults = await db
+    .select()
+    .from(plagiarismResults)
+    .where(eq(plagiarismResults.documentId, documentId));
+  const previousByText = new Map(
+    previousResults
+      .filter((r) => r.verdict !== "error")
+      .map((r) => [r.passageText, r] as const),
+  );
+
   // Clear previous results
   await db.delete(plagiarismResults).where(eq(plagiarismResults.documentId, documentId));
 
@@ -175,22 +217,30 @@ export async function POST(request: NextRequest) {
 
   // ── Step 2: Generate search queries for ALL paragraphs (one LLM call) ─
   console.log("[plagiarism] Step 2: Generating search queries...");
-  const numberedParagraphs = paragraphs
-    .map((p, i) => `[${i + 1}] ${p.text}`)
+  // Only paragraphs without a reusable previous result need a search query.
+  const paragraphsNeedingQueries = paragraphs
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => !previousByText.has(p.text));
+  const numberedParagraphs = paragraphsNeedingQueries
+    .map(({ p, i }) => `[${i + 1}] ${p.text}`)
     .join("\n\n");
 
   const queryMap: Map<number, string> = new Map();
+  const queryCfg = await loadPlagConfig("plagiarism-queries", QUERY_FALLBACK_CONFIG);
+  const assessCfg = await loadPlagConfig("plagiarism-assess", ASSESS_FALLBACK_CONFIG);
 
-  try {
+  if (paragraphsNeedingQueries.length === 0) {
+    console.log("[plagiarism] All paragraphs unchanged since last pass — no query generation needed");
+  } else try {
     const queryResult = await callOpenRouter(
       [
-        { role: "system", content: QUERY_SYSTEM },
+        { role: "system", content: queryCfg.system },
         { role: "user", content: `Document type: ${doc.documentType}\n\nParagraphs:\n${numberedParagraphs}` },
       ],
-      QUERY_MODEL,
-      ["google/gemini-2.5-flash-lite"],
-      0.1,
-      4096,
+      queryCfg.model,
+      queryCfg.fallbacks,
+      queryCfg.temperature,
+      queryCfg.maxTokens,
     );
 
     await db.insert(llmCallLog).values({
@@ -225,10 +275,10 @@ export async function POST(request: NextRequest) {
   let matchesFound = 0;
   const CONCURRENCY = 2;
 
+  let reusedCount = 0;
+
   async function checkParagraph(para: typeof paragraphs[number], idx: number) {
     const searchQuery = queryMap.get(idx + 1) ?? para.text.slice(0, 80);
-
-    console.log(`[plagiarism] Checking ${idx + 1}/${paragraphs.length}: "${para.text.slice(0, 50)}..."`);
 
     const passageStart = fullText.indexOf(para.text);
     const passageEnd = passageStart >= 0 ? passageStart + para.text.length : 0;
@@ -240,6 +290,33 @@ export async function POST(request: NextRequest) {
         break;
       }
     }
+
+    // Unchanged paragraph → reuse the previous verdict, no search, no LLM.
+    const previous = previousByText.get(para.text);
+    if (previous) {
+      reusedCount++;
+      if (previous.verdict === "plagiarism") matchesFound++;
+      const [inserted] = await db.insert(plagiarismResults).values({
+        documentId,
+        sectionId,
+        passageText: para.text,
+        passageStart: Math.max(0, passageStart),
+        passageEnd,
+        searchQuery: previous.searchQuery,
+        searchResults: previous.searchResults,
+        verdict: previous.verdict,
+        explanation: previous.explanation,
+        confidence: previous.confidence,
+        topMatchUrl: previous.topMatchUrl,
+        topMatchTitle: previous.topMatchTitle,
+        topMatchSnippet: previous.topMatchSnippet,
+        status: previous.status,
+        modelUsed: previous.modelUsed,
+      }).returning();
+      return inserted;
+    }
+
+    console.log(`[plagiarism] Checking ${idx + 1}/${paragraphs.length}: "${para.text.slice(0, 50)}..."`);
 
     try {
       const searchResults = await webSearch(searchQuery, 5);
@@ -277,13 +354,13 @@ export async function POST(request: NextRequest) {
 
       const assessResult = await callOpenRouter(
         [
-          { role: "system", content: ASSESS_SYSTEM },
+          { role: "system", content: assessCfg.system },
           { role: "user", content: `PASSAGE FROM DOCUMENT:\n"${para.text}"${citationNote}\n\nWEB SEARCH RESULTS:\n${searchContext}` },
         ],
-        ASSESS_MODEL,
-        ASSESS_FALLBACKS,
-        0.2,
-        1024,
+        assessCfg.model,
+        assessCfg.fallbacks,
+        assessCfg.temperature,
+        assessCfg.maxTokens,
       );
 
       await db.insert(llmCallLog).values({
@@ -372,7 +449,7 @@ export async function POST(request: NextRequest) {
       .where(eq(documents.id, documentId));
   }
 
-  console.log(`[plagiarism] Done: ${totalChecked} paragraphs checked, ${matchesFound} plagiarism matches, ${cleanCount} clean, ${skippedShort.length} skipped (too short), score=${plagiarismScore}`);
+  console.log(`[plagiarism] Done: ${totalChecked} paragraphs checked (${reusedCount} unchanged, reused), ${matchesFound} plagiarism matches, ${cleanCount} clean, ${skippedShort.length} skipped (too short), score=${plagiarismScore}`);
 
   return NextResponse.json({
     success: true,

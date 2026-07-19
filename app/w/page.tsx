@@ -18,6 +18,7 @@ import DiffChoicesPanel from "@/components/editor/DiffChoicesPanel";
 import { trackEvent } from "@/lib/events/track-client";
 import { wordDiff, alignOptions, type AlignBlock } from "@/lib/analysis/word-diff";
 import StyleSettingsPanel from "@/components/style-settings/StyleSettingsPanel";
+import { PREFERENCE_DEFINITIONS } from "@/lib/style-settings/definitions";
 import WorkspaceModeStrip from "@/components/editor/WorkspaceModeStrip";
 import Link from "next/link";
 
@@ -90,7 +91,6 @@ interface FlagOption {
   isBlend: boolean;
 }
 
-type ScanLevel = "surface" | "deep" | "plagiarism" | "citations" | "style-cleanup" | "comprehensive";
 type NavItem = "library" | "workspace" | "style-rules" | "intake";
 type WorkspaceMode = "dashboard" | "edit" | "review" | "citations";
 
@@ -144,21 +144,16 @@ interface CitationSummary {
   verificationFlags: { verdict?: string } | null;
 }
 
-const SCAN_LEVELS: { value: ScanLevel; label: string; desc: string; isUltimate?: boolean }[] = [
-  { value: "surface", label: "Surface Scan", desc: "Common AI phrases and banned words" },
-  { value: "deep", label: "Deep Scan", desc: "Adds structural patterns and sentence analysis" },
-  { value: "plagiarism", label: "Plagiarism Scan", desc: "Check for plagiarism via web search" },
-  { value: "citations", label: "Citation Scan", desc: "Verify and format-check citations" },
-  { value: "style-cleanup", label: "Style Cleanup", desc: "Fix formatting artifacts from Style Rules" },
-  { value: "comprehensive", label: "Comprehensive", desc: "Everything combined — the ultimate scan", isUltimate: true },
-];
-
 const DOC_TYPES = [
   { value: "academic", label: "Academic" },
   { value: "professional", label: "Professional" },
   { value: "casual", label: "Casual" },
   { value: "legal", label: "Legal" },
 ];
+
+// Single source of truth for citation styles — the Style Rules definition.
+const CITATION_STYLE_OPTIONS =
+  PREFERENCE_DEFINITIONS.find((d) => d.key === "citation_format")?.options ?? [];
 
 const INTAKE_QUESTIONS = [
   {
@@ -361,10 +356,14 @@ export default function WorkspacePage() {
   const [hasScanned, setHasScanned] = useState(false);
   const [scanViewed, setScanViewed] = useState(false);
   const [versionSavedSinceScan, setVersionSavedSinceScan] = useState(true); // true initially so first scan is allowed
-  const [scanConfig, setScanConfig] = useState({
+  // Every scan is the full scan: all categories, comprehensive depth. There is
+  // deliberately no scan-config dialog — one click covers everything, and cost
+  // guards live server-side (idempotent options/verifications, plagiarism
+  // paragraph cache).
+  const scanConfig = {
     categories: { aiDetection: true, writingQuality: true, aiArtifacts: true, plagiarism: true, citations: true, toneConsistency: true, spelling: true, grammar: true },
-    aiDetectionDepth: "comprehensive" as "surface" | "deep" | "comprehensive",
-  });
+    aiDetectionDepth: "comprehensive" as const,
+  };
   const [selectedFlagIdx, setSelectedFlagIdx] = useState(0);
   const [selectedOptionIdx, setSelectedOptionIdx] = useState<number | null>(null);
   const [manualEditText, setManualEditText] = useState("");
@@ -431,7 +430,6 @@ export default function WorkspacePage() {
   const [showChoicesPanel, setShowChoicesPanel] = useState(true);
   const [navExpanded, setNavExpanded] = useState(false);
   const [navPinned, setNavPinned] = useState(false);
-  const [showScanDialog, setShowScanDialog] = useState(false);
   const [suggestProgress, setSuggestProgress] = useState<{
     generating: boolean;
     current: number;
@@ -496,7 +494,6 @@ export default function WorkspacePage() {
   const [pasteText, setPasteText] = useState("");
   const [uploadTitle, setUploadTitle] = useState("");
   const [uploadDocType, setUploadDocType] = useState("professional");
-  const [intakeStep, setIntakeStep] = useState(0);
   const [intakeAnswers, setIntakeAnswers] = useState({
     audience: "",
     purpose: "",
@@ -504,6 +501,14 @@ export default function WorkspacePage() {
     aiUsage: "",
     discipline: "",
   });
+  // Assignment brief — the 30-second card that replaced the 5-question intake.
+  // Word target lives in documents.intake (wordTarget); citation style is a
+  // style preference (citation_format) so citations checks pick it up.
+  const [briefWordTarget, setBriefWordTarget] = useState("");
+  const [briefCitationStyle, setBriefCitationStyle] = useState("");
+  const [briefDocType, setBriefDocType] = useState("");
+  const [briefMoreOpen, setBriefMoreOpen] = useState(false);
+  const [briefStarting, setBriefStarting] = useState(false);
   // Pre-selection for the English-variant intake question: the user's saved
   // style preference wins, else a marker-word guess from the document text.
   const [variantPrefill, setVariantPrefill] = useState<{ value: string; source: "style" | "detected" } | null>(null);
@@ -1143,23 +1148,25 @@ export default function WorkspacePage() {
       setPasteText("");
       setUploadTitle("");
       setShowUpload(false);
-      // Navigate to intake questionnaire flow
-      setIntakeStep(0);
+      // Navigate to the assignment brief
       setIntakeAnswers({ audience: "", purpose: "", english_variant: "", aiUsage: "", discipline: "" });
+      setBriefWordTarget("");
+      setBriefCitationStyle("");
+      setBriefDocType(uploadDocType);
+      setBriefMoreOpen(false);
       setVariantPrefill(null);
       setNav("intake");
     }
     setUploading(false);
   }
 
-  // ── Intake questionnaire ────────────────────────────────────────────────
+  // ── Assignment brief ───────────────────────────────────────────────────
 
   /**
-   * Re-open the intake questionnaire for an EXISTING document ("Edit context"
-   * in the document menu). Intake normally runs once, right after upload —
-   * this is how older documents get to answer new questions (e.g. English
-   * variant) or change earlier answers. Answers are pre-filled from the
-   * document's saved intake.
+   * Re-open the assignment brief for an EXISTING document ("Edit context" in
+   * the document menu). The brief normally shows once, right after upload —
+   * this is how older documents change their answers or set a word target.
+   * Fields are pre-filled from the document's saved intake.
    */
   function openDocumentContext(doc: Document) {
     const intake = (doc.intake ?? {}) as Record<string, string>;
@@ -1171,8 +1178,11 @@ export default function WorkspacePage() {
       aiUsage: intake.aiUsage ?? "",
       discipline: intake.discipline ?? "",
     });
+    setBriefWordTarget(intake.wordTarget ?? "");
+    setBriefCitationStyle("");
+    setBriefDocType(doc.documentType);
+    setBriefMoreOpen(false);
     setVariantPrefill(null);
-    setIntakeStep(0);
     setDocMenuId(null);
     setNav("intake");
   }
@@ -1215,54 +1225,85 @@ export default function WorkspacePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav, activeDoc?.id, sections.length]);
 
-  const activeIntakeQuestions = INTAKE_QUESTIONS.filter(
-    (q) => !q.academicOnly || activeDoc?.documentType === "academic"
-  );
-  const currentIntakeQ = activeIntakeQuestions[intakeStep] ?? null;
+  // Pre-fill the brief's citation style from the saved style preference.
+  useEffect(() => {
+    if (nav !== "intake" || !activeDoc || briefCitationStyle) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const json = await fetch(`/api/style-preferences?documentType=${briefDocType || activeDoc.documentType}`).then((r) => r.json());
+        const cf = json?.data?.preferences?.citation_format;
+        if (!cancelled && typeof cf === "string" && cf) setBriefCitationStyle(cf);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav, activeDoc?.id]);
 
-  /** PATCH the current (non-empty) intake answers without leaving the flow. */
+  /** PATCH the current (non-empty) brief answers without leaving the flow. */
   async function persistIntakeAnswers(): Promise<number> {
     if (!activeDocId) return 0;
     const filled = Object.fromEntries(
-      Object.entries(intakeAnswers).filter(([, v]) => v !== "")
+      Object.entries({ ...intakeAnswers, wordTarget: briefWordTarget.trim() }).filter(([, v]) => v !== "")
     );
     if (Object.keys(filled).length > 0) {
       await fetch(`/api/documents/${activeDocId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ intake: filled }),
+        body: JSON.stringify({
+          intake: filled,
+          ...(briefDocType && briefDocType !== activeDoc?.documentType ? { documentType: briefDocType } : {}),
+        }),
       });
+    } else if (briefDocType && briefDocType !== activeDoc?.documentType) {
+      await fetch(`/api/documents/${activeDocId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentType: briefDocType }),
+      });
+    }
+    // Citation style is a style preference so citations checks pick it up.
+    if (briefCitationStyle) {
+      const docType = briefDocType || activeDoc?.documentType || "academic";
+      await fetch("/api/style-preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentType: docType, preferences: { citation_format: briefCitationStyle } }),
+      }).catch(() => {});
     }
     return Object.keys(filled).length;
   }
 
+  /** Primary brief action: save everything, then run the full scan. */
+  async function saveBriefAndScan() {
+    if (!activeDocId || briefStarting) return;
+    setBriefStarting(true);
+    try {
+      const saved = await persistIntakeAnswers();
+      trackEvent(saved > 0 ? "intake_completed" : "intake_skipped", { answersCount: saved });
+      if (activeDocId) await loadDocument(activeDocId);
+      await handleScan();
+    } finally {
+      setBriefStarting(false);
+    }
+  }
+
+  /** Secondary brief action: save answers, go to the workspace, no scan. */
   async function saveIntake() {
     if (!activeDocId) return;
     const saved = await persistIntakeAnswers();
-    if (saved > 0) {
-      trackEvent("intake_completed", { answersCount: saved });
-    } else {
-      trackEvent("intake_skipped");
-    }
+    trackEvent(saved > 0 ? "intake_completed" : "intake_skipped", { answersCount: saved });
+    if (activeDocId) await loadDocument(activeDocId);
     setNav("workspace"); setWorkspaceMode("dashboard");
   }
 
   /**
-   * Leave the intake for Style Rules (style-guide setup) without losing the
-   * answers given so far — they're saved silently; the user can finish the
-   * rest later via "Edit context" on the document.
+   * Leave the brief for Style Rules (style-guide setup) without losing the
+   * answers given so far — they're saved silently.
    */
   async function goToStyleRulesFromIntake() {
     await persistIntakeAnswers();
     setNav("style-rules");
-  }
-
-  function advanceIntake() {
-    if (intakeStep < activeIntakeQuestions.length - 1) {
-      setIntakeStep(intakeStep + 1);
-    } else {
-      saveIntake();
-    }
   }
 
   // ── Flag resolution ────────────────────────────────────────────────────
@@ -1957,32 +1998,30 @@ export default function WorkspacePage() {
   // ── JSX ────────────────────────────────────────────────────────────────
 
   // Scan button JSX — extracted so it can live inside the floating Command Capsule.
-  // Uses the same state machine as before; styling updated to a pill that fits the capsule.
+  // One click does everything: every scan runs all categories at comprehensive
+  // depth (no config dialog), and a re-check auto-saves a version first so the
+  // score history keeps its snapshots (still user-triggered — constraint #2).
   const scanButton = (
     <div className="relative group">
       <button
-        onClick={() => {
+        onClick={async () => {
           if (hasScanned && !scanViewed) {
             setNav("workspace"); setWorkspaceMode("dashboard");
             setScanViewed(true);
-          } else if (!hasScanned || versionSavedSinceScan) {
-            setShowScanDialog(true);
+            return;
           }
+          if (hasScanned && !versionSavedSinceScan) await handleSaveVersion();
+          handleScan();
         }}
-        disabled={!activeDocId || scanning || (hasScanned && scanViewed && !versionSavedSinceScan)}
+        disabled={!activeDocId || scanning}
         className={`rounded-full px-4 py-1.5 text-xs font-semibold text-white transition-colors disabled:opacity-40 ${
           hasScanned && !scanViewed && !suggestProgress.generating ? "bg-green-600 hover:bg-green-700" :
           suggestProgress.generating ? "bg-amber-500" :
           "bg-blue-600 hover:bg-blue-700"
         }`}
       >
-        {scanning ? "Scanning…" : suggestProgress.generating ? "Preparing…" : hasScanned && !scanViewed ? "Scanned" : hasScanned || activeDoc?.lastScanAt ? "Re-scan" : "Scan"}
+        {scanning ? "Scanning…" : suggestProgress.generating ? "Preparing…" : hasScanned && !scanViewed ? "Scanned" : hasScanned || activeDoc?.lastScanAt ? "Re-check" : "Scan"}
       </button>
-      {hasScanned && scanViewed && !versionSavedSinceScan && (
-        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-56 rounded border border-gray-200 bg-white p-2 text-[10px] text-gray-600 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">
-          Already scanned. Save this version first to run a new scan. Your edits will be preserved.
-        </div>
-      )}
     </div>
   );
 
@@ -2659,6 +2698,12 @@ export default function WorkspacePage() {
                   saveState={saveVersionState}
                   citationsPending={citationsNeedingReview}
                   onGoToCitations={() => { setNav("workspace"); setWorkspaceMode("citations"); }}
+                  initialScore={docVersions.length > 0 ? (docVersions[0] as { aiRiskScore?: number | null })?.aiRiskScore ?? null : null}
+                  currentScore={activeDoc.aiRiskScore}
+                  wordCount={fullDocText.split(/\s+/).filter(Boolean).length}
+                  wordTarget={parseInt(((activeDoc.intake as Record<string, string> | null)?.wordTarget ?? ""), 10) || null}
+                  onDownloadDocx={() => window.open(`/api/documents/export?documentId=${activeDocId}&format=docx`, "_blank")}
+                  onCopyText={() => { void navigator.clipboard.writeText(fullDocText); }}
                 />
               )}
 
@@ -3373,60 +3418,168 @@ export default function WorkspacePage() {
                 )
               )}
 
-              {/* Intake questionnaire — shown after upload */}
-              {nav === "intake" && currentIntakeQ && (
-                <div className="flex h-full flex-col items-center justify-center p-8">
-                  <div className="max-w-md w-full space-y-6">
+              {/* Assignment brief — one compact card after upload. Everything
+                  is optional; the primary action is always "Save & run full
+                  scan". Replaced the forced 5-question intake (2026-07-19). */}
+              {nav === "intake" && (
+                <div className="flex h-full flex-col items-center justify-center overflow-y-auto p-8">
+                  <div className="max-w-lg w-full space-y-5">
                     <div className="text-center">
-                      <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Question {intakeStep + 1} of {activeIntakeQuestions.length} — optional</p>
-                      <h2 className="font-bold text-blue-600 animate-[intake-pulse_0.6s_ease-in-out_3]" style={{ fontSize: "50px" }}>{currentIntakeQ.title}</h2>
-                      <p className="mt-2 text-sm text-gray-500">{currentIntakeQ.subtitle}</p>
-                      <style>{`@keyframes intake-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
+                      <h2 className="text-3xl font-bold text-blue-600">Your assignment brief</h2>
+                      <p className="mt-2 text-sm text-gray-500">
+                        30 seconds, all optional — this tunes every suggestion to what your work actually needs.
+                      </p>
                     </div>
-                    {/* Style-guide nudge — shown until the user has any style
-                        rules saved. The scan finds what THEIR institution
-                        requires only when it knows the rules. */}
-                    {hasStyleRules === false && (
-                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-left">
-                        <p className="text-xs font-semibold text-amber-800">Do you have a style guide?</p>
-                        <p className="mt-1 text-[11px] leading-relaxed text-gray-600">
-                          If your university or company issues one, upload it in Style Rules before scanning —
-                          we'll read it and check your document against what it actually requires
-                          (English variant, citation style, Oxford comma, and more).
-                        </p>
-                        <button
-                          onClick={goToStyleRulesFromIntake}
-                          className="mt-2 rounded bg-amber-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-amber-700"
-                        >
-                          Open Style Rules
-                        </button>
+
+                    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm space-y-4">
+                      {/* Document type */}
+                      <div>
+                        <p className="text-xs font-semibold text-gray-600 mb-1.5">What kind of document?</p>
+                        <div className="flex gap-1.5">
+                          {DOC_TYPES.map((t) => {
+                            const selected = (briefDocType || activeDoc?.documentType) === t.value;
+                            return (
+                              <button
+                                key={t.value}
+                                onClick={() => setBriefDocType(t.value)}
+                                className={`flex-1 rounded-lg border px-2 py-1.5 text-xs transition-colors ${
+                                  selected ? "border-blue-500 bg-blue-50 font-semibold text-blue-700" : "border-gray-200 text-gray-600 hover:border-gray-300"
+                                }`}
+                              >
+                                {t.label}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    )}
-                    {/* No "skip and scan" escape hatch while style rules are
-                        missing — a scan without them misses what the user is
-                        actually looking for. Recommend the style guide
-                        instead (answers so far are saved on the way out). */}
-                    <div className="text-center">
-                      {hasStyleRules === false ? (
-                        <button onClick={goToStyleRulesFromIntake} className="text-xs font-semibold text-amber-700 hover:text-amber-800 underline">
-                          Highly recommended: set up your style guide to adjust what gets scanned
+
+                      <div className="grid grid-cols-2 gap-3">
+                        {/* Word count target */}
+                        <div>
+                          <label className="text-xs font-semibold text-gray-600">Word count target</label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={briefWordTarget}
+                            onChange={(e) => setBriefWordTarget(e.target.value)}
+                            placeholder="e.g. 10000"
+                            className="mt-1 w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+                          />
+                          <p className="mt-0.5 text-[10px] text-gray-400">Live progress shows in the footer</p>
+                        </div>
+
+                        {/* Citation style */}
+                        <div>
+                          <label className="text-xs font-semibold text-gray-600">Citation style required</label>
+                          <select
+                            value={briefCitationStyle}
+                            onChange={(e) => setBriefCitationStyle(e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+                          >
+                            <option value="">Not sure / none</option>
+                            {CITATION_STYLE_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                          <p className="mt-0.5 text-[10px] text-gray-400">Citations are checked against this style</p>
+                        </div>
+
+                        {/* English variant */}
+                        <div>
+                          <label className="text-xs font-semibold text-gray-600">English variant</label>
+                          <select
+                            value={intakeAnswers.english_variant}
+                            onChange={(e) => setIntakeAnswers({ ...intakeAnswers, english_variant: e.target.value })}
+                            className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+                          >
+                            {(INTAKE_QUESTIONS.find((q) => q.key === "english_variant")?.options ?? []).map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                          {variantPrefill && intakeAnswers.english_variant === variantPrefill.value && (
+                            <p className="mt-0.5 text-[10px] text-blue-500">
+                              {variantPrefill.source === "style" ? "From your Style Rules" : "Detected from the document"}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* AI usage */}
+                        <div>
+                          <label className="text-xs font-semibold text-gray-600">How did you use AI?</label>
+                          <select
+                            value={intakeAnswers.aiUsage}
+                            onChange={(e) => setIntakeAnswers({ ...intakeAnswers, aiUsage: e.target.value })}
+                            className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+                          >
+                            <option value="">Prefer not to say</option>
+                            {(INTAKE_QUESTIONS.find((q) => q.key === "aiUsage")?.options ?? []).map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                          <p className="mt-0.5 text-[10px] text-gray-400">Calibrates how deep the edits go</p>
+                        </div>
+                      </div>
+
+                      {/* More context — optional, collapsed by default */}
+                      <div>
+                        <button
+                          onClick={() => setBriefMoreOpen((v) => !v)}
+                          className="text-xs text-gray-400 hover:text-gray-600 underline"
+                        >
+                          {briefMoreOpen ? "Hide extra context" : "More context (audience, purpose, discipline)"}
                         </button>
-                      ) : (
-                        <button onClick={saveIntake} className="text-xs text-gray-400 hover:text-gray-600 underline">
-                          Skip and start scanning
-                        </button>
+                        {briefMoreOpen && (
+                          <div className="mt-2 grid grid-cols-3 gap-2">
+                            {(["audience", "purpose", "discipline"] as const).map((key) => {
+                              const q = INTAKE_QUESTIONS.find((iq) => iq.key === key);
+                              if (!q) return null;
+                              if (key === "discipline" && (briefDocType || activeDoc?.documentType) !== "academic") return null;
+                              return (
+                                <div key={key}>
+                                  <label className="text-[10px] font-semibold text-gray-500">{q.title}</label>
+                                  <select
+                                    value={intakeAnswers[key]}
+                                    onChange={(e) => setIntakeAnswers({ ...intakeAnswers, [key]: e.target.value })}
+                                    className="mt-0.5 w-full rounded border border-gray-200 bg-white px-1.5 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                                  >
+                                    <option value="">—</option>
+                                    {q.options.map((o) => (
+                                      <option key={o.value} value={o.value}>{o.label}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Style-guide nudge — informational, never blocking */}
+                      {hasStyleRules === false && (
+                        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-gray-600">
+                          <span className="font-semibold text-amber-800">Have an institution style guide?</span>{" "}
+                          <button onClick={goToStyleRulesFromIntake} className="font-medium text-amber-700 underline hover:text-amber-900">
+                            Upload it in Style Rules
+                          </button>{" "}
+                          and the scan checks exactly what it requires.
+                        </p>
                       )}
                     </div>
-                  </div>
-                </div>
-              )}
 
-              {nav === "intake" && !currentIntakeQ && (
-                <div className="flex h-full items-center justify-center p-8">
-                  <div className="text-center max-w-sm">
-                    <p className="text-3xl font-bold text-gray-300">All done</p>
-                    <p className="mt-4 text-sm text-gray-500">Your document is loaded and ready.</p>
-                    <p className="mt-6 text-base font-semibold text-blue-600 animate-[intake-pulse_0.6s_ease-in-out_3]">Now click Scan in the top-right to analyse it</p>
+                    <div className="space-y-2">
+                      <button
+                        onClick={saveBriefAndScan}
+                        disabled={briefStarting || scanning}
+                        className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        {briefStarting || scanning ? "Starting your scan…" : "Save & run the full scan"}
+                      </button>
+                      <div className="text-center">
+                        <button onClick={saveIntake} className="text-xs text-gray-400 hover:text-gray-600 underline">
+                          Save for later — don't scan yet
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -3708,62 +3861,6 @@ export default function WorkspacePage() {
                   activeChangeId={activeChangeId}
                   onChangeClick={setActiveChangeId}
                 />
-              ) : nav === "intake" && currentIntakeQ ? (
-                <div className="flex h-full flex-col">
-                  <div className="border-b border-gray-200 px-2 py-1.5">
-                    <p className="text-[10px] text-gray-400">{intakeStep + 1} of {activeIntakeQuestions.length} questions</p>
-                  </div>
-
-                  <div className="flex-1 p-2 space-y-1.5">
-                    {currentIntakeQ.key === "english_variant" && variantPrefill && (
-                      <p className="rounded bg-blue-50 px-2 py-1 text-[10px] text-blue-600">
-                        {variantPrefill.source === "style"
-                          ? "Pre-selected from your Style Rules — change it if this document differs."
-                          : "We detected this from the document's spelling — change it if that's wrong."}
-                      </p>
-                    )}
-                    {currentIntakeQ.options.map((opt) => {
-                      const isSelected = intakeAnswers[currentIntakeQ.key] === opt.value;
-                      return (
-                        <button
-                          key={opt.value}
-                          onClick={() => {
-                            setIntakeAnswers({ ...intakeAnswers, [currentIntakeQ.key]: opt.value });
-                            // Auto-advance after a short delay for feel
-                            setTimeout(() => advanceIntake(), 200);
-                          }}
-                          className={`group relative flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs backdrop-blur-[10px] transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none ${
-                            isSelected
-                              ? "border-2 border-blue-500 bg-blue-50/50 text-blue-900 shadow-sm"
-                              : "border border-white/40 bg-white/60 text-gray-700 hover:bg-white/80 hover:border-blue-200"
-                          }`}
-                        >
-                          <span className="min-w-0 flex-1">{opt.label}</span>
-                          {isSelected && (
-                            <svg className="h-3.5 w-3.5 shrink-0 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="20 6 9 17 4 12" />
-                            </svg>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <div className="border-t border-gray-200 px-2 py-2 space-y-1.5">
-                    <button
-                      onClick={advanceIntake}
-                      className="w-full rounded border border-gray-300 py-1.5 text-[10px] text-gray-600 hover:bg-gray-100"
-                    >
-                      Skip
-                    </button>
-                    <button
-                      onClick={saveIntake}
-                      className="w-full rounded bg-blue-600 py-1.5 text-[10px] font-medium text-white hover:bg-blue-700"
-                    >
-                      Done — start scanning
-                    </button>
-                  </div>
-                </div>
               ) : (
                 /* Empty state */
                 <div className="flex-1 overflow-auto p-3">
@@ -3898,19 +3995,6 @@ export default function WorkspacePage() {
         </div>
       </div>
 
-      {/* ═══ Scan config dialog ═════════════════════════════════════════════ */}
-      {showScanDialog && (
-        <ScanConfigDialog
-          config={scanConfig}
-          setConfig={setScanConfig}
-          lastScan={activeDoc ? { level: activeDoc.lastScanLevel, at: activeDoc.lastScanAt } : null}
-          showStyleGuideNudge={hasStyleRules === false}
-          onGoToStyleRules={() => { setShowScanDialog(false); setNav("style-rules"); }}
-          onCancel={() => setShowScanDialog(false)}
-          onConfirm={() => { setShowScanDialog(false); handleScan(); }}
-        />
-      )}
-
       {/* ═══ Status bar ════════════════════════════════════════════════════ */}
       <footer
         className="flex shrink-0 items-center justify-between border-t border-gray-200 bg-white px-4 py-2"
@@ -3923,6 +4007,11 @@ export default function WorkspacePage() {
                 const text = sections.filter((s) => !s.isLocked).map((s) => s.currentText).join(" ");
                 const words = text.split(/\s+/).filter(Boolean).length;
                 const chars = text.length;
+                const target = parseInt(((activeDoc?.intake as Record<string, string> | null)?.wordTarget ?? ""), 10);
+                if (target > 0) {
+                  const pct = Math.round((words / target) * 100);
+                  return `${words.toLocaleString()} / ${target.toLocaleString()} words (${pct}%) \u00B7 ${chars.toLocaleString()} chars`;
+                }
                 return `${words.toLocaleString()} words \u00B7 ${chars.toLocaleString()} chars`;
               })()}</span>
               <span className="text-gray-300">|</span>
@@ -4018,6 +4107,10 @@ export default function WorkspacePage() {
                       >
                         Save as .docx
                       </button>
+                      <p className="border-t border-gray-100 px-3 pt-1.5 pb-1 text-[10px] leading-snug text-gray-400">
+                        The .docx is re-typeset to your Style Rules — the uploaded
+                        file&apos;s original layout isn&apos;t preserved.
+                      </p>
                     </div>
                   </div>
                 )}
@@ -4048,252 +4141,6 @@ export default function WorkspacePage() {
 // ── Nav button ───────────────────────────────────────────────────────────
 
 // ── Scan config dialog ───────────────────────────────────────────────────
-
-function ScanConfigDialog({ config, setConfig, lastScan, showStyleGuideNudge, onGoToStyleRules, onCancel, onConfirm }: {
-  config: { categories: { aiDetection: boolean; writingQuality: boolean; aiArtifacts: boolean; plagiarism: boolean; citations: boolean; toneConsistency: boolean; spelling: boolean; grammar: boolean }; aiDetectionDepth: "surface" | "deep" | "comprehensive" };
-  setConfig: (c: typeof config) => void;
-  lastScan: { level: string | null; at: string | null } | null;
-  showStyleGuideNudge: boolean;
-  onGoToStyleRules: () => void;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const { categories, aiDetectionDepth } = config;
-
-  // Style Training stats
-  const [styleStats, setStyleStats] = useState<{ remove: number; ask: number; keep: number } | null>(null);
-  useEffect(() => {
-    fetch("/api/admin/style-training").then((r) => r.json()).then((json) => {
-      if (json.success) {
-        const items = json.data as { preference: string }[];
-        setStyleStats({
-          remove: items.filter((i) => i.preference === "always_remove").length,
-          ask: items.filter((i) => i.preference === "ask_each_time").length,
-          keep: items.filter((i) => i.preference === "always_keep").length,
-        });
-      }
-    }).catch(() => {});
-  }, []);
-
-  function updateCat(key: keyof typeof categories, value: boolean) {
-    setConfig({ ...config, categories: { ...categories, [key]: value } });
-  }
-
-  const depthLevels = [
-    { value: "surface" as const, label: "Surface", desc: "Full analysis against the most obvious AI tells — high-severity phrases, structures, and patterns", sensitivity: "~55 entries" },
-    { value: "deep" as const, label: "Deep", desc: "Adds moderate-severity patterns — transitions, corporate fluff, hedging phrases", sensitivity: "~218 entries" },
-    { value: "comprehensive" as const, label: "Comprehensive", desc: "Everything — includes subtle individual words and low-severity patterns", sensitivity: "~250 entries" },
-  ];
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl max-h-[85vh] flex flex-col">
-        {/* Header */}
-        <div className="border-b border-gray-200 px-5 py-4 shrink-0">
-          <h2 className="text-lg font-bold">Configure Scan</h2>
-          <p className="mt-1 text-xs text-gray-500">Choose what to check and how thorough to be.</p>
-        </div>
-
-        <div className="flex-1 overflow-auto px-5 py-4 space-y-5">
-
-          {/* ── Section 1: Categories ────────────────────────────────────── */}
-          <div>
-            <label className="text-xs font-semibold text-gray-600 uppercase tracking-wider">What to check</label>
-            <div className="mt-2 space-y-1">
-              {/* AI Detection */}
-              <label className={`flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer ${categories.aiDetection ? "border-blue-300 bg-blue-50" : "border-gray-200"}`}>
-                <div className="flex items-center gap-2.5">
-                  <input type="checkbox" checked={categories.aiDetection} onChange={(e) => updateCat("aiDetection", e.target.checked)} className="rounded" />
-                  <div>
-                    <p className="text-xs font-medium text-gray-700">AI Detection</p>
-                    <p className="text-[10px] text-gray-400">Find AI-generated patterns, phrases, and structural tells</p>
-                  </div>
-                </div>
-              </label>
-              {/* Writing Quality */}
-              <label className={`flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer ${categories.writingQuality ? "border-blue-300 bg-blue-50" : "border-gray-200"}`}>
-                <div className="flex items-center gap-2.5">
-                  <input type="checkbox" checked={categories.writingQuality} onChange={(e) => updateCat("writingQuality", e.target.checked)} className="rounded" />
-                  <div>
-                    <p className="text-xs font-medium text-gray-700">Writing Quality</p>
-                    <p className="text-[10px] text-gray-400">Readability, sentence variation, lexical diversity, coherence</p>
-                  </div>
-                </div>
-              </label>
-              {/* AI Artifacts */}
-              <label className={`flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer ${categories.aiArtifacts ? "border-blue-300 bg-blue-50" : "border-gray-200"}`}>
-                <div className="flex items-center gap-2.5">
-                  <input type="checkbox" checked={categories.aiArtifacts} onChange={(e) => updateCat("aiArtifacts", e.target.checked)} className="rounded" />
-                  <div>
-                    <p className="text-xs font-medium text-gray-700">AI Artifacts</p>
-                    <p className="text-[10px] text-gray-400">
-                      Em dashes, emojis, markdown formatting, list overuse, sign-off patterns
-                      {styleStats && <span className="ml-1 text-gray-500">({styleStats.remove} remove, {styleStats.ask} ask, {styleStats.keep} keep)</span>}
-                    </p>
-                  </div>
-                </div>
-              </label>
-              {/* Plagiarism */}
-              <label className={`flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer ${categories.plagiarism ? "border-blue-300 bg-blue-50" : "border-gray-200"}`}>
-                <div className="flex items-center gap-2.5">
-                  <input type="checkbox" checked={categories.plagiarism} onChange={(e) => updateCat("plagiarism", e.target.checked)} className="rounded" />
-                  <div>
-                    <p className="text-xs font-medium text-gray-700">Plagiarism</p>
-                    <p className="text-[10px] text-gray-400">Search the web for matching content</p>
-                  </div>
-                </div>
-              </label>
-              {/* Citations */}
-              <label className={`flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer ${categories.citations ? "border-blue-300 bg-blue-50" : "border-gray-200"}`}>
-                <div className="flex items-center gap-2.5">
-                  <input type="checkbox" checked={categories.citations} onChange={(e) => updateCat("citations", e.target.checked)} className="rounded" />
-                  <div>
-                    <p className="text-xs font-medium text-gray-700">Citations</p>
-                    <p className="text-[10px] text-gray-400">Check citation format and source accuracy</p>
-                  </div>
-                </div>
-              </label>
-              {/* Tone Consistency */}
-              <label className={`flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer ${categories.toneConsistency ? "border-blue-300 bg-blue-50" : "border-gray-200"}`}>
-                <div className="flex items-center gap-2.5">
-                  <input type="checkbox" checked={categories.toneConsistency} onChange={(e) => updateCat("toneConsistency", e.target.checked)} className="rounded" />
-                  <div>
-                    <p className="text-xs font-medium text-gray-700">Tone Consistency</p>
-                    <p className="text-[10px] text-gray-400">Tone shifts, voice changes, contradictions, and repetition</p>
-                  </div>
-                </div>
-              </label>
-
-              {/* Spelling */}
-              <label className={`flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer ${categories.spelling ? "border-blue-300 bg-blue-50" : "border-gray-200"}`}>
-                <div className="flex items-center gap-2.5">
-                  <input type="checkbox" checked={categories.spelling} onChange={(e) => updateCat("spelling", e.target.checked)} className="rounded" />
-                  <div>
-                    <p className="text-xs font-medium text-gray-700">Spelling Check</p>
-                    <p className="text-[10px] text-gray-400">LLM-powered spelling error detection</p>
-                  </div>
-                </div>
-              </label>
-
-              {/* Grammar */}
-              <label className={`flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer ${categories.grammar ? "border-blue-300 bg-blue-50" : "border-gray-200"}`}>
-                <div className="flex items-center gap-2.5">
-                  <input type="checkbox" checked={categories.grammar} onChange={(e) => updateCat("grammar", e.target.checked)} className="rounded" />
-                  <div>
-                    <p className="text-xs font-medium text-gray-700">Grammar Check</p>
-                    <p className="text-[10px] text-gray-400">LLM-powered grammar error detection</p>
-                  </div>
-                </div>
-              </label>
-            </div>
-
-            {/* Style Training notice — artifacts default to Remove until the
-                user sets their own preferences */}
-            {categories.aiArtifacts && styleStats && styleStats.remove === 0 && styleStats.ask === styleStats.remove + styleStats.ask + styleStats.keep && (
-              <div className="mt-2 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] text-blue-700">
-                All AI artifact items are set to <span className="font-semibold">Remove</span>. <button onClick={onGoToStyleRules} className="underline font-medium">Set preferences</button> if you don&apos;t want it this way.
-              </div>
-            )}
-          </div>
-
-          {/* ── Section 2: AI Detection Depth ───────────────────────────── */}
-          {categories.aiDetection && (
-            <div>
-              <label className="text-xs font-semibold text-gray-600 uppercase tracking-wider">AI Detection Depth</label>
-              <p className="text-[10px] text-gray-400 mt-0.5">All levels run full analysis (phrases, structures, and semantic patterns). Higher levels check against more library entries.</p>
-              <div className="mt-2 space-y-1">
-                {depthLevels.map((level) => (
-                  <label
-                    key={level.value}
-                    className={`flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${
-                      aiDetectionDepth === level.value ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-gray-300"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <input type="radio" name="depth" checked={aiDetectionDepth === level.value} onChange={() => setConfig({ ...config, aiDetectionDepth: level.value })} className="text-blue-600" />
-                      <div>
-                        <p className="text-xs font-medium text-gray-700">{level.label}</p>
-                        <p className="text-[10px] text-gray-400">{level.desc}</p>
-                      </div>
-                    </div>
-                    <span className="text-[9px] text-gray-400 shrink-0 ml-2">{level.sensitivity}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* ── Section 3: Scan History ──────────────────────────────────── */}
-          {lastScan?.level && lastScan?.at && (() => {
-            const depthOrder: Record<string, number> = { surface: 0, deep: 1, comprehensive: 2 };
-            const prevDepth = depthOrder[lastScan.level] ?? 0;
-            const newDepth = depthOrder[aiDetectionDepth] ?? 0;
-            const isUpgrade = newDepth > prevDepth;
-            const isDowngrade = newDepth < prevDepth;
-            const isSame = newDepth === prevDepth;
-
-            return (
-              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5">
-                <p className="text-xs text-gray-600">
-                  Previous: <strong>{lastScan.level}</strong> scan, {new Date(lastScan.at).toLocaleString()}
-                </p>
-                {isUpgrade && (
-                  <p className="text-[10px] text-green-600 mt-1 font-medium">
-                    Upgrading from {lastScan.level} to {aiDetectionDepth} — this will check against more patterns.
-                  </p>
-                )}
-                {isSame && aiDetectionDepth === "comprehensive" && (
-                  <p className="text-[10px] text-gray-400 mt-1">
-                    Already at maximum depth. This re-scan will check your latest edits.
-                  </p>
-                )}
-                {isSame && aiDetectionDepth !== "comprehensive" && (
-                  <p className="text-[10px] text-blue-600 mt-1 font-medium">
-                    Same depth as before. Consider upgrading to {aiDetectionDepth === "surface" ? "Deep" : "Comprehensive"} to check against more patterns.
-                  </p>
-                )}
-                {isDowngrade && (
-                  <p className="text-[10px] text-amber-600 mt-1 font-medium">
-                    Downgrading from {lastScan.level} to {aiDetectionDepth} — this will check fewer patterns.
-                  </p>
-                )}
-              </div>
-            );
-          })()}
-
-        </div>
-
-        {/* Style-guide nudge — the scan can only check what YOUR institution
-            requires (English variant, citation style, …) if the rules exist.
-            Never blocks the scan. */}
-        {showStyleGuideNudge && (
-          <div className="border-t border-amber-200 bg-amber-50 px-5 py-3 shrink-0">
-            <p className="text-xs font-semibold text-amber-800">Sure, I'll scan — but have you filled out your style guide?</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-gray-600">
-              You haven't set any style rules yet. Upload your university or company style guide (or answer a few
-              questions) in Style Rules, and the scan will check exactly what your institution requires —
-              English variant, citation style, Oxford comma, and more.
-            </p>
-            <button
-              onClick={onGoToStyleRules}
-              className="mt-2 rounded border border-amber-600 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-100"
-            >
-              Open Style Rules first
-            </button>
-          </div>
-        )}
-
-        {/* Footer */}
-        <div className="border-t border-gray-200 px-5 py-3 flex justify-end gap-2 shrink-0">
-          <button onClick={onCancel} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
-          <button onClick={onConfirm} className="rounded-lg px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700">
-            {showStyleGuideNudge ? "Scan anyway" : "Run Scan"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function NavButton({ label, active, expanded, onClick, icon, prominent = false }: {
   label: string; active: boolean; expanded: boolean; onClick: () => void; icon: React.ReactNode; prominent?: boolean;
@@ -4499,7 +4346,7 @@ function EmptyPanel({ title, description, extra }: { title: string; description:
 
 // ── Edit session summary (shown when all flags are resolved) ─────────────
 
-function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifactsRemaining, artifactsProcessed, onReviewArtifacts, onSaveVersion, saveState = "idle", citationsPending, onGoToCitations }: {
+function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifactsRemaining, artifactsProcessed, onReviewArtifacts, onSaveVersion, saveState = "idle", citationsPending, onGoToCitations, initialScore, currentScore, wordCount, wordTarget, onDownloadDocx, onCopyText }: {
   flags: { id: string; patternType: string; status: string }[];
   spellingRemaining: number;
   grammarRemaining: number;
@@ -4510,7 +4357,14 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifa
   saveState?: "idle" | "saving" | "saved" | "error";
   citationsPending: number;
   onGoToCitations: () => void;
+  initialScore?: number | null;
+  currentScore?: number | null;
+  wordCount?: number;
+  wordTarget?: number | null;
+  onDownloadDocx?: () => void;
+  onCopyText?: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
   const accepted = flags.filter((f) => f.status === "accepted");
   const skipped = flags.filter((f) => f.status === "skipped");
   const rejected = flags.filter((f) => f.status === "rejected");
@@ -4575,6 +4429,52 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifa
             </p>
           )}
         </div>
+
+        {/* The finish line — score delta, word target, and export, so the
+            document is DONE here instead of trailing off into the footer. */}
+        {!hasRemainingEdits && (
+          <div className="rounded-lg border border-green-200 bg-green-50/50 p-4 text-left space-y-3">
+            {typeof currentScore === "number" && (
+              <div className="text-center">
+                <p className="text-[10px] uppercase tracking-wider text-gray-400">AI-risk score</p>
+                <p className="text-3xl font-bold text-green-600">{currentScore}</p>
+                {typeof initialScore === "number" && initialScore !== currentScore && (
+                  <p className="text-xs text-gray-500">
+                    {initialScore > currentScore
+                      ? `down from ${initialScore} — a ${initialScore - currentScore}-point improvement`
+                      : `up from ${initialScore} at the first scan`}
+                  </p>
+                )}
+                <p className="mt-1 text-[10px] text-gray-400">Run Re-check in the top-right to score your edited text.</p>
+              </div>
+            )}
+            {typeof wordCount === "number" && wordTarget != null && wordTarget > 0 && (
+              <p className="text-center text-xs text-gray-600">
+                <span className="font-semibold">{wordCount.toLocaleString()}</span> of your{" "}
+                <span className="font-semibold">{wordTarget.toLocaleString()}</span>-word target
+                {" "}({Math.round((wordCount / wordTarget) * 100)}%)
+              </p>
+            )}
+            <div className="flex gap-2">
+              {onDownloadDocx && (
+                <button
+                  onClick={onDownloadDocx}
+                  className="flex-1 rounded-lg bg-green-600 py-2 text-xs font-semibold text-white hover:bg-green-700"
+                >
+                  Download .docx
+                </button>
+              )}
+              {onCopyText && (
+                <button
+                  onClick={() => { onCopyText(); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                  className="flex-1 rounded-lg border border-green-300 bg-white py-2 text-xs font-semibold text-green-700 hover:bg-green-50"
+                >
+                  {copied ? "✓ Copied" : "Copy text"}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Final artifact sweep — accepted AI rewrites can re-introduce
             typographic artifacts (em dashes, curly quotes). This count comes

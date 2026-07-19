@@ -3,6 +3,9 @@
  * and binds them to the system slugs.
  *
  * Run: npx tsx scripts/seed-binds.ts
+ *
+ * NOTE: after this initial seed, run scripts/seed-model-reroute.ts — it applies
+ * the current cost/quality routing (2026-07) and creates the tone/plagiarism binds.
  */
 
 import { config } from "dotenv";
@@ -19,15 +22,15 @@ const db = drizzle(client);
 // ── Models ─────────────────────────────────────────────────────────────────
 
 const MODELS = [
-  { openrouterModelId: "anthropic/claude-sonnet-4-20250514", name: "Claude Sonnet — Quick Explainer", description: "Fast, low-token explanations", temperature: 0.3, maxTokens: 256 },
-  { openrouterModelId: "anthropic/claude-sonnet-4-20250514", name: "Claude Sonnet — Structure Analysis", description: "Analytical, precise structural review", temperature: 0.3, maxTokens: 1024 },
-  { openrouterModelId: "anthropic/claude-sonnet-4-20250514", name: "Claude Sonnet — Deep Analysis", description: "Comprehensive pattern detection", temperature: 0.4, maxTokens: 2048 },
-  { openrouterModelId: "anthropic/claude-sonnet-4-20250514", name: "Claude Sonnet — Rewrite Generator", description: "Creative rewrites with variation", temperature: 0.7, maxTokens: 2048 },
-  { openrouterModelId: "anthropic/claude-sonnet-4-20250514", name: "Claude Sonnet — Academic Rewrite", description: "Academic tone, citation-safe", temperature: 0.6, maxTokens: 2048 },
-  { openrouterModelId: "anthropic/claude-sonnet-4-20250514", name: "Claude Sonnet — Tone Shift", description: "High-creativity voice matching", temperature: 0.8, maxTokens: 1024 },
-  { openrouterModelId: "anthropic/claude-sonnet-4-20250514", name: "Claude Sonnet — Rewrite Evaluator", description: "Precise evaluation, low creativity", temperature: 0.3, maxTokens: 512 },
-  { openrouterModelId: "google/gemini-2.5-flash-preview", name: "Gemini Flash — Citation Checker", description: "Factual verification, near-zero creativity", temperature: 0.1, maxTokens: 512 },
-  { openrouterModelId: "anthropic/claude-sonnet-4-20250514", name: "Claude Sonnet — Prose Expander", description: "Creative expansion with variation", temperature: 0.7, maxTokens: 2048 },
+  { openrouterModelId: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet — Quick Explainer", description: "Fast, low-token explanations", temperature: 0.3, maxTokens: 256 },
+  { openrouterModelId: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet — Structure Analysis", description: "Analytical, precise structural review", temperature: 0.3, maxTokens: 1024 },
+  { openrouterModelId: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet — Deep Analysis", description: "Comprehensive pattern detection", temperature: 0.4, maxTokens: 2048 },
+  { openrouterModelId: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet — Rewrite Generator", description: "Creative rewrites with variation", temperature: 0.7, maxTokens: 2048 },
+  { openrouterModelId: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet — Academic Rewrite", description: "Academic tone, citation-safe", temperature: 0.6, maxTokens: 2048 },
+  { openrouterModelId: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet — Tone Shift", description: "High-creativity voice matching", temperature: 0.8, maxTokens: 1024 },
+  { openrouterModelId: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet — Rewrite Evaluator", description: "Precise evaluation, low creativity", temperature: 0.3, maxTokens: 512 },
+  { openrouterModelId: "google/gemini-3-flash-preview", name: "Gemini Flash — Citation Checker", description: "Factual verification, near-zero creativity", temperature: 0.1, maxTokens: 512 },
+  { openrouterModelId: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet — Prose Expander", description: "Creative expansion with variation", temperature: 0.7, maxTokens: 2048 },
 ];
 
 // ── Prompts ────────────────────────────────────────────────────────────────

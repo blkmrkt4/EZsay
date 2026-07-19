@@ -4,20 +4,24 @@ import { activityBinds, modelLibrary, promptLibrary, contextLibrary } from "@/db
 import { eq, desc } from "drizzle-orm";
 import { requireAdmin } from "@/lib/supabase/require-admin";
 
-// System slugs — auto-populated, can't be deleted
+// System slugs — auto-populated, can't be deleted. Every slug here is invoked
+// by a live route. Retired binds (surface/deep/comprehensive-scan, suggest-tone,
+// expand-prose — never invoked; scan is pure code) keep their rows with
+// isActive=false and are deliberately absent so they aren't recreated.
 const SYSTEM_SLUGS = [
-  { slug: "surface-scan", name: "Surface Scan", description: "Quick pass — exact phrase matching for banned words and obvious AI phrases" },
-  { slug: "deep-scan", name: "Deep Scan", description: "Second pass — adds structural regex patterns and sentence-level analysis" },
-  { slug: "comprehensive-scan", name: "Comprehensive Scan", description: "Full analysis — semantic patterns, density, burstiness, voice checks" },
   { slug: "suggest-rewrite", name: "Suggest Rewrite", description: "Generate replacement options for flagged content" },
   { slug: "suggest-academic", name: "Suggest Academic Rewrite", description: "Generate options tailored for academic documents" },
-  { slug: "suggest-tone", name: "Suggest Tone Edit", description: "Generate tone and voice adjustments" },
   { slug: "evaluate-rewrite", name: "Evaluate Manual Rewrite", description: "Evaluate a user's manual rewrite for quality and patterns" },
+  { slug: "detect-grammar", name: "Grammar Detection", description: "Batched grammar issue detection during scans" },
+  { slug: "detect-spelling", name: "Spelling Detection", description: "Batched spelling issue detection during scans" },
+  { slug: "tone-consistency", name: "Tone Consistency", description: "Whole-document tone/voice consistency analysis" },
+  { slug: "plagiarism-queries", name: "Plagiarism Search Queries", description: "Generate search queries for the plagiarism check" },
+  { slug: "plagiarism-assess", name: "Plagiarism Assessment", description: "Assess a passage against web search results" },
   { slug: "citation-verify", name: "Citation Verification", description: "Verify citation accuracy via web search" },
   { slug: "citation-verify-queries", name: "Citation Search Queries", description: "Generate web search queries for citation verification" },
   { slug: "citation-convert", name: "Citation Style Conversion", description: "Convert citations between academic styles" },
   { slug: "citation-quote-check", name: "Citation Quote Check", description: "Verify quotations against fetched source text" },
-  { slug: "expand-prose", name: "Expand Prose", description: "Expand outline sections into full prose" },
+  { slug: "citation-find-source", name: "Citation Find Source", description: "Find the real source behind an uncited in-text citation" },
 ];
 
 export async function GET() {

@@ -565,6 +565,10 @@ function FreeScanInner() {
               <p className="text-xs text-gray-500">
                 {scoreLabel(auditorScore)}
               </p>
+              <p className="mx-auto mt-2 max-w-xs text-[11px] text-gray-400">
+                EzSay&apos;s own estimate of AI-pattern density — not a prediction of
+                what your university&apos;s detector will report.
+              </p>
             </div>
 
             {/* Score spectrums */}

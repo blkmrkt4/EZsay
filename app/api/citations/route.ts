@@ -602,8 +602,8 @@ SOURCE_URL: [URL of the best matching source if found, otherwise "none"]`;
 const VERIFY_ASSESS_FALLBACK: CitationLLMFallback = {
   system: VERIFY_ASSESS_SYSTEM,
   user: 'CITATION:\n"[CITATION]"\n\nWEB SEARCH RESULTS:\n[SEARCH_RESULTS]',
-  model: "anthropic/claude-sonnet-4",
-  fallbacks: ["google/gemini-2.5-pro", "openai/gpt-4o"],
+  model: "openai/gpt-5.4-mini",
+  fallbacks: ["google/gemini-3-flash-preview", "deepseek/deepseek-v4-flash"],
   temperature: 0.2,
   maxTokens: 1024,
 };
@@ -731,8 +731,8 @@ REFERENCE_ENTRY: [the full reference-list entry in the document's style, or "n/a
 SOURCE_URL: [URL of the best matching source, or "none"]
 EXPLANATION: [2-3 sentences: what was found and how it matches the citation and the writer's claim]`,
   user: 'IN-TEXT CITATION:\n[CITATION]\n\nWRITER\'S SENTENCE:\n[CLAIM]\n\nDOCUMENT CITATION STYLE: [STYLE]\n\nWEB SEARCH RESULTS:\n[SEARCH_RESULTS]',
-  model: "anthropic/claude-sonnet-4",
-  fallbacks: ["google/gemini-2.5-pro", "openai/gpt-4o"],
+  model: "openai/gpt-5.4-mini",
+  fallbacks: ["google/gemini-3-flash-preview", "deepseek/deepseek-v4-flash"],
   temperature: 0.2,
   maxTokens: 1024,
 };
@@ -939,8 +939,8 @@ ACTUAL_ARGUMENT: [one sentence: what the source actually says on this point, or 
 SUGGESTED_REWRITE: [if misrepresented: a faithful replacement sentence, or "n/a"]
 EXPLANATION: [2-3 sentences]`,
   user: 'DOCUMENT QUOTE:\n"[QUOTE]"\n\nWRITER\'S SENTENCE:\n[CLAIM]\n\nSOURCE EXCERPT:\n[EXCERPT]',
-  model: "anthropic/claude-sonnet-4",
-  fallbacks: ["google/gemini-2.5-pro", "openai/gpt-4o"],
+  model: "openai/gpt-5.4-mini",
+  fallbacks: ["google/gemini-3-flash-preview", "deepseek/deepseek-v4-flash"],
   temperature: 0.2,
   maxTokens: 1024,
 };
@@ -1116,8 +1116,8 @@ Style formats:
 const CONVERT_FALLBACK: CitationLLMFallback = {
   system: CONVERT_SYSTEM,
   user: "Convert from [SOURCE_STYLE] to [TARGET_STYLE]:\n[CITATION]",
-  model: "anthropic/claude-sonnet-4",
-  fallbacks: ["google/gemini-2.5-pro", "openai/gpt-4o"],
+  model: "openai/gpt-5.4-nano",
+  fallbacks: ["google/gemini-3-flash-preview", "deepseek/deepseek-v4-flash"],
   temperature: 0.2,
   maxTokens: 512,
 };

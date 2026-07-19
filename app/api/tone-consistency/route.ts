@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/supabase/auth-guard";
 import { db } from "@/db";
 import { documents, sections, flags, llmCallLog } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
-import { callOpenRouter } from "@/lib/routing/openrouter";
+import { callOpenRouter, loadBind } from "@/lib/routing/openrouter";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { loadMergedStylePreferences } from "@/lib/style/load-prefs";
 import { resolveEnglishVariant, VARIANT_LABELS } from "@/lib/style/english-variant";
@@ -43,8 +43,30 @@ For each issue found, respond with a JSON array entry:
 Return ONLY a JSON array. If no issues found, return [].
 Do not invent issues — only flag genuine inconsistencies.`;
 
-const MODEL = "anthropic/claude-sonnet-4";
-const FALLBACKS = ["google/gemini-2.5-pro", "openai/gpt-4o"];
+// Last-resort defaults only — the live config is the "tone-consistency"
+// activity bind (constraint #7: models/prompts are admin-managed in the DB).
+const FALLBACK_CONFIG = {
+  system: SYSTEM_PROMPT,
+  model: "google/gemini-3-flash-preview",
+  fallbacks: ["openai/gpt-5.4-mini", "deepseek/deepseek-v4-flash"],
+  temperature: 0.3,
+  maxTokens: 4096,
+};
+
+async function loadToneConfig() {
+  try {
+    const b = await loadBind("tone-consistency");
+    return {
+      system: b.systemPrompt || FALLBACK_CONFIG.system,
+      model: b.model.openrouterModelId,
+      fallbacks: b.fallbacks.length > 0 ? b.fallbacks : FALLBACK_CONFIG.fallbacks,
+      temperature: b.model.temperature,
+      maxTokens: b.model.maxTokens,
+    };
+  } catch {
+    return FALLBACK_CONFIG;
+  }
+}
 
 export interface ToneIssue {
   type: "tone_shift" | "voice_inconsistency" | "register_change" | "contradiction" | "repetition";
@@ -147,6 +169,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const startTime = Date.now();
+    const cfg = await loadToneConfig();
     const stylePrefs = await loadMergedStylePreferences(user.id, doc.documentType);
     const targetVariant = resolveEnglishVariant(doc.intake as Record<string, unknown> | null, stylePrefs);
     const variantLine = targetVariant
@@ -154,13 +177,13 @@ export async function POST(request: NextRequest) {
       : "";
     const result = await callOpenRouter(
       [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: cfg.system },
         { role: "user", content: `Document type: ${doc.documentType}\n${variantLine}\n---\n${fullText}\n---` },
       ],
-      MODEL,
-      FALLBACKS,
-      0.3,
-      4096,
+      cfg.model,
+      cfg.fallbacks,
+      cfg.temperature,
+      cfg.maxTokens,
     );
 
     const latencyMs = Date.now() - startTime;
