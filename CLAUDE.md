@@ -78,7 +78,7 @@ The analysis engine never uses a hardcoded list of banned words or patterns. It 
 | Database | Supabase (PostgreSQL) | Hosted Postgres |
 | ORM | Drizzle ORM | Type-safe SQL on Supabase Postgres |
 | Auth | Supabase Auth | Email/password + Google SSO. No NextAuth. Apple SSO deferred to post-V1. |
-| File storage | Supabase Storage | Uploaded PDFs and .docx files |
+| File storage | Supabase Storage | Private `originals` bucket: uploaded docx/pdf/txt bytes at `{userId}/{docId}.{ext}` (`documents.storagePath`). Created by `scripts/setup-storage.ts`. Accessed server-only via `lib/supabase/admin.ts` (service role). The stored .docx powers formatting-preserving export (`lib/export/docx-surgery.ts` — surgery on the original XML, all-or-nothing alignment, falls back to the re-typeset build; PRD §25). Never fail an upload because storage failed. |
 | Payments | Stripe | Monthly + annual subscriptions |
 | Model routing | OpenRouter | Single API key, multi-model, hidden from users. Live routing = Activity Binds (`activity_binds` + `model_library`, loaded by `lib/routing/openrouter.ts::loadBind`); current lineup applied by `scripts/seed-model-reroute.ts` — Sonnet 4.6 for rewrites only, nano/flash tiers elsewhere (PRD §24). Prompt caching: system messages ≥4k chars get a `cache_control` breakpoint. The legacy `model_configs`/`prompt_configs` path is dead (`config-loader.ts` is `@deprecated`). |
 | PDF parsing | pdfjs-dist | Server-side text extraction |

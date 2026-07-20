@@ -8,6 +8,14 @@ import { parseAndSplit } from "@/lib/citations/parser";
 import { checkAllLimits } from "@/lib/stripe/plan-limits";
 import { rateLimit } from "@/lib/rate-limit";
 import { trackEvent } from "@/lib/events/track";
+import { eq } from "drizzle-orm";
+import { createAdminClient, ORIGINALS_BUCKET } from "@/lib/supabase/admin";
+
+const STORAGE_MIME: Record<string, string> = {
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pdf: "application/pdf",
+  txt: "text/plain",
+};
 
 type ExtractionMeta = {
   sourceType: "pdf" | "docx" | "txt" | "pasted";
@@ -50,6 +58,11 @@ export async function POST(request: NextRequest) {
 
   let rawText: string;
   let extractionMeta: ExtractionMeta | null = null;
+  // Original file bytes, kept so the upload can be stored in the `originals`
+  // bucket after the document row exists. The stored .docx powers
+  // formatting-preserving export (lib/export/docx-surgery.ts).
+  let originalBuffer: ArrayBuffer | null = null;
+  let originalExt: "pdf" | "docx" | "txt" | null = null;
 
   if (file) {
     // Cap file size at 10MB to prevent memory/CPU issues
@@ -73,6 +86,8 @@ export async function POST(request: NextRequest) {
 
     try {
       const buffer = await file.arrayBuffer();
+      originalBuffer = buffer;
+      originalExt = fileType;
       if (fileType === "pdf") {
         try {
           const parsed = await parsePdfWithMeta(buffer);
@@ -204,6 +219,24 @@ export async function POST(request: NextRequest) {
 
     if (sectionValues.length > 0) {
       await db.insert(sections).values(sectionValues);
+    }
+
+    // Store the original file bytes — best-effort: a storage failure must
+    // never fail the upload (export simply falls back to the re-typeset path).
+    if (originalBuffer && originalExt) {
+      try {
+        const storagePath = `${user.id}/${doc.id}.${originalExt}`;
+        const { error: storageError } = await createAdminClient()
+          .storage.from(ORIGINALS_BUCKET)
+          .upload(storagePath, Buffer.from(originalBuffer), {
+            contentType: STORAGE_MIME[originalExt],
+            upsert: true,
+          });
+        if (storageError) throw storageError;
+        await db.update(documents).set({ storagePath }).where(eq(documents.id, doc.id));
+      } catch (storageErr) {
+        console.warn("[upload] Storing original file failed (continuing without):", storageErr instanceof Error ? storageErr.message : storageErr);
+      }
     }
 
     const wordCount = rawText.split(/\s+/).length;

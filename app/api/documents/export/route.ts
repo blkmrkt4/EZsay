@@ -5,12 +5,22 @@ import { documents, sections, userStylePreferences } from "@/db/schema";
 import { eq, and, isNull } from "drizzle-orm";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Footer, PageNumber, Header, convertInchesToTwip } from "docx";
 import { applyTextFormatting } from "@/lib/export/format-text";
+import { exportPreservedDocx } from "@/lib/export/docx-surgery";
+import { createAdminClient, ORIGINALS_BUCKET } from "@/lib/supabase/admin";
 
 type Preferences = Record<string, unknown>;
 
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
 /**
- * Export a document as .docx or .txt with style preferences applied.
- * GET /api/documents/export?documentId=xxx&format=docx|txt
+ * Export a document as .docx or .txt.
+ * GET /api/documents/export?documentId=xxx&format=docx|txt&mode=preserved|retypeset
+ *
+ * For .docx uploads with a stored original, the default is formatting-
+ * preserving surgery on the original file (lib/export/docx-surgery.ts);
+ * `mode=retypeset` forces the generic Style-Rules rebuild. Every preserved
+ * failure falls back to the rebuild with X-Export-Fallback-Reason set —
+ * exporting must never fail because preservation couldn't run.
  */
 export async function GET(request: NextRequest) {
   const user = await getCurrentUser();
@@ -21,6 +31,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const documentId = searchParams.get("documentId");
   const format = searchParams.get("format") ?? "docx";
+  const mode = searchParams.get("mode") ?? "preserved";
 
   if (!documentId) {
     return new NextResponse("documentId required", { status: 400 });
@@ -51,7 +62,46 @@ export async function GET(request: NextRequest) {
   }));
 
   if (format === "docx") {
-    return generateDocx(doc.title, allSections, prefs);
+    // Formatting-preserving path: only for stored .docx originals.
+    const meta = doc.extractionMeta as { sourceType?: string } | null;
+    let fallbackReason: string | null = null;
+    if (mode !== "retypeset") {
+      if (!doc.storagePath || meta?.sourceType !== "docx") {
+        fallbackReason = "no-original";
+      } else {
+        try {
+          const { data, error } = await createAdminClient()
+            .storage.from(ORIGINALS_BUCKET)
+            .download(doc.storagePath);
+          if (error || !data) {
+            fallbackReason = "download-failed";
+          } else {
+            const original = Buffer.from(await data.arrayBuffer());
+            const result = await exportPreservedDocx(
+              original,
+              docSections.map((s) => ({ rawText: s.rawText, currentText: s.currentText })),
+            );
+            if (result.ok) {
+              return new NextResponse(new Uint8Array(result.buffer), {
+                headers: {
+                  "Content-Type": DOCX_MIME,
+                  "Content-Disposition": `attachment; filename="${encodeURIComponent(doc.title)}.docx"`,
+                  "X-Export-Mode": "preserved",
+                },
+              });
+            }
+            fallbackReason = result.reason;
+          }
+        } catch (err) {
+          console.error("[export] Preserved export failed:", err instanceof Error ? err.message : err);
+          fallbackReason = "download-failed";
+        }
+      }
+    }
+    return generateDocx(doc.title, allSections, prefs, {
+      "X-Export-Mode": "retypeset",
+      ...(fallbackReason ? { "X-Export-Fallback-Reason": fallbackReason } : {}),
+    });
   }
 
   // Plain text — still apply text-level transforms
@@ -175,6 +225,7 @@ async function generateDocx(
   title: string,
   allSections: { text: string; isLocked: boolean }[],
   prefs: Preferences,
+  extraHeaders: Record<string, string> = {},
 ): Promise<NextResponse> {
   const font = resolveFont(prefs);
   const fontSize = resolveFontSize(prefs);
@@ -299,6 +350,7 @@ async function generateDocx(
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "Content-Disposition": `attachment; filename="${encodeURIComponent(title)}.docx"`,
+      ...extraHeaders,
     },
   });
 }

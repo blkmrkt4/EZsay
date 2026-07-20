@@ -186,6 +186,7 @@ export const documents = pgTable("documents", {
   spellingResults: jsonb("spelling_results"),
   grammarResults: jsonb("grammar_results"),
   extractionMeta: jsonb("extraction_meta"),
+  storagePath: text("storage_path"), // originals bucket path for the uploaded file; null for pasted/legacy docs
   intake: jsonb("intake"),  // questionnaire answers: audience, purpose, aiUsage, discipline, etc.
   spellingScore: integer("spelling_score"),
   grammarScore: integer("grammar_score"),

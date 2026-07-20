@@ -87,13 +87,23 @@ export async function DELETE(
     const deleted = await db
       .delete(documents)
       .where(and(eq(documents.id, docId), eq(documents.userId, user.id)))
-      .returning({ id: documents.id });
+      .returning({ id: documents.id, storagePath: documents.storagePath });
 
     if (deleted.length === 0) {
       return NextResponse.json(
         { success: false, error: "Document not found" },
         { status: 404 }
       );
+    }
+
+    // Best-effort removal of the stored original file.
+    if (deleted[0].storagePath) {
+      try {
+        const { createAdminClient, ORIGINALS_BUCKET } = await import("@/lib/supabase/admin");
+        await createAdminClient().storage.from(ORIGINALS_BUCKET).remove([deleted[0].storagePath]);
+      } catch (storageErr) {
+        console.warn("[documents] Removing stored original failed:", storageErr instanceof Error ? storageErr.message : storageErr);
+      }
     }
 
     return NextResponse.json({ success: true, data: { id: docId } });

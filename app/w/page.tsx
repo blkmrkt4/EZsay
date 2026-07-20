@@ -52,6 +52,7 @@ interface Document {
   lastScanLevel: string | null;
   lastScanSensitivity: string | null;
   lastScanAt: string | null;
+  storagePath: string | null;
   createdAt: string;
   versionCount: number;
   firstVersionDate: string | null;
@@ -1547,6 +1548,42 @@ export default function WorkspacePage() {
     setTimeout(() => setSaveVersionState("idle"), 2500);
   }
 
+  // ── Download .docx (fetch→blob so X-Export-Mode is readable) ────────────
+
+  const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
+  // Original-formatting export needs the stored original AND a .docx source.
+  const canPreserveFormatting =
+    !!activeDoc?.storagePath && activeDoc?.extractionMeta?.sourceType === "docx";
+
+  async function downloadDocxFile(mode?: "retypeset") {
+    if (!activeDocId) return;
+    setDownloadNotice(null);
+    try {
+      const res = await fetch(
+        `/api/documents/export?documentId=${activeDocId}&format=docx${mode ? `&mode=${mode}` : ""}`,
+      );
+      if (!res.ok) {
+        setDownloadNotice("Export failed — please try again.");
+        return;
+      }
+      const exportMode = res.headers.get("X-Export-Mode");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${activeDoc?.title ?? "document"}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      // A preserved request that silently fell back deserves a heads-up.
+      if (!mode && exportMode === "retypeset" && canPreserveFormatting) {
+        setDownloadNotice("Original formatting couldn't be preserved for this file — exported with your Style Rules instead.");
+        setTimeout(() => setDownloadNotice(null), 8000);
+      }
+    } catch {
+      setDownloadNotice("Export failed — please try again.");
+    }
+  }
+
   // ── Generate options ───────────────────────────────────────────────────
 
   // Options are now generated during the scan phase via /api/suggest-all
@@ -2702,7 +2739,7 @@ export default function WorkspacePage() {
                   currentScore={activeDoc.aiRiskScore}
                   wordCount={fullDocText.split(/\s+/).filter(Boolean).length}
                   wordTarget={parseInt(((activeDoc.intake as Record<string, string> | null)?.wordTarget ?? ""), 10) || null}
-                  onDownloadDocx={() => window.open(`/api/documents/export?documentId=${activeDocId}&format=docx`, "_blank")}
+                  onDownloadDocx={() => { void downloadDocxFile(); }}
                   onCopyText={() => { void navigator.clipboard.writeText(fullDocText); }}
                 />
               )}
@@ -4098,20 +4135,46 @@ export default function WorkspacePage() {
                       >
                         Save as .txt
                       </button>
-                      <button
-                        onClick={() => {
-                          setDownloadMenuOpen(false);
-                          window.open(`/api/documents/export?documentId=${activeDocId}&format=docx`, "_blank");
-                        }}
-                        className="w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-100"
-                      >
-                        Save as .docx
-                      </button>
-                      <p className="border-t border-gray-100 px-3 pt-1.5 pb-1 text-[10px] leading-snug text-gray-400">
-                        The .docx is re-typeset to your Style Rules — the uploaded
-                        file&apos;s original layout isn&apos;t preserved.
-                      </p>
+                      {canPreserveFormatting ? (
+                        <>
+                          <button
+                            onClick={() => { setDownloadMenuOpen(false); void downloadDocxFile(); }}
+                            className="w-full text-left px-3 py-1.5 text-[11px] font-medium text-gray-800 hover:bg-gray-100"
+                          >
+                            Save as .docx — original formatting
+                          </button>
+                          <button
+                            onClick={() => { setDownloadMenuOpen(false); void downloadDocxFile("retypeset"); }}
+                            className="w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-100"
+                          >
+                            Save as .docx — re-typeset to Style Rules
+                          </button>
+                          <p className="border-t border-gray-100 px-3 pt-1.5 pb-1 text-[10px] leading-snug text-gray-400">
+                            Original formatting keeps your uploaded file&apos;s layout,
+                            styles, tables, and footnotes — only edited text changes.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => { setDownloadMenuOpen(false); void downloadDocxFile("retypeset"); }}
+                            className="w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-100"
+                          >
+                            Save as .docx
+                          </button>
+                          <p className="border-t border-gray-100 px-3 pt-1.5 pb-1 text-[10px] leading-snug text-gray-400">
+                            The .docx is re-typeset to your Style Rules.
+                            {activeDoc?.extractionMeta?.sourceType === "docx" && !activeDoc?.storagePath &&
+                              " Re-upload the original file to enable original-formatting export."}
+                          </p>
+                        </>
+                      )}
                     </div>
+                  </div>
+                )}
+                {downloadNotice && (
+                  <div className="absolute bottom-full right-0 mb-1 w-64 rounded border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10px] leading-snug text-amber-800 shadow-lg z-50">
+                    {downloadNotice}
                   </div>
                 )}
               </div>

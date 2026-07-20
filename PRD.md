@@ -535,6 +535,7 @@ DEV_BYPASS_AUTH=false
 | 21 | Model routing | Sonnet 4.6 only for rewrites (with Kimi K2.5 / DeepSeek V4 Flash A/B fallbacks); nano/flash tiers everywhere else; prompt caching on; see §24 | 2026-07-19 |
 | 22 | Word-count target | Stored in `documents.intake.wordTarget` via the assignment brief; footer shows live progress; completion screen shows words vs target | 2026-07-19 |
 | 23 | Detector-parity framing | Score displays carry "EzSay's own estimate — not your university's detector" (free-scan results + Auditor tooltip); landing no longer claims .pdf/.md export | 2026-07-19 |
+| 24 | Docx formatting preservation | Originals stored at upload; export does XML surgery on the original file, all-or-nothing alignment, fallback = re-typeset. See §25 | 2026-07-19 |
 
 ---
 
@@ -754,3 +755,17 @@ Notes (pricing verified against openrouter.ai 2026-07-19):
 - **A/B plan:** `llm_call_log` already records model + outcome per call; when enough acceptance data accumulates, compare Sonnet 4.6 vs Kimi K2.5 vs DeepSeek V4 Flash acceptance rates on suggest activities before demoting Sonnet.
 - **Retired binds** (never invoked by any route — scan is pure code): surface-scan, deep-scan, comprehensive-scan, suggest-tone, expand-prose — rows kept with `isActive=false`, removed from the admin auto-recreate list.
 - Estimated full-workup cost for a 10k-word doc: ~$2.50–4.00 (old all-Sonnet, uncached) → ~$0.80–1.20 (this routing). Verify against `llm_call_log`, not the estimate.
+
+---
+
+## 25. Formatting-preserving .docx export (2026-07-19)
+
+**Problem:** exports were always re-typeset from plain text — a student's uploaded .docx lost its styles, tables, images, and footnotes, which undermines "submit this file" trust.
+
+**Design:** originals are now stored at upload (private Supabase Storage bucket `originals`, path `{userId}/{docId}.{ext}`, `documents.storagePath`; docx/pdf/txt — pasted has nothing to store). For .docx sources, export performs **surgery on the original file** (`lib/export/docx-surgery.ts`): unzip → walk `word/document.xml` paragraphs in the exact order mammoth read them at upload (verified against mammoth 1.12.0 source: mc:Choice skipped, DrawingML textboxes skipped, VML textboxes after their anchor, fldSimple dropped) → align 1:1 with `sections` rows → rewrite ONLY paragraphs where `currentText !== rawText` via a prefix/suffix run splice that keeps runs outside the edit window (bold spans, hyperlinks, footnote markers). Multi-paragraph rewrites clone the source paragraph's `pPr` (minus `sectPr`). All other zip entries pass through decompressed-byte-identical.
+
+**Safety:** alignment is all-or-nothing — any mismatch, tracked changes (`w:ins`/`w:del`), OLE objects, or fields/content-controls in an edited paragraph → fall back to the generic re-typeset export (never a corrupted file, never worse than before). Headers report the outcome: `X-Export-Mode: preserved|retypeset`, `X-Export-Fallback-Reason: no-original|download-failed|malformed-docx|unsupported-construct|alignment-failed|edited-field-paragraph|surgery-error`.
+
+**UX:** when preservation is available (`storagePath` set + docx source) the download menu offers "Save as .docx — original formatting" (default) and "— re-typeset to Style Rules" (`&mode=retypeset`; the only mode that applies Style-Rules typesetting). Docx downloads are fetch→blob so the client can toast when a preserved request silently fell back. Older/non-docx documents keep the single re-typeset entry, with a re-upload hint for docx sources without a stored original.
+
+**Ops:** bucket created by `scripts/setup-storage.ts` (idempotent; run once per environment — done 2026-07-19 on the shared Supabase project). Service-role storage access via `lib/supabase/admin.ts` (`SUPABASE_SERVICE_ROLE_KEY`); document DELETE best-effort removes the stored original. Tests: `__tests__/docx-surgery.test.ts` (round-trip invariant: mammoth re-extraction of the output equals the edited sections; zip-entry identity; guard behaviors).
