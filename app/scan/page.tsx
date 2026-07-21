@@ -133,6 +133,15 @@ function FreeScanInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Anonymous users see the flag preview too (categories + explanations,
+  // phrases redacted) — fetch as soon as results exist.
+  useEffect(() => {
+    if (isAnonymous && documentId && stage === "results" && !sampleFlagsFetched) {
+      fetchSampleFlags(documentId);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAnonymous, documentId, stage, sampleFlagsFetched]);
+
   // Whenever the user transitions from anonymous → permanent (and we have
   // a doc), fetch the sample flags to populate the post-claim reveal.
   useEffect(() => {
@@ -150,7 +159,7 @@ function FreeScanInner() {
       if (json.success && Array.isArray(json.data?.flags)) {
         const open = json.data.flags
           .filter((f: { status: string }) => f.status === "open")
-          .slice(0, 2)
+          .slice(0, 5)
           .map((f: { flaggedPhrase: string; explanation: string; patternType: string }) => ({
             flaggedPhrase: f.flaggedPhrase,
             explanation: f.explanation,
@@ -161,6 +170,19 @@ function FreeScanInner() {
     } catch {
       // Soft-fail: post-claim view still works without sample flags
     }
+  }
+
+  /** Redact a flagged phrase for anonymous preview: keep the first two words,
+   * replace the rest with word-shaped blocks so the flag feels real without
+   * giving the sentence away. */
+  function maskPhrase(phrase: string): string {
+    const words = phrase.split(/\s+/);
+    if (words.length <= 2) return words.map((w) => "█".repeat(Math.max(2, w.length))).join(" ");
+    return (
+      words.slice(0, 2).join(" ") +
+      " " +
+      words.slice(2).map((w) => "█".repeat(Math.max(2, Math.min(w.length, 10)))).join(" ")
+    );
   }
 
   /** Rebuild the results view when the user returns from the email link. */
@@ -641,16 +663,58 @@ function FreeScanInner() {
               </div>
             </div>
 
-            {/* ── Email Gate (anonymous users) ────────────────── */}
+            {/* ── Flag preview — visible to everyone. Anonymous visitors see
+                the category and the reason for every flag, with the sentence
+                redacted; verifying an email unmasks the sentences and saves
+                the scan. No more all-or-nothing wall. ─────────── */}
+            {sampleFlags.length > 0 && (
+              <div className="mt-10">
+                <h2 className="text-sm font-semibold text-gray-900">
+                  {isAnonymous ? "What we flagged in your draft" : "Sample flagged sentences from your draft"}
+                </h2>
+                <p className="mt-1 text-xs text-gray-500">
+                  {result.totalFlags - sampleFlags.length > 0
+                    ? `Showing ${sampleFlags.length} of ${result.totalFlags} flags.`
+                    : `Showing all ${sampleFlags.length} flag${sampleFlags.length !== 1 ? "s" : ""}.`}
+                  {isAnonymous
+                    ? " Verify your email below to reveal the exact sentences."
+                    : " Subscribe to see side-by-side rewrites."}
+                </p>
+                <div className="mt-4 space-y-3">
+                  {sampleFlags.map((flag, i) => (
+                    <div
+                      key={i}
+                      className="rounded-lg border border-amber-200 bg-amber-50/60 p-4"
+                    >
+                      <div className="flex items-start gap-3">
+                        <span className="mt-0.5 inline-flex h-5 shrink-0 items-center rounded-full bg-amber-200 px-2 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                          {PATTERN_LABELS[flag.patternType] ?? "AI pattern"}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm leading-relaxed text-gray-900">
+                            <span className={`px-0.5 font-medium ${isAnonymous ? "bg-gray-200/70 text-gray-500 tracking-tight" : "bg-amber-200/70"}`}>
+                              {isAnonymous ? maskPhrase(flag.flaggedPhrase) : flag.flaggedPhrase}
+                            </span>
+                          </p>
+                          <p className="mt-1 text-xs text-gray-600">{flag.explanation}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Email unlock (anonymous users) ────────────────── */}
             {isAnonymous && result.totalFlags > 0 && (
-              <div className="mt-10 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 p-6">
+              <div className="mt-6 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 p-6">
                 {emailSent ? (
                   <div className="text-center">
                     <h3 className="text-base font-semibold text-gray-900">Check your email</h3>
                     <p className="mt-2 text-sm text-gray-600">
                       We sent a verification link to{" "}
                       <span className="font-medium text-gray-900">{email}</span>.
-                      Click it to see exactly which sentences we flagged and why.
+                      Click it to reveal the flagged sentences and keep your scan.
                     </p>
                     <p className="mt-3 text-xs text-gray-400">
                       The link will bring you back here with your full results.
@@ -659,11 +723,11 @@ function FreeScanInner() {
                 ) : (
                   <>
                     <h3 className="text-base font-semibold text-gray-900">
-                      We found {result.totalFlags} specific issue{result.totalFlags !== 1 ? "s" : ""} in your draft.
+                      Reveal the exact sentences — and keep your scan.
                     </h3>
                     <p className="mt-2 text-sm text-gray-600">
-                      Enter your email to see exactly which sentences and how we&apos;d fix them.
-                      No password required — we&apos;ll send a one-click verification link.
+                      Enter your email and we&apos;ll unmask the flagged sentences above and
+                      save this scan so you don&apos;t lose it. No password — one-click link.
                     </p>
                     <form onSubmit={handleEmailSubmit} className="mt-4 flex flex-col gap-2 sm:flex-row">
                       <input
@@ -679,7 +743,7 @@ function FreeScanInner() {
                         disabled={emailSubmitting || !email.trim()}
                         className="rounded-lg bg-gray-900 px-5 py-2.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
                       >
-                        {emailSubmitting ? "Sending…" : "See My Issues"}
+                        {emailSubmitting ? "Sending…" : "Reveal My Sentences"}
                       </button>
                     </form>
                     {emailError && <p className="mt-2 text-sm text-red-600">{emailError}</p>}
@@ -689,42 +753,6 @@ function FreeScanInner() {
                     </p>
                   </>
                 )}
-              </div>
-            )}
-
-            {/* ── Sample flagged sentences (post-claim) ──────── */}
-            {!isAnonymous && sampleFlags.length > 0 && (
-              <div className="mt-10">
-                <h2 className="text-sm font-semibold text-gray-900">
-                  Sample flagged sentences from your draft
-                </h2>
-                <p className="mt-1 text-xs text-gray-500">
-                  {result.totalFlags - sampleFlags.length > 0
-                    ? `Showing ${sampleFlags.length} of ${result.totalFlags} flags. Subscribe to see the rest plus side-by-side rewrites.`
-                    : `Showing all ${sampleFlags.length} flag${sampleFlags.length !== 1 ? "s" : ""}. Subscribe to see side-by-side rewrites.`}
-                </p>
-                <div className="mt-4 space-y-3">
-                  {sampleFlags.map((flag, i) => (
-                    <div
-                      key={i}
-                      className="rounded-lg border border-amber-200 bg-amber-50/60 p-4"
-                    >
-                      <div className="flex items-start gap-3">
-                        <span className="mt-0.5 inline-flex h-5 shrink-0 items-center rounded-full bg-amber-200 px-2 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
-                          {PATTERN_LABELS[flag.patternType] ?? "AI pattern"}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm leading-relaxed text-gray-900">
-                            <span className="bg-amber-200/70 px-0.5 font-medium">
-                              {flag.flaggedPhrase}
-                            </span>
-                          </p>
-                          <p className="mt-1 text-xs text-gray-600">{flag.explanation}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
               </div>
             )}
 

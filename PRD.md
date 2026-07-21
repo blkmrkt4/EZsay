@@ -536,6 +536,8 @@ DEV_BYPASS_AUTH=false
 | 22 | Word-count target | Stored in `documents.intake.wordTarget` via the assignment brief; footer shows live progress; completion screen shows words vs target | 2026-07-19 |
 | 23 | Detector-parity framing | Score displays carry "EzSay's own estimate — not your university's detector" (free-scan results + Auditor tooltip); landing no longer claims .pdf/.md export | 2026-07-19 |
 | 24 | Docx formatting preservation | Originals stored at upload; export does XML surgery on the original file, all-or-nothing alignment, fallback = re-typeset. See §25 | 2026-07-19 |
+| 25 | Email gate softened | Anonymous visitors see flag categories + explanations with redacted sentences (up to 5); email verification unmasks and saves. See §22 | 2026-07-20 |
+| 26 | Legacy routes deleted | `/results/[docId]`, `/edit/[docId]/*`, `/dashboard` and the EditingShell/PaywallModal/useSubscription tree removed; `/upload` kept as a redirect stub to `/w` | 2026-07-20 |
 
 ---
 
@@ -626,7 +628,7 @@ Six SVG files live in `public/brand/` — three variants × black/white pairs. A
 
 ## 22. Free-scan funnel
 
-The `/scan` route is the public, no-signup entry point that proves the product works and captures email at the moment of highest interest. It implements the "give to get" pattern — visible scores immediately, specific flagged sentences only after the visitor verifies an email.
+The `/scan` route is the public, no-signup entry point that proves the product works and captures email at the moment of highest interest. **Softened 2026-07-20:** anonymous visitors now see the flag preview immediately — category badge + explanation for up to 5 flags, with the flagged sentence REDACTED (first two words + word-shaped blocks, `maskPhrase` in `app/scan/page.tsx`). Verifying an email unmasks the sentences and saves the scan. The old all-or-nothing wall (nothing visible until a magic-link round trip, then only 2 samples) was the funnel's biggest bounce cliff.
 
 ### 22.1 Flow
 
@@ -639,16 +641,15 @@ The `/scan` route is the public, no-signup entry point that proves the product w
    → server creates document, sections, flags
 5. Results screen shows: Auditor Score ring + 6 score spectrums + written summary
    → "What we found" — counts of flags and sections, score commentary
-6. Below the summary, an **email gate** appears (only if anonymous + flags exist):
-   "We found N specific issues. Enter your email to see exactly which sentences."
-7. Submit email → supabase.auth.updateUser({ email },
+6. Flag preview renders for EVERYONE (up to 5 flags): category + explanation
+   visible; sentence text redacted while anonymous
+7. Below the preview, the **email unlock** card (only if anonymous + flags exist):
+   "Reveal the exact sentences — and keep your scan."
+8. Submit email → supabase.auth.updateUser({ email },
                     { emailRedirectTo: /auth/callback?redirect=/scan?claimed=1 })
-   → Supabase sends verification link
-   → Page swaps to "Check your email" state
-8. Visitor clicks link in email → routes through /auth/callback (existing
-   route, in Supabase's redirect-URL allowlist) → /scan?claimed=1
-9. Page mount detects ?claimed=1 + non-anonymous user + stashed documentId
-   → fetches the same document, renders sample flagged sentences (up to 2)
+   → Supabase sends verification link → "Check your email" state
+9. Visitor clicks link → /auth/callback → /scan?claimed=1
+   → page restores the document and renders the same preview UNMASKED
    → still shows the Subscribe CTA at the bottom
 10. "Scan Another Document" button is removed — free users get one scan
 ```

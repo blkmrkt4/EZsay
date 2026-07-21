@@ -44,7 +44,9 @@ export async function updateSession(request: NextRequest) {
   // /scan is intentionally NOT protected: visitors land there anonymously
   // and the page itself creates an anonymous Supabase session via
   // signInAnonymously() so the upload/scan API calls still authenticate.
-  const protectedPrefixes = ["/w", "/upload", "/results", "/edit", "/dashboard"];
+  // /upload is a legacy redirect stub → /w; the legacy /results, /edit and
+  // /dashboard routes were deleted 2026-07-20.
+  const protectedPrefixes = ["/w", "/upload"];
   const isProtected = protectedPrefixes.some((p) => pathname.startsWith(p));
 
   if (!user && isProtected) {

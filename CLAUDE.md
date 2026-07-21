@@ -95,11 +95,10 @@ The analysis engine never uses a hardcoded list of banned words or patterns. It 
 ezsay/
 ├── app/
 │   ├── (auth)/                     # Login, signup, SSO flows
-│   ├── (dashboard)/                # Library, account, subscription
-│   ├── upload/                     # Upload + paste flow
-│   ├── results/[docId]/            # Post-scan results — free, read-only
+│   ├── scan/                       # Free anonymous scan funnel (public)
+│   ├── upload/                     # Legacy redirect stub → /w
+│   ├── w/                          # THE live workspace — library, scan, edit, citations (paywalled)
 │   ├── demo/                       # "Watch Demo" walkthrough wizard — public, no auth (PRD §23)
-│   ├── edit/[docId]/               # Editing panel — paywalled
 │   ├── admin/                      # Admin panel — role: admin only
 │   │   ├── prompts/                # Prompt management UI
 │   │   ├── models/                 # Model + fallback config UI
@@ -438,10 +437,12 @@ Defined in `db/schema.ts`. If schema diverges from here, update this file to mat
 Use `@supabase/ssr` throughout. All OAuth via Supabase Auth.
 
 ```
-/edit/[docId]     → session check (401) → subscription check (402) → render
-/results/[docId]  → session check (401) → render (no subscription check)
+/w                → session check (redirect /login) → subscription check (redirect /pricing) → render
+/scan             → public; page creates an anonymous Supabase session itself
 /admin/*          → session check (401) → admin role check (403) → render
 ```
+
+(The legacy `/edit/[docId]`, `/results/[docId]` and `/dashboard` routes were deleted 2026-07-20.)
 
 Stripe webhook at `/api/webhooks/stripe` syncs subscription status on every lifecycle event. Never trust client-side subscription state for access control.
 
@@ -506,11 +507,11 @@ The editing panel is the core product UI. It has exactly three panels. Build it 
 
 - **Always visible.** Takes the majority of horizontal space. This is the primary panel.
 - **Header:** current flag position (e.g. "Flag 3 of 14") and the "Show/Hide document" toggle button.
-- **Top of content — the user's original text block.** (Legacy `EditingShell` only.) In the live `/w` workspace this bordered original-text box is **redundant with the Document panel**, which already highlights the flagged passage in full context, so it is shown **only when the Document panel is collapsed** (`!showDocPanel`) — otherwise it repeats the left side and wastes space. The Document panel marks the passage being edited in **violet** (`bg-violet-200`/`ring-violet-400` phrase, `bg-violet-100` sentence, `border-l-violet-400` section) — deliberately distinct from the centre's amber option highlights and the blue citation highlight — and the comparison stage's caption points back to "the passage highlighted in your document".
+- **Top of content — the user's original text block.** In the live `/w` workspace a bordered original-text box is shown **only when the Document panel is collapsed** (`!showDocPanel`) — the Document panel already highlights the flagged passage in full context, so showing both repeats the left side and wastes space. The Document panel marks the passage being edited in **violet** (`bg-violet-200`/`ring-violet-400` phrase, `bg-violet-100` sentence, `border-l-violet-400` section) — deliberately distinct from the centre's amber option highlights and the blue citation highlight — and the comparison stage's caption points back to "the passage highlighted in your document".
 - **Immediately below the original text:** one-line flag explanation in muted small text — why this was flagged (copied from `library_entries.explanation`).
 - **Below that — numbered replacement options.** Each option shows:
   - The option number (1, 2, 3...)
-  - A **difference-only view of the option**. NOTE: the live editor is the workspace at `app/w/page.tsx`, **not** the legacy `components/editor/EditingShell` tree (that only backs the secondary `/edit/[docId]` route; `FlagOption.tsx` / `condensedDiff()` are part of it). Because the big detection flags (`uniform_length`, `synonym_rotation`, `banned_structure`, …) cover almost the whole section and each option is a full rewrite of it, diffing an option against the *original* lights up ~90% of words and is useless. Instead the workspace aligns the options **against each other** via `alignOptions()` in `lib/analysis/word-diff.ts`: text common to all options is dimmed/condensed, and only the spans where the options actually diverge are highlighted (amber). Three near-identical 200-word rewrites collapse to "here's the sentence that differs," three times. The full text is still stored in `flag_options.text` and applied verbatim on accept — only the rendering changes.
+  - A **difference-only view of the option**. The editor is the workspace at `app/w/page.tsx` (the legacy `components/editor/EditingShell` tree and its `/edit/[docId]` route were deleted 2026-07-20). Because the big detection flags (`uniform_length`, `synonym_rotation`, `banned_structure`, …) cover almost the whole section and each option is a full rewrite of it, diffing an option against the *original* lights up ~90% of words and is useless. Instead the workspace aligns the options **against each other** via `alignOptions()` in `lib/analysis/word-diff.ts`: text common to all options is dimmed/condensed, and only the spans where the options actually diverge are highlighted (amber). Three near-identical 200-word rewrites collapse to "here's the sentence that differs," three times. The full text is still stored in `flag_options.text` and applied verbatim on accept — only the rendering changes.
   - **Comparison stage (`MorphStage`), read-only:** a "Compare the options in context" box shows the passage once, and at **every** divergence stacks all option variants inline, numbered to match the Choices panel — purely for comparing. **Choosing is whole-option only:** click Option N in the Choices panel on the right and the whole option-N rewrite is applied, advancing to the next edit (one action). Stage only renders for 2+ options that differ; artifacts / single option / no differences fall back to the "Suggested replacements" cards. **Do NOT add per-box mix-and-match** — it was built then removed on 2026-06-08: the options are three *complete* rewrites of one passage, so stitching parts from different options risks an incoherent paragraph (esp. parallel "first/second/third/fourth" lists). Users who want to remix copy/paste from the options via "Edit myself".
   - **Source highlight:** the Document panel highlights the flagged passage being edited in **violet** (`bg-violet-200`/`ring-violet-400` phrase, `bg-violet-100` sentence) — distinct from the centre's amber option variants and the blue citation highlight. Since choosing is whole-option, this covers the whole flagged span (the whole passage is what gets replaced).
   - **Backend:** `app/api/flags/resolve` (rewritten 2026-07-17 after real document corruption): for **non-artifact flags**, an accepted option or manual edit **replaces the whole section** — generated options are full-section rewrites (the suggest prompts interpolate `[SECTION_TEXT]` only) and both editors prefill manual edits with the full section text, so splicing them into the flag's narrow span duplicated/interleaved paragraphs. For **ai_artifact flags** the replacement is span-scoped: the span is verified against the CURRENT text and re-anchored by search (`locateSpan`), refused with 409 if the text is gone ("(remove)" option sentinel = delete). `validateReplacement` is now BLOCKING (422), a tiny-replacement-on-large-section guard refuses truncated rewrites, and a full-section accept auto-skips the section's other open content flags (their text basis is gone; count returned as `autoSkippedSiblings`). NEVER reintroduce a blind offset splice here.
@@ -544,15 +545,11 @@ The editing panel is the core product UI. It has exactly three panels. Build it 
 
 ### Component files this maps to
 
-```
-components/editor/
-├── EditingShell.tsx         # The three-panel layout wrapper
-├── DocPanel.tsx             # Panel 1 — full essay, green highlight, toggle
-├── EditPanel.tsx            # Panel 2 — original text block + numbered options
-├── OriginalTextBlock.tsx    # The user's text — flagged phrase highlighted amber
-├── FlagOption.tsx           # A single numbered option card
-└── ChoicesPanel.tsx         # Panel 3 — compact numbered choices + confirm/skip/reject
-```
+The panel layout lives inline in `app/w/page.tsx` (single-file workspace). Shared
+pieces under `components/editor/`: `CommandCapsule.tsx` (scan pill + Auditor
+score), `AuditorScoreRing.tsx`, `HeatmapScrollbar.tsx`, `WorkspaceModeStrip.tsx`,
+and the review-mode `DiffDocPanel/DiffEditPanel/DiffChoicesPanel`. (The legacy
+`EditingShell` three-panel component tree was deleted 2026-07-20.)
 
 ---
 
