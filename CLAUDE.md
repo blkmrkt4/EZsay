@@ -605,7 +605,7 @@ DEV_BYPASS_AUTH=false
 - Style fingerprint summary shown to user
 - Routing reweighting (log acceptance data, do not act on it yet)
 - Version history / document restore
-- Detector score simulation (GPTZero / Turnitin %)
+- Detector score simulation (GPTZero / Turnitin %) — **permanent, not a deferral**: Turnitin has no public API (institution-only via LMS integration), so there's no real Turnitin to calibrate against; third-party proxies (GPTZero/Originality.ai/Copyleaks) were explicitly declined for cost + ToS reasons — see PRD §18 decision #27
 - A/B testing in the phrase library
 
 ---
