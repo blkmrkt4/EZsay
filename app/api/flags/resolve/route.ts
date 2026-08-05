@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { flags, flagOptions, sections, libraryEntries, documents } from "@/db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { logStyleSignal } from "@/lib/style/logger";
-import { validateReplacementBlocking } from "@/lib/analysis/corruption-checker";
+import { computeFlagReplacement } from "@/lib/analysis/flag-resolution";
 import { requireSubscription } from "@/lib/stripe/require-subscription";
 import { trackEvent } from "@/lib/events/track";
 
@@ -102,50 +102,25 @@ export async function POST(request: NextRequest) {
     }
 
     if (replacementRaw !== null) {
-      let candidate: string;
-      if (flagRow.flag.patternType === "ai_artifact") {
-        const replacement = replacementRaw === "(remove)" ? "" : replacementRaw;
-        const span = locateSpan(
-          flagRow.sectionCurrentText,
-          flagRow.flag.flaggedPhrase,
-          flagRow.flag.phraseStart,
-          flagRow.flag.phraseEnd,
-        );
-        if (!span) {
-          return NextResponse.json(
-            { success: false, error: "This text has changed since the scan — the suggestion no longer applies.", code: "stale_flag" },
-            { status: 409 },
-          );
-        }
-        candidate =
-          flagRow.sectionCurrentText.slice(0, span.start) +
-          replacement +
-          flagRow.sectionCurrentText.slice(span.end);
-      } else {
-        // Whole-section replacement. Guard against a pathologically small
-        // OPTION wiping a large section (truncated LLM output). Manual edits
-        // are exempt — a user may deliberately condense a section hard.
-        if (optionId && replacementRaw.trim().length < 40 && flagRow.sectionCurrentText.trim().length > 300) {
-          return NextResponse.json(
-            { success: false, error: "The replacement looks truncated and was not applied.", code: "suspect_replacement" },
-            { status: 422 },
-          );
-        }
-        candidate = replacementRaw;
-      }
-
-      // BLOCKING corruption check — conservative patterns only (line-anchored
-      // LLM markers, code fences, markdown bold): a match here REFUSES the
-      // accept, so prose-plausible phrases like "the verdict: guilty" must
-      // not trigger it.
-      const corruption = validateReplacementBlocking(flagRow.sectionCurrentText, candidate);
-      if (corruption) {
+      const result = computeFlagReplacement({
+        patternType: flagRow.flag.patternType,
+        currentSectionText: flagRow.sectionCurrentText,
+        replacementRaw,
+        isOptionBased: !!optionId,
+        span: {
+          flaggedPhrase: flagRow.flag.flaggedPhrase,
+          phraseStart: flagRow.flag.phraseStart,
+          phraseEnd: flagRow.flag.phraseEnd,
+        },
+      });
+      if (!result.ok) {
+        const status = result.reason === "stale_flag" ? 409 : 422;
         return NextResponse.json(
-          { success: false, error: `The replacement looked corrupted and was not applied (${corruption}).`, code: "corrupt_replacement" },
-          { status: 422 },
+          { success: false, error: result.error, code: result.reason },
+          { status },
         );
       }
-      newSectionText = candidate;
+      newSectionText = result.newSectionText;
     }
 
     // ── Apply the text change with an optimistic concurrency guard ────
@@ -277,36 +252,4 @@ export async function POST(request: NextRequest) {
     console.error("Flag resolve error:", err);
     return NextResponse.json({ success: false, error: "Failed to resolve flag." }, { status: 500 });
   }
-}
-
-/**
- * Locate the span to replace in the CURRENT text: stored offsets when they
- * still match the flagged phrase, else the occurrence nearest the original
- * position (earlier edits shift text), else null — never splice blind.
- */
-function locateSpan(
-  text: string,
-  phrase: string,
-  storedStart: number,
-  storedEnd: number,
-): { start: number; end: number } | null {
-  if (
-    storedStart >= 0 &&
-    storedEnd <= text.length &&
-    text.slice(storedStart, storedEnd) === phrase
-  ) {
-    return { start: storedStart, end: storedEnd };
-  }
-  let best = -1;
-  let bestDist = Infinity;
-  let idx = text.indexOf(phrase);
-  while (idx !== -1) {
-    const dist = Math.abs(idx - storedStart);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = idx;
-    }
-    idx = text.indexOf(phrase, idx + 1);
-  }
-  return best === -1 ? null : { start: best, end: best + phrase.length };
 }

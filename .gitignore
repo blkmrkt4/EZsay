@@ -42,3 +42,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 files3.zip
+
+# local-only test fixtures — real student essays, never committed
+# (see __tests__/essay-pipeline-regression.test.ts)
+__tests__/fixtures/essays/
