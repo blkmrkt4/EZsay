@@ -88,6 +88,14 @@ export function buildIntakeTokens(
   // [PLACEHOLDER]s literally in the prompt text.
   tokens.SPELLING_VARIANT = variantToken(resolveEnglishVariant(intake as Record<string, unknown> | null, stylePrefs));
 
+  // WRITER_DESCRIPTION: same always-emit rule — only the academic defaults
+  // block carries one, so give every document type a neutral baseline. The
+  // aiUsage switch below overrides it when the writer answered.
+  if (!tokens.WRITER_DESCRIPTION) {
+    tokens.WRITER_DESCRIPTION =
+      "the document's author — preserve their natural voice and personal phrasing";
+  }
+
   // Apply style preferences as prompt tokens
   if (stylePrefs) {
     if (stylePrefs.oxford_comma === false) {

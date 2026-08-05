@@ -538,6 +538,8 @@ DEV_BYPASS_AUTH=false
 | 24 | Docx formatting preservation | Originals stored at upload; export does XML surgery on the original file, all-or-nothing alignment, fallback = re-typeset. See §25 | 2026-07-19 |
 | 25 | Email gate softened | Anonymous visitors see flag categories + explanations with redacted sentences (up to 5); email verification unmasks and saves. See §22 | 2026-07-20 |
 | 26 | Legacy routes deleted | `/results/[docId]`, `/edit/[docId]/*`, `/dashboard` and the EditingShell/PaywallModal/useSubscription tree removed; `/upload` kept as a redirect stub to `/w` | 2026-07-20 |
+| 27 | AI-usage answer rewired | `[WRITER_DESCRIPTION]` was built from `intake.aiUsage` on every suggest/evaluate call but NO active prompt carried the placeholder — collected then discarded. Re-added via `scripts/add-writer-description-to-prompts.ts` (suggest-rewrite/suggest-academic/evaluate-rewrite); `buildIntakeTokens` now always emits a neutral baseline for every doc type (always-emit rule). Brief caveat added: "Natural writing is sometimes misread as AI. Answering honestly makes sure your voice is retained, not rewritten." | 2026-07-21 |
+| 28 | Length target units | The brief's length target supports words OR characters (`intake.targetUnit`, forms/abstracts are often char-capped) and blank = no requirement ("Leave blank if there's no length requirement"). Footer progress and completion screen are unit-aware. | 2026-07-21 |
 
 ---
 

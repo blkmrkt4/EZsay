@@ -506,6 +506,7 @@ export default function WorkspacePage() {
   // Word target lives in documents.intake (wordTarget); citation style is a
   // style preference (citation_format) so citations checks pick it up.
   const [briefWordTarget, setBriefWordTarget] = useState("");
+  const [briefTargetUnit, setBriefTargetUnit] = useState<"words" | "chars">("words");
   const [briefCitationStyle, setBriefCitationStyle] = useState("");
   const [briefDocType, setBriefDocType] = useState("");
   const [briefMoreOpen, setBriefMoreOpen] = useState(false);
@@ -1180,6 +1181,7 @@ export default function WorkspacePage() {
       discipline: intake.discipline ?? "",
     });
     setBriefWordTarget(intake.wordTarget ?? "");
+    setBriefTargetUnit(intake.targetUnit === "chars" ? "chars" : "words");
     setBriefCitationStyle("");
     setBriefDocType(doc.documentType);
     setBriefMoreOpen(false);
@@ -1245,7 +1247,12 @@ export default function WorkspacePage() {
   async function persistIntakeAnswers(): Promise<number> {
     if (!activeDocId) return 0;
     const filled = Object.fromEntries(
-      Object.entries({ ...intakeAnswers, wordTarget: briefWordTarget.trim() }).filter(([, v]) => v !== "")
+      Object.entries({
+        ...intakeAnswers,
+        wordTarget: briefWordTarget.trim(),
+        // Unit only matters when a target exists; "words" | "chars".
+        targetUnit: briefWordTarget.trim() ? briefTargetUnit : "",
+      }).filter(([, v]) => v !== "")
     );
     if (Object.keys(filled).length > 0) {
       await fetch(`/api/documents/${activeDocId}`, {
@@ -2737,8 +2744,13 @@ export default function WorkspacePage() {
                   onGoToCitations={() => { setNav("workspace"); setWorkspaceMode("citations"); }}
                   initialScore={docVersions.length > 0 ? (docVersions[0] as { aiRiskScore?: number | null })?.aiRiskScore ?? null : null}
                   currentScore={activeDoc.aiRiskScore}
-                  wordCount={fullDocText.split(/\s+/).filter(Boolean).length}
+                  wordCount={
+                    (activeDoc.intake as Record<string, string> | null)?.targetUnit === "chars"
+                      ? fullDocText.length
+                      : fullDocText.split(/\s+/).filter(Boolean).length
+                  }
                   wordTarget={parseInt(((activeDoc.intake as Record<string, string> | null)?.wordTarget ?? ""), 10) || null}
+                  targetUnit={(activeDoc.intake as Record<string, string> | null)?.targetUnit === "chars" ? "characters" : "words"}
                   onDownloadDocx={() => { void downloadDocxFile(); }}
                   onCopyText={() => { void navigator.clipboard.writeText(fullDocText); }}
                 />
@@ -3491,18 +3503,30 @@ export default function WorkspacePage() {
                       </div>
 
                       <div className="grid grid-cols-2 gap-3">
-                        {/* Word count target */}
+                        {/* Length target — words or characters, or none at all */}
                         <div>
-                          <label className="text-xs font-semibold text-gray-600">Word count target</label>
-                          <input
-                            type="number"
-                            min={0}
-                            value={briefWordTarget}
-                            onChange={(e) => setBriefWordTarget(e.target.value)}
-                            placeholder="e.g. 10000"
-                            className="mt-1 w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
-                          />
-                          <p className="mt-0.5 text-[10px] text-gray-400">Live progress shows in the footer</p>
+                          <label className="text-xs font-semibold text-gray-600">Length target</label>
+                          <div className="mt-1 flex gap-1.5">
+                            <input
+                              type="number"
+                              min={0}
+                              value={briefWordTarget}
+                              onChange={(e) => setBriefWordTarget(e.target.value)}
+                              placeholder="e.g. 10000"
+                              className="min-w-0 flex-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+                            />
+                            <select
+                              value={briefTargetUnit}
+                              onChange={(e) => setBriefTargetUnit(e.target.value as "words" | "chars")}
+                              className="shrink-0 rounded-lg border border-gray-200 bg-white px-1.5 py-1.5 text-xs text-gray-600 focus:border-blue-400 focus:outline-none"
+                            >
+                              <option value="words">words</option>
+                              <option value="chars">characters</option>
+                            </select>
+                          </div>
+                          <p className="mt-0.5 text-[10px] text-gray-400">
+                            Leave blank if there&apos;s no length requirement. Progress shows in the footer.
+                          </p>
                         </div>
 
                         {/* Citation style */}
@@ -3553,7 +3577,10 @@ export default function WorkspacePage() {
                               <option key={o.value} value={o.value}>{o.label}</option>
                             ))}
                           </select>
-                          <p className="mt-0.5 text-[10px] text-gray-400">Calibrates how deep the edits go</p>
+                          <p className="mt-0.5 text-[10px] text-gray-400">
+                            Natural writing is sometimes misread as AI. Answering honestly
+                            makes sure your voice is retained, not rewritten.
+                          </p>
                         </div>
                       </div>
 
@@ -4044,10 +4071,15 @@ export default function WorkspacePage() {
                 const text = sections.filter((s) => !s.isLocked).map((s) => s.currentText).join(" ");
                 const words = text.split(/\s+/).filter(Boolean).length;
                 const chars = text.length;
-                const target = parseInt(((activeDoc?.intake as Record<string, string> | null)?.wordTarget ?? ""), 10);
+                const intake = activeDoc?.intake as Record<string, string> | null;
+                const target = parseInt(intake?.wordTarget ?? "", 10);
                 if (target > 0) {
-                  const pct = Math.round((words / target) * 100);
-                  return `${words.toLocaleString()} / ${target.toLocaleString()} words (${pct}%) \u00B7 ${chars.toLocaleString()} chars`;
+                  const isChars = intake?.targetUnit === "chars";
+                  const current = isChars ? chars : words;
+                  const pct = Math.round((current / target) * 100);
+                  return isChars
+                    ? `${chars.toLocaleString()} / ${target.toLocaleString()} chars (${pct}%) \u00B7 ${words.toLocaleString()} words`
+                    : `${words.toLocaleString()} / ${target.toLocaleString()} words (${pct}%) \u00B7 ${chars.toLocaleString()} chars`;
                 }
                 return `${words.toLocaleString()} words \u00B7 ${chars.toLocaleString()} chars`;
               })()}</span>
@@ -4409,7 +4441,7 @@ function EmptyPanel({ title, description, extra }: { title: string; description:
 
 // ── Edit session summary (shown when all flags are resolved) ─────────────
 
-function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifactsRemaining, artifactsProcessed, onReviewArtifacts, onSaveVersion, saveState = "idle", citationsPending, onGoToCitations, initialScore, currentScore, wordCount, wordTarget, onDownloadDocx, onCopyText }: {
+function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifactsRemaining, artifactsProcessed, onReviewArtifacts, onSaveVersion, saveState = "idle", citationsPending, onGoToCitations, initialScore, currentScore, wordCount, wordTarget, targetUnit, onDownloadDocx, onCopyText }: {
   flags: { id: string; patternType: string; status: string }[];
   spellingRemaining: number;
   grammarRemaining: number;
@@ -4424,6 +4456,7 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifa
   currentScore?: number | null;
   wordCount?: number;
   wordTarget?: number | null;
+  targetUnit?: string;
   onDownloadDocx?: () => void;
   onCopyText?: () => void;
 }) {
@@ -4514,7 +4547,7 @@ function EditSessionSummary({ flags, spellingRemaining, grammarRemaining, artifa
             {typeof wordCount === "number" && wordTarget != null && wordTarget > 0 && (
               <p className="text-center text-xs text-gray-600">
                 <span className="font-semibold">{wordCount.toLocaleString()}</span> of your{" "}
-                <span className="font-semibold">{wordTarget.toLocaleString()}</span>-word target
+                <span className="font-semibold">{wordTarget.toLocaleString()}</span>-{(targetUnit ?? "words").replace(/s$/, "")} target
                 {" "}({Math.round((wordCount / wordTarget) * 100)}%)
               </p>
             )}
